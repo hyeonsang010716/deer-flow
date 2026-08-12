@@ -1,4 +1,4 @@
-"""In-memory stream bridge backed by an in-process event log."""
+"""프로세스 내 event log를 백엔드로 쓰는 in-memory stream bridge."""
 
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ class _RunStream:
 
 
 class MemoryStreamBridge(StreamBridge):
-    """Per-run in-memory event log implementation.
+    """run별 in-memory event log 구현.
 
-    Events are retained for a bounded time window per run so late subscribers
-    and reconnecting clients can replay buffered events from ``Last-Event-ID``.
+    event는 run마다 제한된 구간만 보관하므로, 늦게 붙은 subscriber나 재접속한 client가
+    ``Last-Event-ID``부터 버퍼된 event를 replay할 수 있다.
     """
 
     def __init__(self, *, queue_maxsize: int = 256) -> None:
@@ -36,7 +36,7 @@ class MemoryStreamBridge(StreamBridge):
         self._streams: dict[str, _RunStream] = {}
         self._counters: dict[str, int] = {}
 
-    # -- helpers ---------------------------------------------------------------
+    # -- 헬퍼 -------------------------------------------------------------------
 
     def _get_or_create_stream(self, run_id: str) -> _RunStream:
         if run_id not in self._streams:
@@ -52,11 +52,10 @@ class MemoryStreamBridge(StreamBridge):
 
     @staticmethod
     def _parse_event_seq(event_id: str) -> int | None:
-        """Extract the per-run sequence number from a ``{ts}-{seq}`` event id.
+        """``{ts}-{seq}`` 형식의 event id에서 run별 sequence 번호를 추출한다.
 
-        ``seq`` (assigned by :meth:`_next_id`) increases by one per published
-        event, so it equals the event's absolute offset within the run. Returns
-        ``None`` for ids that do not match the expected format.
+        :meth:`_next_id`가 부여하는 ``seq``는 publish된 event마다 1씩 증가하므로, run 안에서
+        event의 절대 offset과 같다. 형식이 맞지 않는 id에는 ``None``을 반환한다.
         """
         match = _MEMORY_STREAM_ID_RE.fullmatch(event_id)
         if match is None:
@@ -75,14 +74,12 @@ class MemoryStreamBridge(StreamBridge):
         if last_event_id is None:
             return stream.start_offset
 
-        # Event ids embed a per-run, monotonically increasing ``seq`` that equals
-        # the event's absolute offset, so locate the event by arithmetic in O(1)
-        # rather than scanning the retained buffer. Retained ids are verified at
-        # the computed index. Once an id is below the retained watermark there is
-        # nothing left to verify its timestamp against, so even a numeric foreign
-        # id takes the conservative gap path; reloading durable state is safer
-        # than silently claiming a complete replay. Unknown ids at or above the
-        # watermark keep the legacy replay-from-earliest behavior.
+        # event id에는 run 안에서 단조 증가하며 event의 절대 offset과 같은 ``seq``가 들어 있다.
+        # 따라서 보관 버퍼를 훑는 대신 산술 계산으로 O(1)에 event를 찾는다. 보관된 id는 계산된
+        # index에서 검증한다. id가 보관 watermark 아래로 내려가면 timestamp를 대조할 대상이 없으므로,
+        # 숫자 형태의 외부 id라도 보수적으로 gap 경로를 탄다. 완전한 replay라고 조용히 주장하는 것보다
+        # durable state를 다시 읽는 편이 안전하다. watermark 이상인 알 수 없는 id는 기존의
+        # "가장 오래된 것부터 replay" 동작을 유지한다.
         seq = self._parse_event_seq(last_event_id)
         if seq is not None:
             if stream.events and seq < stream.start_offset:
@@ -99,10 +96,10 @@ class MemoryStreamBridge(StreamBridge):
         return stream.start_offset
 
     async def stream_exists(self, run_id: str) -> bool:
-        """Return whether the in-process event log still has data for *run_id*."""
+        """프로세스 내 event log에 *run_id*의 데이터가 아직 남아 있는지 반환한다."""
         return run_id in self._streams
 
-    # -- StreamBridge API ------------------------------------------------------
+    # -- StreamBridge API -------------------------------------------------------
 
     async def publish(self, run_id: str, event: str, data: Any) -> None:
         stream = self._get_or_create_stream(run_id)

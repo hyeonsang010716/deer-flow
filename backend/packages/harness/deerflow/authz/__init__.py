@@ -1,4 +1,4 @@
-"""Pluggable fine-grained authorization (resource-level RBAC and beyond)."""
+"""교체 가능한 세분화 authorization (리소스 수준 RBAC 및 그 이상)."""
 
 from deerflow.authz.adapter import GuardrailAuthorizationAdapter
 from deerflow.authz.enforcement import filter_tools_by_authorization

@@ -130,9 +130,9 @@ class ScheduledTaskRepository:
                             ScheduledTaskRow.lease_expires_at < now,
                         ),
                     ),
-                    # A task stuck in "running" with an expired lease means the
-                    # claiming process died between claim and dispatch; it must
-                    # stay reclaimable or the task is dead forever.
+                    # lease가 만료된 채 "running"에 멈춘 task는 claim한 프로세스가 claim과
+                    # dispatch 사이에서 죽었다는 뜻이다. 다시 claim할 수 있어야 하며, 아니면
+                    # 그 task는 영영 죽은 상태로 남는다.
                     and_(
                         ScheduledTaskRow.status == "running",
                         ScheduledTaskRow.lease_expires_at.is_not(None),
@@ -173,10 +173,9 @@ class ScheduledTaskRepository:
             if row is None:
                 return
             if protect_terminal and row.status in TERMINAL_TASK_STATUSES:
-                # A fast-failing run can reach handle_run_completion (which
-                # finalizes a `once` task) before this launch-path write
-                # commits; keep the hook's status/error and only record the
-                # launch bookkeeping.
+                # 빠르게 실패한 run은 이 launch 경로 쓰기가 커밋되기 전에
+                # handle_run_completion(`once` task를 종결시킨다)에 도달할 수 있다. hook이
+                # 남긴 status/error는 유지하고 launch 관련 기록만 남긴다.
                 pass
             else:
                 row.status = status
@@ -206,14 +205,13 @@ class ScheduledTaskRepository:
             return [self._row_to_dict(row) for row in result.scalars()]
 
     async def cancel_stuck_once_tasks(self, *, error: str) -> int:
-        """Reconcile ``once`` tasks orphaned in ``running`` by a process crash.
+        """프로세스 크래시로 ``running``에 고아로 남은 ``once`` task를 정리한다.
 
-        A launched ``once`` task stays ``running`` until the in-process
-        completion hook moves it to a terminal status; its lease was cleared at
-        launch, so the claim query's expired-lease reclaim branch never sees
-        it. After a crash the hook is gone and the task would be stuck forever.
-        Tasks still holding a lease are left alone — they were claimed but not
-        launched, and expired-lease reclaim recovers them safely.
+        launch된 ``once`` task는 in-process 완료 hook이 terminal 상태로 옮길 때까지 ``running``
+        상태로 남는다. lease는 launch 시점에 지워지므로 claim 쿼리의 만료 lease 회수 분기가
+        이 행을 절대 보지 못한다. 크래시 후에는 hook이 사라져 task가 영영 멈춰 있게 된다.
+        아직 lease를 들고 있는 task는 건드리지 않는다 — claim만 되고 launch되지 않은 상태이며,
+        만료 lease 회수가 안전하게 복구한다.
         """
         stmt = select(ScheduledTaskRow).where(
             ScheduledTaskRow.schedule_type == "once",

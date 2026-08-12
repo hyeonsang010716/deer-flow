@@ -1,10 +1,9 @@
-"""DeerFlow application persistence layer (SQLAlchemy 2.0 async ORM).
+"""DeerFlow 애플리케이션 persistence 계층 (SQLAlchemy 2.0 async ORM).
 
-This module manages DeerFlow's own application data -- runs metadata,
-thread ownership, cron jobs, users. It is completely separate from
-LangGraph's checkpointer, which manages graph execution state.
+run metadata, thread 소유권, cron job, user 등 DeerFlow 자체 애플리케이션 데이터를
+관리한다. graph 실행 state를 관리하는 LangGraph checkpointer와는 완전히 별개다.
 
-Usage:
+사용법:
     from deerflow.persistence import init_engine, close_engine, get_session_factory
 """
 

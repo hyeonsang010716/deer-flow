@@ -1,15 +1,13 @@
-"""Middleware to filter deferred tool schemas from model binding.
+"""model binding 대상에서 deferred tool schema를 걸러내는 middleware.
 
-When tool_search is enabled, MCP tools are still passed to ToolNode for
-execution, but their schemas must NOT be sent to the LLM via bind_tools until
-the model has discovered them via tool_search. This middleware removes the
-still-deferred tools from request.tools before model binding, and blocks tool
-calls to tools that have not been promoted yet.
+tool_search가 켜져 있으면 MCP tool은 실행을 위해 여전히 ToolNode로 전달되지만, 모델이
+tool_search로 발견하기 전까지 그 schema를 bind_tools로 LLM에 보내면 안 된다. 이 middleware는
+model binding 전에 아직 deferred 상태인 tool을 request.tools에서 제거하고, 아직 promote되지
+않은 tool의 호출을 차단한다.
 
-The deferred name set and the catalog hash are injected at construction time
-(no ContextVar). Promotion state is read from graph state (``state["promoted"]``),
-scoped by catalog hash so a stale persisted promotion cannot expose a renamed
-or drifted tool.
+deferred 이름 집합과 catalog hash는 생성 시점에 주입된다(ContextVar 사용 안 함). promotion
+상태는 graph state(``state["promoted"]``)에서 읽으며 catalog hash로 범위를 나눠, 오래된
+promotion이 이름이 바뀌거나 달라진 tool을 노출하지 못하게 한다.
 """
 
 import logging
@@ -27,11 +25,11 @@ logger = logging.getLogger(__name__)
 
 
 class DeferredToolFilterMiddleware(AgentMiddleware[AgentState]):
-    """Hide deferred tool schemas from the bound model until promoted.
+    """promote되기 전까지 deferred tool schema를 bind된 모델에게 숨긴다.
 
-    ToolNode still holds all tools (including deferred) for execution routing,
-    but the LLM only sees active tool schemas plus tools that have already been
-    promoted (recorded in ``state["promoted"]`` under the current catalog hash).
+    ToolNode는 실행 라우팅을 위해 deferred를 포함한 모든 tool을 그대로 들고 있지만, LLM은 활성
+    tool schema와 이미 promote된 tool(현재 catalog hash 아래 ``state["promoted"]``에 기록됨)만
+    보게 된다.
     """
 
     def __init__(self, deferred_names: frozenset[str], catalog_hash: str | None):

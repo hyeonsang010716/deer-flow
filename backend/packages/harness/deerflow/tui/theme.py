@@ -1,8 +1,8 @@
-"""Restrained colour + symbol palette for the TUI.
+"""TUI용 절제된 색상 + 기호 팔레트.
 
-A Tokyo-Night-ish palette: calm, readable on dark terminals, with a few accent
-hues to distinguish speakers and tool state. Rich-compatible hex colours so the
-same constants drive both Rich renderables and Textual CSS variables.
+Tokyo Night 계열 팔레트다. 차분하고 어두운 터미널에서 읽기 좋으며, 화자와 tool 상태를 구분할
+accent 색조가 몇 개 있다. Rich 호환 hex 색상이라 같은 상수로 Rich renderable과 Textual CSS
+변수를 함께 굴린다.
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ class Theme:
     dim: str = "#565f89"
     muted: str = "#737aa2"
 
-    primary: str = "#7dcfff"  # headings / app accent
-    user: str = "#7aa2f7"  # user speaker
-    assistant: str = "#c0caf5"  # assistant speaker
-    tool: str = "#bb9af7"  # tool activity
-    accent: str = "#9ece6a"  # success / ok
-    warning: str = "#e0af68"  # running / caution
-    error: str = "#f7768e"  # errors
+    primary: str = "#7dcfff"  # 제목 / 앱 accent
+    user: str = "#7aa2f7"  # 사용자 화자
+    assistant: str = "#c0caf5"  # assistant 화자
+    tool: str = "#bb9af7"  # tool 활동
+    accent: str = "#9ece6a"  # 성공 / 정상
+    warning: str = "#e0af68"  # 실행 중 / 주의
+    error: str = "#f7768e"  # 오류
 
 
 THEME = Theme()

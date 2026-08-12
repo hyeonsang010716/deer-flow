@@ -1,4 +1,4 @@
-"""OpenViking memory backend using the official LangChain integration."""
+"""공식 LangChain 통합을 사용하는 OpenViking memory 백엔드."""
 
 from .openviking_manager import OpenVikingMemoryManager
 

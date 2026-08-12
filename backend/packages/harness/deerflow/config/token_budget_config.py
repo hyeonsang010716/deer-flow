@@ -1,10 +1,10 @@
-"""Config for token budget middleware."""
+"""token budget middleware 설정."""
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class TokenBudgetConfig(BaseModel):
-    """Configuration for per-run token budget enforcement."""
+    """run 단위 token budget 집행 설정."""
 
     enabled: bool = Field(default=False, description="Whether to enable per-run token budget enforcement.")
     max_tokens: int = Field(default=200000, ge=1000, description="Maximum total tokens (input + output) allowed per run.")
@@ -15,7 +15,7 @@ class TokenBudgetConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "TokenBudgetConfig":
-        """Ensure hard stop cannot trigger before the warning."""
+        """hard stop이 경고보다 먼저 발동하지 않도록 보장한다."""
         if self.hard_stop_threshold < self.warn_threshold:
             raise ValueError("hard_stop_threshold must be >= warn_threshold")
         return self

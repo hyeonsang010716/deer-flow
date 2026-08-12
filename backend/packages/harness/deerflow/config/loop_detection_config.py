@@ -1,14 +1,13 @@
-"""Configuration for loop detection middleware."""
+"""loop detection middleware 설정."""
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class ToolFreqOverride(BaseModel):
-    """Per-tool frequency threshold override.
+    """도구 단위 호출 빈도 임계값 override.
 
-    Can be higher or lower than the global defaults. Commonly used to raise
-    thresholds for high-frequency tools like bash in batch workflows (e.g.
-    RNA-seq pipelines) without weakening protection on every other tool.
+    전역 기본값보다 크거나 작을 수 있다. 주로 batch workflow(예: RNA-seq 파이프라인)에서
+    bash처럼 자주 쓰이는 도구의 임계값만 올리고 나머지 도구의 보호는 그대로 두는 데 쓴다.
     """
 
     warn: int = Field(ge=1)
@@ -22,7 +21,7 @@ class ToolFreqOverride(BaseModel):
 
 
 class LoopDetectionConfig(BaseModel):
-    """Configuration for repetitive tool-call loop detection."""
+    """반복적인 도구 호출 loop 감지 설정."""
 
     enabled: bool = Field(
         default=True,
@@ -65,7 +64,7 @@ class LoopDetectionConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":
-        """Ensure hard stop cannot happen before the warning threshold."""
+        """hard stop이 경고 임계값보다 먼저 발생하지 않도록 보장한다."""
         if self.hard_limit < self.warn_threshold:
             raise ValueError("hard_limit must be greater than or equal to warn_threshold")
         if self.tool_freq_hard_limit < self.tool_freq_warn:

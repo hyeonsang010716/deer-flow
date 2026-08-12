@@ -1,24 +1,21 @@
-"""Neutralize prompt-injection control tokens in untrusted tool results.
+"""신뢰할 수 없는 도구 결과의 prompt-injection 제어 토큰을 무력화한다.
 
-DeerFlow already treats the genuine user message as untrusted and neutralizes
-framework/injection tags in it (see ``InputSanitizationMiddleware``). Remote
-content that the agent *fetches* — web page bodies and search snippets returned
-by ``web_fetch`` / ``web_search`` / ``image_search``, plus the target site's
-response-status text surfaced by ``web_capture`` — is equally untrusted, yet
-it entered the model context verbatim. A page the attacker controls could embed
-a forged ``<system-reminder>`` block (or a ``--- END USER INPUT ---`` marker) and
-have it reach the model as authoritative framework context.
+DeerFlow는 이미 실제 사용자 메시지를 신뢰하지 않고 그 안의 framework/injection 태그를
+무력화한다(``InputSanitizationMiddleware`` 참고). 에이전트가 *가져오는* 원격 콘텐츠도
+똑같이 신뢰할 수 없다. ``web_fetch`` / ``web_search`` / ``image_search``가 돌려주는 웹 페이지
+본문과 검색 snippet, ``web_capture``가 노출하는 대상 사이트의 response-status 텍스트가
+그렇다. 그런데도 이들은 그대로 모델 context에 들어갔다. 공격자가 통제하는 페이지가 위조된
+``<system-reminder>`` 블록(또는 ``--- END USER INPUT ---`` 마커)을 심어 모델에게 권위 있는
+framework context로 전달할 수 있었다.
 
-This middleware narrows that gap by applying the *same* structural
-neutralization (``neutralize_untrusted_tags``) to the results of the first-party
-network tools, so a fetched ``<system-reminder>`` is escaped to
-``&lt;system-reminder&gt;`` exactly like it would be in direct user input. It
-deliberately targets only the remote-content tools: local tool output (bash,
-file reads) is left untouched so legitimate code/log content is never mangled.
+이 middleware는 자체 네트워크 도구의 결과에 *동일한* 구조적 무력화
+(``neutralize_untrusted_tags``)를 적용해 그 틈을 좁힌다. 가져온 ``<system-reminder>``는
+사용자 입력에서와 똑같이 ``&lt;system-reminder&gt;``로 escape된다. 대상은 의도적으로
+원격 콘텐츠 도구로 한정한다. 로컬 도구 출력(bash, 파일 읽기)은 건드리지 않아 정상적인
+코드/로그 내용이 망가지지 않는다.
 
-Scope note: matching is a name-based allowlist, so MCP-provided remote-content
-tools registered under other names are not yet covered — see
-``_REMOTE_CONTENT_TOOL_NAMES``.
+범위 주의: 매칭이 이름 기반 allowlist라 다른 이름으로 등록된 MCP 원격 콘텐츠 도구는 아직
+포함되지 않는다. ``_REMOTE_CONTENT_TOOL_NAMES``를 참고한다.
 """
 
 from __future__ import annotations
@@ -36,22 +33,18 @@ from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
 
-# Tool names whose results are attacker-influenceable remote content. The
-# first-party search/fetch providers all normalize to ``web_fetch`` /
-# ``web_search`` / ``image_search`` (see community/*/tools.py), so the set stays
-# provider-agnostic. ``web_capture`` (Browserless screenshot) additionally
-# surfaces the target site's response-status text (``X-Response-Status``, a
-# free-form reason phrase controlled by whatever server is being captured) into
-# its result message, so it is untrusted remote content too and belongs here.
+# 결과가 공격자의 영향을 받을 수 있는 원격 콘텐츠인 도구 이름들. 자체 search/fetch provider는
+# 모두 ``web_fetch`` / ``web_search`` / ``image_search``로 정규화되므로(community/*/tools.py
+# 참고) 이 집합은 provider와 무관하다. ``web_capture``(Browserless 스크린샷)는 대상 사이트의
+# response-status 텍스트(``X-Response-Status``, 캡처 대상 서버가 통제하는 자유 형식 문구)를
+# 결과 메시지에 노출하므로 역시 신뢰할 수 없는 원격 콘텐츠이고 여기에 속한다.
 #
-# Known limitation: the gate is name-based. An MCP server may expose a
-# remote-content tool under an arbitrary name (e.g. ``fetch_url`` /
-# ``scrape_page``); its results are equally untrusted but are NOT matched here,
-# so they reach the model unneutralized. A name heuristic (matching
-# fetch/search/crawl substrings) is intentionally avoided because it would also
-# mangle legitimate *local* tool output (e.g. a ``file_search`` result). Robust
-# MCP coverage should tag remote-content tools via metadata at registration
-# rather than by name; tracked as a follow-up.
+# 알려진 한계: 이 gate는 이름 기반이다. MCP 서버는 원격 콘텐츠 도구를 임의의 이름
+# (예: ``fetch_url`` / ``scrape_page``)으로 노출할 수 있고, 그 결과도 똑같이 신뢰할 수 없지만
+# 여기서 매칭되지 않아 무력화 없이 모델에 도달한다. fetch/search/crawl 부분 문자열을 보는
+# 이름 휴리스틱은 정상적인 *로컬* 도구 출력(예: ``file_search`` 결과)까지 망가뜨리므로
+# 의도적으로 피한다. 견고한 MCP 대응은 이름이 아니라 등록 시 메타데이터로 원격 콘텐츠 도구를
+# 표시하는 방식이어야 하며 후속 작업으로 추적 중이다.
 _REMOTE_CONTENT_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "web_fetch",
@@ -63,19 +56,18 @@ _REMOTE_CONTENT_TOOL_NAMES: frozenset[str] = frozenset(
 
 
 def _neutralize_content(content: object) -> object:
-    """Return *content* with untrusted tags neutralized, preserving its shape.
+    """*content*의 형태를 유지한 채 신뢰할 수 없는 태그를 무력화해 반환한다.
 
-    Handles the two shapes a ToolMessage content can take:
+    ToolMessage content가 가질 수 있는 두 형태를 처리한다.
 
-    * plain ``str`` (what every web tool returns today);
-    * a list of content blocks — bare ``str`` elements and
-      ``{"type": "text", "text": ...}`` text blocks are rewritten; non-text
-      blocks (images, etc.) pass through untouched. The bare-``str`` case
-      mirrors ``ToolOutputBudgetMiddleware._message_text``, which already
-      anticipates ``str`` items inside a content list.
+    * 평범한 ``str``(현재 모든 web 도구가 반환하는 형태).
+    * 콘텐츠 블록 리스트. 맨 ``str`` 요소와 ``{"type": "text", "text": ...}`` 텍스트 블록은
+      재작성하고, 텍스트가 아닌 블록(이미지 등)은 그대로 통과시킨다. 맨 ``str`` 처리는
+      콘텐츠 리스트 안의 ``str`` 항목을 이미 고려하는
+      ``ToolOutputBudgetMiddleware._message_text``와 같다.
     """
-    # Imported lazily so this module can be loaded even when a test stubs the
-    # input-sanitization module, and to mirror the codebase's deferred-import style.
+    # 테스트가 input-sanitization 모듈을 stub해도 이 모듈을 로드할 수 있도록, 그리고
+    # 코드베이스의 지연 import 방식에 맞추기 위해 lazy import한다.
     from deerflow.agents.middlewares.input_sanitization_middleware import neutralize_untrusted_tags
 
     if isinstance(content, str):
@@ -94,7 +86,7 @@ def _neutralize_content(content: object) -> object:
 
 
 def _sanitize_tool_message(message: ToolMessage) -> ToolMessage:
-    """Return a copy of *message* with its content neutralized, or the original."""
+    """content를 무력화한 *message* 사본을 반환한다. 바뀐 게 없으면 원본을 반환한다."""
     new_content = _neutralize_content(message.content)
     if new_content == message.content:
         return message
@@ -102,7 +94,7 @@ def _sanitize_tool_message(message: ToolMessage) -> ToolMessage:
 
 
 def _sanitize_result(result: ToolMessage | Command) -> ToolMessage | Command:
-    """Neutralize a tool-call result (``ToolMessage`` or ``Command``)."""
+    """도구 호출 결과(``ToolMessage`` 또는 ``Command``)를 무력화한다."""
     if isinstance(result, ToolMessage):
         return _sanitize_tool_message(result)
     update = getattr(result, "update", None)
@@ -116,18 +108,17 @@ def _sanitize_result(result: ToolMessage | Command) -> ToolMessage | Command:
 
 
 class ToolResultSanitizationMiddleware(AgentMiddleware[AgentState]):
-    """Escape injection/framework tags in remote tool results before the model sees them.
+    """모델이 보기 전에 원격 도구 결과의 injection/framework 태그를 escape한다.
 
-    Results of the first-party network tools (``web_fetch`` / ``web_search`` /
-    ``image_search`` / ``web_capture``) are rewritten; every other tool's output
-    is returned unchanged. Mirrors the user-input guardrail so untrusted remote
-    content and untrusted user input receive the same structural neutralization.
+    자체 네트워크 도구(``web_fetch`` / ``web_search`` / ``image_search`` /
+    ``web_capture``)의 결과만 재작성하고 다른 도구의 출력은 그대로 반환한다. 사용자 입력
+    guardrail을 그대로 반영해 신뢰할 수 없는 원격 콘텐츠와 사용자 입력이 동일한 구조적
+    무력화를 받게 한다.
 
-    Scope is a name-based allowlist (``_REMOTE_CONTENT_TOOL_NAMES``): it reliably
-    covers the built-in web tools without false positives on local tools. It does
-    NOT cover MCP-provided remote-content tools registered under other names —
-    see the note on ``_REMOTE_CONTENT_TOOL_NAMES`` for why a name heuristic is
-    avoided and the metadata-tagging follow-up.
+    범위는 이름 기반 allowlist(``_REMOTE_CONTENT_TOOL_NAMES``)다. 로컬 도구에 오탐 없이
+    내장 web 도구를 확실히 덮는다. 다른 이름으로 등록된 MCP 원격 콘텐츠 도구는 덮지 않는다.
+    이름 휴리스틱을 피하는 이유와 메타데이터 표시 후속 작업은
+    ``_REMOTE_CONTENT_TOOL_NAMES``의 설명을 참고한다.
     """
 
     def _should_sanitize(self, request: ToolCallRequest) -> bool:

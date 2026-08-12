@@ -1,18 +1,17 @@
-"""Adapter that presents an AuthorizationProvider as a GuardrailProvider.
+"""AuthorizationProvider를 GuardrailProvider처럼 보이게 하는 adapter.
 
-This lets the existing :class:`~deerflow.guardrails.middleware.GuardrailMiddleware`
-enforce :class:`~deerflow.authz.provider.AuthorizationProvider` decisions at
-tool-call time — no new middleware class required (see RFC §6.1).
+기존 :class:`~deerflow.guardrails.middleware.GuardrailMiddleware`가 tool call 시점에
+:class:`~deerflow.authz.provider.AuthorizationProvider`의 결정을 강제할 수 있게 해준다 — 새
+middleware 클래스가 필요 없다(RFC §6.1 참고).
 
-The adapter maps :class:`~deerflow.guardrails.provider.GuardrailRequest`
-fields to :class:`~deerflow.authz.provider.AuthzRequest` fields, calls the
-authorization provider, and converts the :class:`~deerflow.authz.provider.AuthzDecision`
-back to a :class:`~deerflow.guardrails.provider.GuardrailDecision`.
+adapter는 :class:`~deerflow.guardrails.provider.GuardrailRequest` 필드를
+:class:`~deerflow.authz.provider.AuthzRequest` 필드로 매핑하고, authorization provider를 호출한
+뒤 :class:`~deerflow.authz.provider.AuthzDecision`을
+:class:`~deerflow.guardrails.provider.GuardrailDecision`으로 되돌린다.
 
-Principal construction delegates to
-:func:`~deerflow.authz.principal.build_principal_from_context` so Layer 1
-(tool assembly) and Layer 2 (this adapter) share a single identity builder
-with consistent ``default_role`` and ``attributes`` semantics.
+Principal 생성은 :func:`~deerflow.authz.principal.build_principal_from_context`에 위임한다.
+Layer 1(tool 조립)과 Layer 2(이 adapter)가 하나의 identity builder를 공유해 ``default_role``과
+``attributes`` 의미가 일관되게 유지된다.
 """
 
 from __future__ import annotations
@@ -25,23 +24,20 @@ from deerflow.guardrails.provider import GuardrailDecision, GuardrailReason, Gua
 
 
 class GuardrailAuthorizationAdapter:
-    """Adapt an :class:`AuthorizationProvider` to the ``GuardrailProvider`` Protocol.
+    """:class:`AuthorizationProvider`를 ``GuardrailProvider`` Protocol에 맞춘다.
 
-    ``resource_type`` and ``action`` default to ``"tool"`` / ``"call"``,
-    which is correct for the tool-execution path. A different resource/action
-    pair can be injected if the adapter is reused outside the tool path.
+    ``resource_type``과 ``action``의 기본값은 ``"tool"`` / ``"call"``이며 tool 실행 경로에
+    적합하다. adapter를 tool 경로 밖에서 재사용한다면 다른 resource/action 쌍을 주입할 수 있다.
 
     Args:
-        provider: The authorization provider to delegate decisions to.
-        default_role: Role used when ``user_role`` is absent or empty in the
-            runtime context. Must be passed by Phase 1B wiring from
-            ``AuthorizationConfig.default_role``.
-        resource_type: Resource type for all ``AuthzRequest`` instances.
-        action: Action for all ``AuthzRequest`` instances.
-        infrastructure_tool_names: Framework tools created from an already
-            authorized capability set. These may execute without a second
-            provider decision; callers must derive the names from the current
-            build's concrete deferred setup rather than from static config.
+        provider: 결정을 위임할 authorization provider.
+        default_role: runtime context에 ``user_role``이 없거나 비었을 때 쓰는 role. Phase 1B
+            배선이 ``AuthorizationConfig.default_role``에서 전달해야 한다.
+        resource_type: 모든 ``AuthzRequest``에 쓸 resource 타입.
+        action: 모든 ``AuthzRequest``에 쓸 action.
+        infrastructure_tool_names: 이미 인가된 capability 집합으로 만들어진 framework 도구.
+            provider 결정을 한 번 더 거치지 않고 실행될 수 있다. 호출자는 이 이름들을 정적
+            설정이 아니라 현재 build의 구체적인 deferred setup에서 유도해야 한다.
     """
 
     name = "authorization"
@@ -62,7 +58,7 @@ class GuardrailAuthorizationAdapter:
         self._infrastructure_tool_names = frozenset(infrastructure_tool_names)
 
     def _infrastructure_decision(self, request: GuardrailRequest) -> GuardrailDecision | None:
-        """Allow framework tools created from an already-filtered capability set."""
+        """이미 필터링된 capability 집합으로 만들어진 framework 도구를 허용한다."""
         if request.tool_name not in self._infrastructure_tool_names:
             return None
         return GuardrailDecision(
@@ -72,7 +68,7 @@ class GuardrailAuthorizationAdapter:
         )
 
     def _to_authz(self, gr: GuardrailRequest) -> AuthzRequest:
-        """Map a guardrail request to an authorization request."""
+        """guardrail request를 authorization request로 매핑한다."""
         principal = build_principal_from_context(
             {
                 "user_id": gr.user_id,
@@ -103,7 +99,7 @@ class GuardrailAuthorizationAdapter:
 
     @staticmethod
     def _to_guardrail(d: AuthzDecision) -> GuardrailDecision:
-        """Convert an authorization decision to a guardrail decision."""
+        """authorization 결정을 guardrail 결정으로 변환한다."""
         return GuardrailDecision(
             allow=d.allow,
             reasons=[GuardrailReason(code=r.code, message=r.message) for r in d.reasons],
@@ -112,15 +108,13 @@ class GuardrailAuthorizationAdapter:
         )
 
     def evaluate(self, request: GuardrailRequest) -> GuardrailDecision:
-        """Synchronous evaluation: delegate to ``provider.authorize``.
+        """동기 평가: ``provider.authorize``에 위임한다.
 
-        Provider exceptions are intentionally allowed to propagate. The
-        adapter is consumed by :class:`~deerflow.guardrails.middleware.GuardrailMiddleware`,
-        whose ``wrap_tool_call`` / ``awrap_tool_call`` already applies
-        fail-closed semantics based on its ``fail_closed`` parameter
-        (backed by ``AuthorizationConfig.fail_closed``). Catching exceptions
-        here would duplicate that logic and risk divergent behavior between
-        the two layers.
+        provider 예외는 의도적으로 전파되게 둔다. 이 adapter를 소비하는
+        :class:`~deerflow.guardrails.middleware.GuardrailMiddleware`의
+        ``wrap_tool_call`` / ``awrap_tool_call``이 이미 ``fail_closed`` 파라미터
+        (``AuthorizationConfig.fail_closed`` 기반)에 따라 fail-closed 의미를 적용한다. 여기서
+        예외를 잡으면 그 로직이 중복되고 두 계층의 동작이 어긋날 위험이 있다.
         """
         if infrastructure_decision := self._infrastructure_decision(request):
             return infrastructure_decision
@@ -128,9 +122,9 @@ class GuardrailAuthorizationAdapter:
         return self._to_guardrail(decision)
 
     async def aevaluate(self, request: GuardrailRequest) -> GuardrailDecision:
-        """Async evaluation: delegate to ``provider.aauthorize``.
+        """비동기 평가: ``provider.aauthorize``에 위임한다.
 
-        See :meth:`evaluate` for exception-propagation rationale.
+        예외 전파 근거는 :meth:`evaluate`를 참고한다.
         """
         if infrastructure_decision := self._infrastructure_decision(request):
             return infrastructure_decision

@@ -1,20 +1,17 @@
-"""``TenkiSandbox`` — DeerFlow :class:`Sandbox` backed by a Tenki cloud sandbox.
+"""``TenkiSandbox`` — Tenki 클라우드 sandbox를 백엔드로 쓰는 DeerFlow :class:`Sandbox`.
 
-Tenki's Python SDK (``tenki-sandbox``) is synchronous, so — unlike
-``community/boxlite`` — this adapter calls the SDK directly with no event-loop
-bridge. File transport uses Tenki's native ``sandbox.fs`` API (``read_text`` /
-``read_stream`` / ``write_stream`` / ``mkdir`` / ``stat``), which is binary-safe
-and streams, so no base64/shell encoding is involved. Directory and content
-*search* (``list_dir`` / ``glob`` / ``grep``) still shells out to ``find`` /
-``grep`` — the fs API is single-level and has no content search — and is parsed
-with the shared ``deerflow.sandbox.search`` helpers, the same approach as
-``community/e2b_sandbox``. Those commands use only busybox-portable flags so any
-Tenki base image works.
+Tenki의 Python SDK(``tenki-sandbox``)는 동기식이라 ``community/boxlite`` 와 달리 이
+adapter는 event-loop bridge 없이 SDK를 직접 호출한다. 파일 전송은 Tenki의 네이티브
+``sandbox.fs`` API(``read_text`` / ``read_stream`` / ``write_stream`` / ``mkdir`` /
+``stat``)를 쓴다. 바이너리에 안전하고 스트리밍이므로 base64/shell 인코딩이 필요 없다.
+반면 디렉터리와 내용 *검색*(``list_dir`` / ``glob`` / ``grep``)은 여전히 ``find`` / ``grep``
+을 shell로 호출한다. fs API는 한 단계만 보고 내용 검색 기능이 없기 때문이다. 결과는
+``community/e2b_sandbox`` 와 같은 방식으로 공용 ``deerflow.sandbox.search`` 헬퍼로 파싱한다.
+이 명령들은 busybox에서도 통하는 플래그만 써서 어떤 Tenki base image에서도 동작한다.
 
-The Tenki SDK is not imported at module load (only its exception *class names*
-are matched, as strings), so importing this package never requires
-``tenki-sandbox`` to be installed — it is needed only once the provider is
-selected and a sandbox is actually created.
+Tenki SDK는 모듈 로드 시점에 import하지 않는다(예외 *클래스 이름*만 문자열로 비교한다).
+따라서 이 패키지를 import하는 것만으로는 ``tenki-sandbox`` 설치가 필요하지 않고,
+provider를 선택해 sandbox를 실제로 만들 때만 필요하다.
 """
 
 from __future__ import annotations
@@ -42,24 +39,21 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 _MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
-# Tenki sandboxes run as the unprivileged ``tenki`` user (HOME=/home/tenki) and
-# ``/mnt`` is root-owned, so DeerFlow's ``/mnt/user-data`` virtual prefix is not
-# writable directly. Like ``community/e2b_sandbox``, file ops are remapped under
-# this home dir (the provider also best-effort symlinks /mnt/user-data → here so
-# agent shell commands using the literal path still work).
+# Tenki sandbox는 권한 없는 ``tenki`` 사용자(HOME=/home/tenki)로 돌고 ``/mnt`` 는 root 소유라서
+# DeerFlow의 ``/mnt/user-data`` virtual prefix에 직접 쓸 수 없다. ``community/e2b_sandbox`` 처럼
+# 파일 연산을 이 home dir 아래로 remap한다. (provider가 /mnt/user-data → 여기로 symlink도
+# best-effort로 걸어서 문자 그대로의 경로를 쓰는 agent shell 명령도 동작한다.)
 DEFAULT_TENKI_HOME_DIR = "/home/tenki"
-# Frame size for fs.write_stream uploads.
+# fs.write_stream 업로드의 frame 크기.
 _STREAM_CHUNK = 1024 * 1024
 
-# Tenki SDK exception *class names* that mean the remote session is gone for
-# good — matched as strings so this module imports without ``tenki-sandbox``.
-# A terminated/not-found/closed session is unrecoverable; the provider drops it
-# and rebuilds on the next call. This is only the named-error half of the rule:
-# _is_terminal_failure ALSO treats the builtin ConnectionError / BrokenPipeError
-# / EOFError as terminal via isinstance, so a transport reset evicts the sandbox
-# and cold-starts the next acquire too. That is a deliberate fail-safe (a reset
-# often means the microVM is gone); the cost is churning a warm sandbox on a
-# one-off flaky-network blip.
+# 원격 session이 영구히 사라졌음을 뜻하는 Tenki SDK 예외 *클래스 이름*. 이 모듈이
+# ``tenki-sandbox`` 없이도 import되도록 문자열로 비교한다. 종료/미존재/닫힘 session은 복구
+# 불가이므로 provider가 버리고 다음 호출에서 새로 만든다. 이건 규칙의 이름 기반 절반일 뿐이다.
+# _is_terminal_failure는 builtin ConnectionError / BrokenPipeError / EOFError도 isinstance로
+# terminal 취급하므로, transport reset이 나면 sandbox를 evict하고 다음 acquire를 cold start한다.
+# 의도적인 fail-safe다(reset은 대개 microVM이 사라졌다는 뜻). 대신 일시적 네트워크 장애 한 번에
+# warm sandbox를 버리는 비용을 감수한다.
 _TERMINAL_ERROR_NAMES = frozenset(
     {
         "SessionTerminatedError",
@@ -71,21 +65,18 @@ _TERMINAL_ERROR_NAMES = frozenset(
 
 
 class TenkiSandbox(Sandbox):
-    """DeerFlow Sandbox adapter that delegates to a live Tenki cloud sandbox.
+    """실행 중인 Tenki 클라우드 sandbox로 위임하는 DeerFlow Sandbox adapter.
 
     Args:
-        id: DeerFlow-side sandbox id (the provider's cache key).
-        sandbox: A live, started ``tenki_sandbox.Sandbox``. The provider owns
-            its lifecycle; this adapter terminates it on :meth:`close`.
-        default_env: Static environment merged into every command, overridden
-            per-call by the ``env`` passed to :meth:`execute_command`
-            (request-scoped secrets).
-        home_dir: Writable directory that backs the ``VIRTUAL_PATH_PREFIX``
-            (``/mnt/user-data``) prefix inside the sandbox. Defaults to
-            :data:`DEFAULT_TENKI_HOME_DIR`.
-        on_terminal_failure: Optional callback ``(sandbox_id, reason)`` invoked
-            when an operation fails with a terminal Tenki error, so the provider
-            can evict the dead sandbox.
+        id: DeerFlow 쪽 sandbox id(provider의 캐시 키).
+        sandbox: 이미 시작된 ``tenki_sandbox.Sandbox``. lifecycle은 provider가 소유하며
+            이 adapter는 :meth:`close` 에서 종료시킨다.
+        default_env: 모든 명령에 병합되는 정적 environment. :meth:`execute_command` 에
+            넘긴 호출별 ``env``(request-scoped secrets)가 이를 덮어쓴다.
+        home_dir: sandbox 안에서 ``VIRTUAL_PATH_PREFIX``(``/mnt/user-data``)를 뒷받침하는
+            쓰기 가능 디렉터리. 기본값은 :data:`DEFAULT_TENKI_HOME_DIR`.
+        on_terminal_failure: 선택적 콜백 ``(sandbox_id, reason)``. 연산이 복구 불가한 Tenki
+            에러로 실패했을 때 호출되어 provider가 죽은 sandbox를 evict할 수 있게 한다.
     """
 
     def __init__(
@@ -103,10 +94,9 @@ class TenkiSandbox(Sandbox):
         self._home_dir = home_dir.rstrip("/") or "/"
         self._on_terminal_failure = on_terminal_failure
         self._lock = threading.Lock()
-        # Serialises the append read-modify-write across its three fs ops. A
-        # lock distinct from _lock, so it can wrap the whole sequence without the
-        # per-op eviction callback (which reaches back into the provider) ever
-        # running under it.
+        # append의 read-modify-write를 세 fs 연산에 걸쳐 직렬화한다. _lock과 별도의 lock이라
+        # 전체 시퀀스를 감싸면서도, provider를 다시 호출하는 연산별 eviction 콜백이
+        # 이 lock 아래에서 실행되지 않게 한다.
         self._write_lock = threading.Lock()
         self._closed = False
 
@@ -122,13 +112,12 @@ class TenkiSandbox(Sandbox):
         return type(error).__name__ in _TERMINAL_ERROR_NAMES
 
     def close(self) -> None:
-        """Terminate the underlying Tenki session (idempotent).
+        """하위 Tenki session을 종료한다(멱등).
 
-        The microVM is terminated *first*; the adapter is only marked closed once
-        the session is actually gone, so a failed termination stays retryable
-        instead of silently leaking a running (billed) sandbox. A terminal
-        session error means it is already gone, which counts as closed; anything
-        else is raised so the caller can retry or alert.
+        microVM을 *먼저* 종료하고, session이 실제로 사라진 뒤에야 adapter를 closed로 표시한다.
+        그래야 종료 실패가 재시도 가능한 상태로 남고, 실행 중인(과금되는) sandbox가 조용히
+        새어 나가지 않는다. terminal session 에러는 이미 사라졌다는 뜻이므로 closed로 친다.
+        그 밖의 예외는 호출자가 재시도하거나 알릴 수 있도록 그대로 올린다.
         """
         with self._lock:
             if self._closed:
@@ -144,10 +133,10 @@ class TenkiSandbox(Sandbox):
         with self._lock:
             self._closed = True
 
-    # ── bridge helpers ──────────────────────────────────────────────────
+    # ── bridge 헬퍼 ─────────────────────────────────────────────────────
 
     def _note_failure(self, error: Exception) -> None:
-        """Evict this sandbox when an operation failed with a terminal error."""
+        """연산이 복구 불가한 에러로 실패했으면 이 sandbox를 evict한다."""
         if self._on_terminal_failure is None or not self._is_terminal_failure(error):
             return
         try:
@@ -156,14 +145,12 @@ class TenkiSandbox(Sandbox):
             logger.exception("Terminal Tenki failure callback errored for %s", self.id)
 
     def _fs_op(self, op: Callable[[SandboxFS], T]) -> T:
-        """Run a native ``sandbox.fs`` call, evicting the sandbox on terminal errors.
+        """네이티브 ``sandbox.fs`` 호출을 실행하고, terminal 에러면 sandbox를 evict한다.
 
-        The lock is held across ``op`` (not just the fs lookup) so concurrent
-        calls on the same sandbox serialise: the Tenki SDK shares one connection
-        per instance, like community/e2b_sandbox. ``_note_failure`` runs *after*
-        the lock is released — it reaches back into the provider, which locks in
-        the opposite order (provider then sandbox), so holding both at once could
-        deadlock.
+        lock은 fs 조회만이 아니라 ``op`` 전체에 걸쳐 유지해서 같은 sandbox의 동시 호출을
+        직렬화한다. Tenki SDK는 community/e2b_sandbox처럼 인스턴스당 connection 하나를 공유한다.
+        ``_note_failure`` 는 lock을 푼 *뒤에* 실행한다. 이 콜백은 provider를 다시 호출하고
+        provider는 반대 순서(provider → sandbox)로 lock을 잡으므로, 둘을 동시에 쥐면 deadlock이 난다.
         """
         with self._lock:
             if self._closed:
@@ -177,15 +164,13 @@ class TenkiSandbox(Sandbox):
         raise failure
 
     def _exec(self, *argv: str, env: dict[str, str] | None = None, timeout: float | None = None) -> Any:
-        # No forced cwd: commands run in the sandbox default working directory
-        # (like community/e2b_sandbox and community/boxlite); file ops address
-        # absolute, home-remapped paths, so cwd is irrelevant to them.
+        # cwd를 강제하지 않는다. 명령은 community/e2b_sandbox, community/boxlite처럼 sandbox의
+        # 기본 작업 디렉터리에서 돈다. 파일 연산은 home으로 remap된 절대 경로를 쓰므로 cwd와 무관하다.
         #
-        # No auto-retry: exec is not idempotent (the command may have run
-        # server-side before a transport ack dropped), so re-running it risks
-        # double side effects. Like boxlite, a transient error is surfaced to the
-        # caller (returned as text by execute_command); a terminal session error
-        # additionally evicts the sandbox so the next acquire rebuilds it.
+        # 자동 재시도도 하지 않는다. exec는 멱등이 아니다(transport ack가 유실되기 전에 서버에서
+        # 이미 실행됐을 수 있다). 다시 돌리면 부작용이 두 번 날 위험이 있다. boxlite처럼 일시적
+        # 에러는 호출자에게 그대로 노출하고(execute_command가 텍스트로 반환), terminal session
+        # 에러는 추가로 sandbox를 evict해서 다음 acquire가 새로 만들게 한다.
         with self._lock:
             if self._closed:
                 raise RuntimeError("sandbox has been closed")
@@ -199,7 +184,7 @@ class TenkiSandbox(Sandbox):
     def _sh(self, script: str, env: dict[str, str] | None = None, timeout: float | None = None) -> Any:
         return self._exec("sh", "-lc", script, env=env, timeout=timeout)
 
-    # ── path safety (mirrors community/e2b_sandbox) ──────────────────────
+    # ── 경로 안전성 (community/e2b_sandbox와 동일) ────────────────────────
 
     @staticmethod
     def _guard_traversal(path: str) -> str:
@@ -212,11 +197,11 @@ class TenkiSandbox(Sandbox):
         return normalized
 
     def _resolve_path(self, path: str) -> str:
-        """Map DeerFlow virtual paths into the writable sandbox home dir.
+        """DeerFlow virtual path를 쓰기 가능한 sandbox home dir로 매핑한다.
 
-        ``VIRTUAL_PATH_PREFIX`` (``/mnt/user-data``) is rewritten under
-        :attr:`_home_dir`; other absolute paths pass through so the sandbox can
-        reach system directories when needed. Traversal is always rejected.
+        ``VIRTUAL_PATH_PREFIX``(``/mnt/user-data``)는 :attr:`_home_dir` 아래로 재작성한다.
+        그 외 절대 경로는 그대로 통과시켜 필요할 때 시스템 디렉터리에 접근할 수 있게 한다.
+        경로 traversal은 항상 거부한다.
         """
         normalized = self._guard_traversal(path)
         if normalized == VIRTUAL_PATH_PREFIX or normalized.startswith(f"{VIRTUAL_PATH_PREFIX}/"):
@@ -225,11 +210,11 @@ class TenkiSandbox(Sandbox):
         return normalized
 
     def _virtual_path(self, resolved: str) -> str:
-        """Inverse of :meth:`_resolve_path` — the form callers gave us.
+        """:meth:`_resolve_path` 의 역변환. 호출자가 넘겨준 형태로 되돌린다.
 
-        Everything that *returns* paths (``list_dir``/``glob``/``grep``) reports
-        them under ``VIRTUAL_PATH_PREFIX``, not the sandbox-internal home dir, so
-        results can be fed straight back into the other file APIs.
+        경로를 *반환하는* 모든 API(``list_dir``/``glob``/``grep``)는 sandbox 내부 home dir이
+        아니라 ``VIRTUAL_PATH_PREFIX`` 기준으로 보고한다. 그래야 결과를 다른 파일 API에
+        그대로 다시 넣을 수 있다.
         """
         if resolved == self._home_dir:
             return VIRTUAL_PATH_PREFIX
@@ -237,7 +222,7 @@ class TenkiSandbox(Sandbox):
             return f"{VIRTUAL_PATH_PREFIX}/{resolved[len(self._home_dir) :].lstrip('/')}"
         return resolved
 
-    # ── command execution ───────────────────────────────────────────────
+    # ── 명령 실행 ───────────────────────────────────────────────────────
 
     def execute_command(
         self,
@@ -245,13 +230,13 @@ class TenkiSandbox(Sandbox):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Run ``command`` through a shell in the Tenki sandbox and return output.
+        """Tenki sandbox의 shell에서 ``command`` 를 실행하고 출력을 반환한다.
 
-        DeerFlow passes a bash command *string*; it runs through ``sh -lc``.
-        Per-call ``env`` is layered over the static config environment and
-        scoped to this command only (request-scoped secrets, issue #3861).
+        DeerFlow는 bash 명령 *문자열*을 넘기며, 이는 ``sh -lc`` 로 실행된다.
+        호출별 ``env`` 는 정적 설정 environment 위에 덧씌워지고 이 명령에만 적용된다
+        (request-scoped secrets, issue #3861).
         """
-        _validate_extra_env(env)  # POSIX env-var key rule; raises ValueError on a bad key
+        _validate_extra_env(env)  # POSIX env-var 키 규칙. 잘못된 키면 ValueError
         if self.is_closed:
             return "Error: sandbox has been closed"
         merged_env = {**self._default_env, **(env or {})} or None
@@ -271,7 +256,7 @@ class TenkiSandbox(Sandbox):
             output = f"Command exited with code {result.exit_code}"
         return output if output else "(no output)"
 
-    # ── file operations ─────────────────────────────────────────────────
+    # ── 파일 연산 ───────────────────────────────────────────────────────
 
     def read_file(self, path: str) -> str:
         resolved = self._resolve_path(path)
@@ -295,11 +280,10 @@ class TenkiSandbox(Sandbox):
             self._fs_op(lambda fs: fs.write_stream(resolved, _frames(data)))
             return
 
-        # Tenki's write stream has no append mode (it starts at offset 0), so we
-        # read-modify-write like community/e2b_sandbox. The read and the write are
-        # separate fs ops, so two concurrent appends could both read the same
-        # pre-image and the second would clobber the first; _write_lock makes the
-        # whole sequence atomic.
+        # Tenki의 write stream에는 append 모드가 없어(항상 offset 0부터 시작)
+        # community/e2b_sandbox처럼 read-modify-write를 한다. read와 write가 별도의 fs 연산이라
+        # 동시 append 두 개가 같은 이전 내용을 읽고 뒤쪽이 앞쪽을 덮어쓸 수 있다.
+        # _write_lock이 전체 시퀀스를 원자적으로 만든다.
         with self._write_lock:
             if parent:
                 self._fs_op(lambda fs: fs.mkdir(parent))
@@ -323,17 +307,15 @@ class TenkiSandbox(Sandbox):
                 raise RuntimeError("sandbox has been closed")
             fs = self._sandbox.fs
 
-        # Deliberate: the lock is dropped before streaming, unlike _fs_op which
-        # holds it across its op. _fs_op's serialization guards short, bounded
-        # calls; a download can be up to _MAX_DOWNLOAD_SIZE (100 MB), and holding
-        # the instance lock across it would block every other tool on this
-        # sandbox for the whole transfer. The Tenki read stream is safe to run
-        # alongside other ops (the SDK multiplexes over its connection), so we
-        # accept the interleave here for latency and still evict on a terminal
-        # transport error via _note_failure below.
+        # 의도적으로, 연산 내내 lock을 쥐는 _fs_op와 달리 스트리밍 전에 lock을 푼다.
+        # _fs_op의 직렬화는 짧고 유한한 호출을 보호하는 용도다. 다운로드는 최대
+        # _MAX_DOWNLOAD_SIZE(100 MB)까지 갈 수 있어, 전송 내내 인스턴스 lock을 쥐면 이 sandbox의
+        # 다른 모든 도구가 막힌다. Tenki read stream은 다른 연산과 함께 돌아도 안전하므로
+        # (SDK가 connection을 multiplexing한다) 지연 시간을 위해 인터리브를 허용하고,
+        # terminal transport 에러는 아래 _note_failure로 여전히 evict한다.
         #
-        # The cap is enforced on bytes actually received, so a file that grows
-        # mid-transfer still can't exceed it (a stat-then-read check could).
+        # 상한은 실제로 수신한 바이트로 검사한다. 그래야 전송 도중 커지는 파일도 상한을
+        # 넘길 수 없다(stat 후 read 방식이면 넘길 수 있다).
         chunks: list[bytes] = []
         total = 0
         try:
@@ -343,13 +325,12 @@ class TenkiSandbox(Sandbox):
                     raise OSError(errno.EFBIG, f"File exceeds maximum download size of {_MAX_DOWNLOAD_SIZE} bytes", path)
                 chunks.append(chunk)
         except OSError as e:
-            # Our own EFBIG size-cap is not a session death — let it pass through
-            # without evicting. Every other OSError is a real transport failure:
-            # ConnectionError / BrokenPipeError / EOFError are OSError subclasses
-            # that _is_terminal_failure treats as terminal, so they must route
-            # through _note_failure like _fs_op/_exec do. Without this, a session
-            # that dies mid-download is never evicted and the agent keeps hitting
-            # OSErrors until some other op happens to reap it.
+            # 우리가 직접 던진 EFBIG 크기 상한은 session이 죽은 게 아니므로 evict 없이 통과시킨다.
+            # 나머지 OSError는 실제 transport 실패다. ConnectionError / BrokenPipeError /
+            # EOFError는 OSError 하위 클래스이고 _is_terminal_failure가 terminal로 보므로
+            # _fs_op/_exec처럼 _note_failure를 거쳐야 한다. 그러지 않으면 다운로드 도중 죽은
+            # session이 영영 evict되지 않고, 다른 연산이 우연히 회수할 때까지 agent가 계속
+            # OSError를 맞는다.
             if e.errno == errno.EFBIG:
                 raise
             self._note_failure(e)
@@ -406,19 +387,18 @@ class TenkiSandbox(Sandbox):
         case_sensitive: bool = False,
         max_results: int = 100,
     ) -> tuple[list[GrepMatch], bool]:
-        # Validate a regex pattern at the boundary (grep uses POSIX ERE, but this
-        # catches gross errors); a literal needs none. grep receives the RAW
-        # pattern: -F matches it literally, -E as a regex.
+        # 경계에서 regex 패턴을 검증한다(grep은 POSIX ERE를 쓰지만 이 검사로 큰 오류는 잡힌다).
+        # literal이면 검증이 필요 없다. grep에는 원본 패턴을 그대로 넘기며,
+        # -F는 문자 그대로, -E는 regex로 매칭한다.
         if not literal:
             re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
 
         resolved = self._resolve_path(path)
-        # busybox+GNU-portable flags: -r recursive, -H always print the filename
-        # (without it, grep -r on a path that resolves to a single file prints
-        # "line:text" and the file:line:text unpack below drops every match), -n
-        # line numbers, -I skip binary, -E/-F regex vs fixed. --include and -m are
-        # omitted for busybox portability; glob-scoping and the result cap are
-        # applied in Python below.
+        # busybox와 GNU 양쪽에서 통하는 플래그만 쓴다. -r 재귀, -H 항상 파일명 출력
+        # (없으면 단일 파일로 해석되는 경로에 grep -r을 걸었을 때 "line:text"만 나와서
+        # 아래 file:line:text 언패킹이 모든 매치를 버린다), -n 줄 번호, -I 바이너리 건너뛰기,
+        # -E/-F regex vs 고정 문자열. --include와 -m은 busybox 호환을 위해 쓰지 않고,
+        # glob 범위 제한과 결과 상한은 아래 Python에서 적용한다.
         flags = ["-r", "-H", "-n", "-I"]
         if not case_sensitive:
             flags.append("-i")
@@ -443,9 +423,9 @@ class TenkiSandbox(Sandbox):
             if should_ignore_path(file_path):
                 continue
             if glob is not None:
-                # Match the caller's real directory scope: a pattern like
-                # "src/*.js" must not broaden to every *.js in the tree. Same
-                # helper, same relative-to-root semantics as glob() above.
+                # 호출자가 지정한 실제 디렉터리 범위에 맞춘다. "src/*.js" 같은 패턴이
+                # 트리 전체의 *.js로 넓어지면 안 된다. 위 glob()과 같은 헬퍼, 같은
+                # root 상대 경로 의미를 쓴다.
                 if file_path != root and not file_path.startswith(root_prefix):
                     continue
                 rel_path = posixpath.basename(file_path) if file_path == root else file_path[len(root) :].lstrip("/")
@@ -459,6 +439,6 @@ class TenkiSandbox(Sandbox):
 
 
 def _frames(data: bytes) -> Iterator[bytes]:
-    """Slice ``data`` into upload frames for ``fs.write_stream``."""
+    """``data`` 를 ``fs.write_stream`` 용 업로드 frame으로 자른다."""
     for i in range(0, len(data), _STREAM_CHUNK):
         yield data[i : i + _STREAM_CHUNK]

@@ -1,4 +1,4 @@
-"""Supported stream modes for the LangGraph-compatible runtime boundary."""
+"""LangGraph 호환 runtime 경계가 지원하는 stream mode."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ SUPPORTED_RUN_STREAM_MODES: frozenset[str] = frozenset(get_args(RunStreamMode.__
 
 
 class UnsupportedStreamModeError(ValueError):
-    """Raised when a caller requests a stream mode DeerFlow cannot honor."""
+    """DeerFlow가 지원하지 않는 stream mode를 호출자가 요청하면 발생한다."""
 
     def __init__(self, modes: list[str]) -> None:
         self.modes = tuple(dict.fromkeys(modes))
@@ -26,7 +26,7 @@ class UnsupportedStreamModeError(ValueError):
 
 
 def normalize_stream_modes(raw: list[str] | str | None) -> list[str]:
-    """Normalize and validate public run stream modes."""
+    """공개 run stream mode를 정규화하고 검증한다."""
     if raw is None:
         modes = ["values"]
     elif isinstance(raw, str):
@@ -41,7 +41,7 @@ def normalize_stream_modes(raw: list[str] | str | None) -> list[str]:
 
 
 def to_langgraph_stream_modes(raw: list[str] | str | None) -> list[str]:
-    """Map public run modes to ``graph.astream`` modes without silent fallback."""
+    """공개 run mode를 ``graph.astream`` mode로 매핑한다. 조용한 fallback은 하지 않는다."""
     modes = normalize_stream_modes(raw)
     mapped = ["messages" if mode == "messages-tuple" else mode for mode in modes]
     return list(dict.fromkeys(mapped))

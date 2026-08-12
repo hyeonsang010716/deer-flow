@@ -34,9 +34,9 @@ from deerflow.tools.types import Runtime
 logger = logging.getLogger(__name__)
 
 _ABSOLUTE_PATH_PATTERN = re.compile(r"(?<![:\w])(?<!:/)/(?:[^\s\"'`;&|<>()]+)")
-# A ``{...}`` block holding a single identifier-like placeholder (e.g. ``{id}``
-# in a REST template or ``{port}`` in an f-string). Bash brace expansion such as
-# ``{passwd,shadow}`` or ``{,.bak}`` does NOT match (commas/dots/empty inner).
+# identifier 형태의 placeholder 하나만 담은 ``{...}`` 블록(예: REST 템플릿의 ``{id}``,
+# f-string의 ``{port}``). ``{passwd,shadow}``나 ``{,.bak}`` 같은 bash brace expansion은
+# 매칭되지 않는다(쉼표/점/빈 내부).
 _IDENTIFIER_BRACE_BLOCK_PATTERN = re.compile(r"\{([^{}]*)\}")
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FILE_URL_PATTERN = re.compile(r"\bfile://\S+", re.IGNORECASE)
@@ -60,13 +60,12 @@ _DEFAULT_GREP_MAX_RESULTS = 100
 _MAX_GREP_MAX_RESULTS = 500
 _DEFAULT_WRITE_FILE_ERROR_MAX_CHARS = 2000
 
-# Maximum bytes accepted in a single non-append write_file call (issue #3189).
-# Oversized single-shot writes correlate with LLM streaming chunk-gap timeouts
-# because the tool-call JSON payload (which the model must emit as one
-# continuous stream) grows past the safe window. 80 KB ≈ 20K tokens, a
-# comfortable headroom under the factory-default 240s stream_chunk_timeout.
-# Deployments can override via env var DEERFLOW_WRITE_FILE_MAX_BYTES; set to
-# 0 (or negative) to disable the guard entirely.
+# append가 아닌 단일 write_file 호출이 받아들이는 최대 바이트 수(issue #3189).
+# 한 번에 너무 큰 쓰기는 LLM streaming chunk-gap timeout과 상관관계가 있다. 모델이 하나의
+# 연속 stream으로 뱉어야 하는 tool call JSON payload가 안전 구간을 넘어서기 때문이다.
+# 80 KB ≈ 20K token으로, factory 기본값인 240s stream_chunk_timeout 아래로 충분한 여유가 있다.
+# 배포 환경은 env var DEERFLOW_WRITE_FILE_MAX_BYTES로 덮어쓸 수 있고, 0(또는 음수)으로
+# 두면 이 guard를 완전히 끈다.
 _WRITE_FILE_CONTENT_MAX_BYTES = 80 * 1024
 _WRITE_FILE_MAX_BYTES_ENV = "DEERFLOW_WRITE_FILE_MAX_BYTES"
 _LOCAL_BASH_CWD_COMMANDS = {"cd", "pushd"}
@@ -108,11 +107,10 @@ _SHELL_REDIRECTION_OPERATORS = {
 
 
 def _get_skills_container_path() -> str:
-    """Get the skills container path from config, with fallback to default.
+    """config에서 skills container path를 가져오고, 실패하면 기본값으로 fallback한다.
 
-    Result is cached after the first successful config load.  If config loading
-    fails the default is returned *without* caching so that a later call can
-    pick up the real value once the config is available.
+    첫 config 로드가 성공하면 결과를 캐시한다. config 로드가 실패하면 캐시하지 *않고*
+    기본값을 반환하므로, 나중에 config가 준비되면 다음 호출이 실제 값을 가져올 수 있다.
     """
     cached = getattr(_get_skills_container_path, "_cached", None)
     if cached is not None:
@@ -128,12 +126,11 @@ def _get_skills_container_path() -> str:
 
 
 def _get_skills_host_path() -> str | None:
-    """Get the skills host filesystem path from config.
+    """config에서 skills의 host 파일시스템 경로를 가져온다.
 
-    Returns None if the skills directory does not exist or config cannot be
-    loaded.  Only successful lookups are cached; failures are retried on the
-    next call so that a transiently unavailable skills directory does not
-    permanently disable skills access.
+    skills 디렉터리가 없거나 config를 로드할 수 없으면 None을 반환한다. 성공한 조회만
+    캐시하고 실패는 다음 호출에서 재시도하므로, 일시적으로 접근 불가능한 skills 디렉터리가
+    skills 접근을 영구히 막지 않는다.
     """
     cached = getattr(_get_skills_host_path, "_cached", None)
     if cached is not None:
@@ -153,59 +150,58 @@ def _get_skills_host_path() -> str | None:
 
 
 def _is_skills_path(path: str) -> bool:
-    """Check if a path is under the skills container path."""
+    """경로가 skills container path 아래에 있는지 확인한다."""
     skills_prefix = _get_skills_container_path()
     return path == skills_prefix or path.startswith(f"{skills_prefix}/")
 
 
 def _extract_skill_name_from_skills_path(path: str) -> str | None:
-    """Extract a skill name from a virtual skills path.
+    """virtual skills 경로에서 skill 이름을 추출한다.
 
     /mnt/skills/public/bootstrap/SKILL.md → "bootstrap"
     /mnt/skills/custom/my-skill/SKILL.md → "my-skill"
     /mnt/skills/legacy/my-skill/references/... → "my-skill"
     /mnt/skills/integrations/lark-cli/lark-doc/SKILL.md → "lark-doc"
     /mnt/skills/public/bootstrap/ → "bootstrap"
-    Returns None if the path doesn't contain a recognizable skill name pattern.
+    인식 가능한 skill 이름 패턴이 경로에 없으면 None을 반환한다.
     """
     skills_prefix = _get_skills_container_path()
     if not _is_skills_path(path):
         return None
-    # Strip the skills prefix, e.g. "/mnt/skills/"
+    # skills prefix(예: "/mnt/skills/")를 떼어낸다.
     relative = path[len(skills_prefix) :].lstrip("/")
     if not relative:
         return None
-    # Expected patterns: "public/<name>/...", "custom/<name>/...",
+    # 기대하는 패턴: "public/<name>/...", "custom/<name>/...",
     # "legacy/<name>/...", "integrations/<provider>/<name>/..."
-    # or "<name>/..." (direct skill access). Empty segments are dropped so a
-    # directory entry ("public/", as `ls` emits for dirs) is still recognized as
-    # a category root rather than yielding an empty skill name.
+    # 또는 "<name>/..."(직접 skill 접근). 빈 segment는 버리므로 디렉터리 항목
+    # (`ls`가 디렉터리에 대해 내보내는 "public/")도 빈 skill 이름이 되지 않고
+    # category root로 인식된다.
     parts = [part for part in relative.split("/") if part]
     if len(parts) >= 2 and parts[0] in ("public", "custom", "legacy"):
         return parts[1]
     if len(parts) >= 3 and parts[0] == "integrations":
         return parts[2]
     if len(parts) == 1 and parts[0] in ("public", "custom", "legacy", "integrations"):
-        # Category root like /mnt/skills/custom — not a skill path.
+        # /mnt/skills/custom 같은 category root — skill 경로가 아니다.
         return None
     if len(parts) == 2 and parts[0] == "integrations":
-        # Provider root like /mnt/skills/integrations/lark-cli.
+        # /mnt/skills/integrations/lark-cli 같은 provider root.
         return None
     if len(parts) >= 1:
-        # Direct path like /mnt/skills/my-skill/SKILL.md
+        # /mnt/skills/my-skill/SKILL.md 같은 직접 경로
         return parts[0]
     return None
 
 
 def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
-    """Check if a path belongs to a disabled skill.
+    """경로가 비활성화된 skill에 속하는지 확인한다.
 
-    PUBLIC skill enabled state is read from the global
-    ``extensions_config.json``.  CUSTOM / LEGACY skill enabled state is
-    read from the per-user ``_skill_states.json`` so that two users with
-    same-named custom skills can toggle independently.
+    PUBLIC skill의 enabled 상태는 전역 ``extensions_config.json``에서 읽는다.
+    CUSTOM / LEGACY skill의 enabled 상태는 per-user ``_skill_states.json``에서 읽으므로,
+    같은 이름의 custom skill을 가진 두 사용자가 서로 독립적으로 토글할 수 있다.
 
-    Returns False for non-skills paths or paths whose skill is enabled.
+    skills 경로가 아니거나 해당 skill이 활성화되어 있으면 False를 반환한다.
     """
     skill_name = _extract_skill_name_from_skills_path(path)
     if skill_name is None:
@@ -214,7 +210,7 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
         from deerflow.runtime.user_context import get_effective_user_id
         from deerflow.skills.storage import get_or_new_user_skill_storage
 
-        # Determine the category from the path
+        # 경로에서 category를 판별한다.
         skills_prefix = _get_skills_container_path()
         relative = path[len(skills_prefix) :].lstrip("/")
         if relative.startswith("public/"):
@@ -226,13 +222,13 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
         elif relative.startswith("integrations/"):
             category = "integrations"
         else:
-            # Try to infer from storage
+            # storage에서 추론을 시도한다.
             effective_uid = user_id or get_effective_user_id()
             storage = get_or_new_user_skill_storage(effective_uid)
             all_skills = storage.load_skills(enabled_only=False)
             matching = next((s for s in all_skills if s.name == skill_name), None)
             if matching is None:
-                return False  # Skill doesn't exist, not a disabled skill path
+                return False  # skill이 존재하지 않으므로 비활성 skill 경로가 아니다
             category = matching.category.value
 
         if category == "public":
@@ -241,31 +237,29 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
             ext_config = ExtensionsConfig.from_file()
             return not ext_config.is_skill_enabled(skill_name, category)
         else:
-            # CUSTOM / LEGACY: use per-user state
+            # CUSTOM / LEGACY: per-user 상태를 사용한다.
             effective_uid = user_id or get_effective_user_id()
             storage = get_or_new_user_skill_storage(effective_uid)
             return not storage.get_skill_enabled_state(skill_name)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        # Access-control check must fail closed: when we can't determine the
-        # enabled state (corrupt _skill_states.json, mid-write race, missing
-        # config), refuse access rather than silently serving a disabled
-        # skill's files. See review feedback on PR #3889.
+        # 접근 제어 검사는 fail closed여야 한다. enabled 상태를 판별할 수 없으면
+        # (_skill_states.json 손상, 쓰기 중 race, config 누락) 비활성 skill의 파일을
+        # 조용히 내주는 대신 접근을 거부한다. PR #3889의 리뷰 피드백 참고.
         logger.warning("Failed to determine enabled state, denying access: %s", exc)
         return True
 
 
 def _drop_disabled_skill_paths(paths: list[str], *, user_id: str | None = None) -> list[str]:
-    """Filter out paths that belong to a disabled skill.
+    """비활성화된 skill에 속하는 경로를 걸러낸다.
 
-    ``_is_disabled_skill_path`` gates the *requested* path, which is enough for
-    ``read_file`` but not for the tools that descend: ``ls``, ``glob`` and
-    ``grep`` return paths other than the one they were given, so a root anywhere
-    above a disabled skill still surfaces its files.  This applies the same check
-    to the results.
+    ``_is_disabled_skill_path``는 *요청된* 경로만 막는다. ``read_file``에는 그것으로
+    충분하지만 하위로 내려가는 도구에는 부족하다. ``ls``, ``glob``, ``grep``은 받은 경로가
+    아닌 다른 경로를 반환하므로, 비활성 skill 위쪽 어디든 root로 잡으면 그 파일이 노출된다.
+    여기서 결과에도 동일한 검사를 적용한다.
 
-    The enabled-state lookup re-reads ``extensions_config.json`` (or the per-user
-    skill state) on every call, so the verdict is memoized per skill — a 100-match
-    grep must not become 100 config reads.
+    enabled 상태 조회는 매번 ``extensions_config.json``(또는 per-user skill 상태)을 다시
+    읽으므로, 판정 결과를 skill 단위로 메모이즈한다. 100건이 매칭된 grep이 config를 100번
+    읽어서는 안 된다.
     """
     skills_prefix = _get_skills_container_path()
     verdicts: dict[tuple[str, str], bool] = {}
@@ -275,9 +269,9 @@ def _drop_disabled_skill_paths(paths: list[str], *, user_id: str | None = None) 
         if skill_name is None:
             kept.append(path)
             continue
-        # Leading segment (the category, or the skill itself in the direct
-        # layout) plus the name identifies the skill the same way
-        # _is_disabled_skill_path does, so paths sharing a key share a verdict.
+        # 첫 segment(category, 또는 직접 레이아웃에서는 skill 자체)와 이름을 합치면
+        # _is_disabled_skill_path와 동일한 방식으로 skill이 식별되므로, 같은 key를
+        # 가진 경로는 같은 판정을 공유한다.
         category = path[len(skills_prefix) :].lstrip("/").split("/")[0]
         key = (category, skill_name)
         if key not in verdicts:
@@ -288,24 +282,22 @@ def _drop_disabled_skill_paths(paths: list[str], *, user_id: str | None = None) 
 
 
 def _resolve_skills_path(path: str) -> str:
-    """Resolve a virtual skills path to a host filesystem path.
+    """virtual skills 경로를 host 파일시스템 경로로 해석한다.
 
-    WARNING: For per-user custom skills (``/mnt/skills/custom/...``), this
-    function uses ``get_effective_user_id()`` from the contextvar, which may
-    differ from the sandbox PathMapping's user_id (set during acquire via
-    ``resolve_runtime_user_id``). In local sandbox mode, skills paths should
-    be resolved by the sandbox's PathMapping instead of this function. This
-    function is retained for output masking (``mask_local_paths_in_output``)
-    and non-sandbox code paths.
+    경고: per-user custom skill(``/mnt/skills/custom/...``)의 경우 이 함수는 contextvar의
+    ``get_effective_user_id()``를 사용하는데, 이는 sandbox PathMapping의 user_id(acquire
+    시점에 ``resolve_runtime_user_id``로 설정)와 다를 수 있다. local sandbox 모드에서는
+    이 함수 대신 sandbox의 PathMapping이 skills 경로를 해석해야 한다. 이 함수는 output
+    masking(``mask_local_paths_in_output``)과 sandbox가 아닌 코드 경로를 위해 남겨둔다.
 
     Args:
-        path: Virtual skills path (e.g. /mnt/skills/public/bootstrap/SKILL.md)
+        path: virtual skills 경로(예: /mnt/skills/public/bootstrap/SKILL.md)
 
     Returns:
-        Resolved host path.
+        해석된 host 경로.
 
     Raises:
-        FileNotFoundError: If skills directory is not configured or doesn't exist.
+        FileNotFoundError: skills 디렉터리가 설정되지 않았거나 존재하지 않을 때.
     """
     skills_container = _get_skills_container_path()
     skills_host = _get_skills_host_path()
@@ -317,14 +309,13 @@ def _resolve_skills_path(path: str) -> str:
 
     relative = path[len(skills_container) :].lstrip("/")
 
-    # Per-user custom and globally managed integration skills.
-    # ``skill_manage_tool`` writes custom skills to the per-user directory,
-    # and ``LocalSandboxProvider._build_thread_path_mappings`` mounts
-    # ``/mnt/skills/custom`` to that same per-user dir.  Without this
-    # branch, ``_resolve_skills_path("/mnt/skills/custom")`` would map to
-    # the global ``{skills_host}/custom/`` which is the repository-level
-    # ``skills/custom/`` — an entirely different directory that may be
-    # empty or contain legacy skills only.
+    # per-user custom skill과 전역으로 관리되는 integration skill.
+    # ``skill_manage_tool``은 custom skill을 per-user 디렉터리에 쓰고,
+    # ``LocalSandboxProvider._build_thread_path_mappings``는 ``/mnt/skills/custom``을
+    # 같은 per-user 디렉터리에 마운트한다. 이 분기가 없으면
+    # ``_resolve_skills_path("/mnt/skills/custom")``이 전역 ``{skills_host}/custom/``,
+    # 즉 저장소 수준의 ``skills/custom/``으로 매핑된다. 이는 비어 있거나 legacy skill만
+    # 들어 있을 수 있는 완전히 다른 디렉터리다.
     if relative == "custom" or relative.startswith("custom/"):
         from deerflow.config.paths import get_paths
         from deerflow.runtime.user_context import get_effective_user_id
@@ -345,9 +336,9 @@ def _resolve_skills_path(path: str) -> str:
         integrations_relative = relative[len("integrations") :].lstrip("/")
         if not integrations_relative:
             return str(integrations_dir)
-        # Defense-in-depth: even though _reject_path_traversal runs upstream for
-        # sandbox callers, confirm the resolved path stays within the global
-        # integration dir so a lexical ``../`` cannot escape it here.
+        # 심층 방어: sandbox 호출자에 대해서는 상위에서 _reject_path_traversal이 이미
+        # 돌지만, 해석된 경로가 전역 integration 디렉터리 안에 머무는지 확인해서
+        # 문자열상의 ``../``가 여기서 빠져나가지 못하게 한다.
         resolved = (integrations_dir / integrations_relative).resolve()
         if not resolved.is_relative_to(integrations_dir.resolve()):
             raise PermissionError("Access denied: path traversal detected")
@@ -357,16 +348,15 @@ def _resolve_skills_path(path: str) -> str:
 
 
 def _is_acp_workspace_path(path: str) -> bool:
-    """Check if a path is under the ACP workspace virtual path."""
+    """경로가 ACP workspace virtual path 아래에 있는지 확인한다."""
     return path == _ACP_WORKSPACE_VIRTUAL_PATH or path.startswith(f"{_ACP_WORKSPACE_VIRTUAL_PATH}/")
 
 
 def _get_custom_mounts():
-    """Get custom volume mounts from sandbox config.
+    """sandbox config에서 custom volume mount 목록을 가져온다.
 
-    Result is cached after the first successful config load.  If config loading
-    fails an empty list is returned *without* caching so that a later call can
-    pick up the real value once the config is available.
+    첫 config 로드가 성공하면 결과를 캐시한다. config 로드가 실패하면 캐시하지 *않고*
+    빈 list를 반환하므로, 나중에 config가 준비되면 다음 호출이 실제 값을 가져올 수 있다.
     """
     cached = getattr(_get_custom_mounts, "_cached", None)
     if cached is not None:
@@ -379,20 +369,20 @@ def _get_custom_mounts():
         config = get_app_config()
         mounts = []
         if config.sandbox and config.sandbox.mounts:
-            # Only include mounts whose host_path exists, consistent with
-            # LocalSandboxProvider._setup_path_mappings() which also filters
-            # by host_path.exists().
+            # host_path가 실제로 존재하는 mount만 포함한다. 마찬가지로
+            # host_path.exists()로 거르는 LocalSandboxProvider._setup_path_mappings()와
+            # 동작을 맞춘다.
             mounts = [m for m in config.sandbox.mounts if Path(m.host_path).exists()]
         _get_custom_mounts._cached = mounts  # type: ignore[attr-defined]
         return mounts
     except Exception:
-        # If config loading fails, return an empty list without caching so that
-        # a later call can retry once the config is available.
+        # config 로드가 실패하면 캐시하지 않고 빈 list를 반환해서, config가 준비된 뒤의
+        # 호출이 다시 시도할 수 있게 한다.
         return []
 
 
 def _is_custom_mount_path(path: str) -> bool:
-    """Check if path is under a custom mount container_path."""
+    """경로가 custom mount의 container_path 아래에 있는지 확인한다."""
     for mount in _get_custom_mounts():
         if path == mount.container_path or path.startswith(f"{mount.container_path}/"):
             return True
@@ -400,7 +390,7 @@ def _is_custom_mount_path(path: str) -> bool:
 
 
 def _get_custom_mount_for_path(path: str):
-    """Get the mount config matching this path (longest prefix first)."""
+    """이 경로에 맞는 mount config를 가져온다(가장 긴 prefix 우선)."""
     best = None
     for mount in _get_custom_mounts():
         if path == mount.container_path or path.startswith(f"{mount.container_path}/"):
@@ -410,11 +400,10 @@ def _get_custom_mount_for_path(path: str):
 
 
 def _extract_thread_id_from_thread_data(thread_data: "ThreadDataState | None") -> str | None:
-    """Extract thread_id from thread_data by inspecting workspace_path.
+    """workspace_path를 살펴서 thread_data에서 thread_id를 추출한다.
 
-    The workspace_path has the form
-    ``{base_dir}/threads/{thread_id}/user-data/workspace``, so
-    ``Path(workspace_path).parent.parent.name`` yields the thread_id.
+    workspace_path는 ``{base_dir}/threads/{thread_id}/user-data/workspace`` 형태이므로
+    ``Path(workspace_path).parent.parent.name``이 thread_id가 된다.
     """
     if thread_data is None:
         return None
@@ -422,22 +411,21 @@ def _extract_thread_id_from_thread_data(thread_data: "ThreadDataState | None") -
     if not workspace_path:
         return None
     try:
-        # {base_dir}/threads/{thread_id}/user-data/workspace → parent.parent = threads/{thread_id}
+        # {base_dir}/threads/{thread_id}/user-data/workspace → parent.parent = threads/{thread_id}로 이어진다.
         return Path(workspace_path).parent.parent.name
     except Exception:
         return None
 
 
 def _get_acp_workspace_host_path(thread_id: str | None = None) -> str | None:
-    """Get the ACP workspace host filesystem path.
+    """ACP workspace의 host 파일시스템 경로를 가져온다.
 
-    When *thread_id* is provided, returns the per-thread workspace
-    ``{base_dir}/threads/{thread_id}/acp-workspace/`` (not cached — the
-    directory is created on demand by ``invoke_acp_agent_tool``).
+    *thread_id*가 주어지면 per-thread workspace
+    ``{base_dir}/threads/{thread_id}/acp-workspace/``를 반환한다(캐시하지 않는다 —
+    이 디렉터리는 ``invoke_acp_agent_tool``이 필요할 때 만든다).
 
-    Falls back to the global ``{base_dir}/acp-workspace/`` when *thread_id*
-    is ``None``; that result is cached after the first successful resolution.
-    Returns ``None`` if the directory does not exist.
+    *thread_id*가 ``None``이면 전역 ``{base_dir}/acp-workspace/``로 fallback하며,
+    그 결과는 첫 해석 성공 후 캐시한다. 디렉터리가 없으면 ``None``을 반환한다.
     """
     if thread_id is not None:
         try:
@@ -468,19 +456,19 @@ def _get_acp_workspace_host_path(thread_id: str | None = None) -> str | None:
 
 
 def _resolve_acp_workspace_path(path: str, thread_id: str | None = None) -> str:
-    """Resolve a virtual ACP workspace path to a host filesystem path.
+    """virtual ACP workspace 경로를 host 파일시스템 경로로 해석한다.
 
     Args:
-        path: Virtual path (e.g. /mnt/acp-workspace/hello_world.py)
-        thread_id: Current thread ID for per-thread workspace resolution.
-                   When ``None``, falls back to the global workspace.
+        path: virtual 경로(예: /mnt/acp-workspace/hello_world.py)
+        thread_id: per-thread workspace 해석에 쓰는 현재 thread ID.
+                   ``None``이면 전역 workspace로 fallback한다.
 
     Returns:
-        Resolved host path.
+        해석된 host 경로.
 
     Raises:
-        FileNotFoundError: If ACP workspace directory does not exist.
-        PermissionError: If path traversal is detected.
+        FileNotFoundError: ACP workspace 디렉터리가 없을 때.
+        PermissionError: path traversal이 탐지될 때.
     """
     _reject_path_traversal(path)
 
@@ -514,7 +502,7 @@ def _resolve_acp_workspace_path(path: str, thread_id: str | None = None) -> str:
 
 
 def _get_mcp_allowed_paths() -> list[str]:
-    """Get the list of allowed paths from MCP config for file system server."""
+    """MCP config에서 filesystem server용 허용 경로 목록을 가져온다."""
     allowed_paths = []
     try:
         from deerflow.config.extensions_config import get_extensions_config
@@ -525,13 +513,13 @@ def _get_mcp_allowed_paths() -> list[str]:
             if not server.enabled:
                 continue
 
-            # Only check the filesystem server
+            # filesystem server만 검사한다.
             args = server.args or []
-            # Check if args has server-filesystem package
+            # args에 server-filesystem 패키지가 있는지 확인한다.
             has_filesystem = any("server-filesystem" in arg for arg in args)
             if not has_filesystem:
                 continue
-            # Unpack the allowed file system paths in config
+            # config에 있는 허용 파일시스템 경로를 꺼낸다.
             for arg in args:
                 if not arg.startswith("-") and arg.startswith("/"):
                     allowed_paths.append(arg.rstrip("/") + "/")
@@ -573,11 +561,10 @@ def _resolve_max_results(name: str, requested: int, *, default: int, upper_bound
 def _resolve_local_read_path(path: str, thread_data: ThreadDataState) -> str:
     validate_local_tool_path(path, thread_data, read_only=True)
     if _is_skills_path(path) or _is_acp_workspace_path(path):
-        # Skills and ACP workspace paths are resolved by the sandbox's
-        # PathMapping (which uses the user_id from acquire time), not
-        # by _resolve_skills_path / _resolve_acp_workspace_path (which
-        # use get_effective_user_id() from contextvar and may differ
-        # from the sandbox mapping's user_id).
+        # skills와 ACP workspace 경로는 sandbox의 PathMapping(acquire 시점의 user_id 사용)이
+        # 해석한다. contextvar의 get_effective_user_id()를 쓰는
+        # _resolve_skills_path / _resolve_acp_workspace_path는 sandbox mapping의 user_id와
+        # 다를 수 있으므로 여기서 쓰지 않는다.
         return path
     return _resolve_and_validate_user_data_path(path, thread_data)
 
@@ -626,11 +613,10 @@ def _join_path_preserving_style(base: str, relative: str) -> str:
 
 
 def _sanitize_error(error: Exception, runtime: Runtime | None = None) -> str:
-    """Sanitize an error message to avoid leaking host filesystem paths.
+    """host 파일시스템 경로가 새어 나가지 않도록 오류 메시지를 정제한다.
 
-    In local-sandbox mode, resolved host paths in the error string are masked
-    back to their virtual equivalents so that user-visible output never exposes
-    the host directory layout.
+    local sandbox 모드에서는 오류 문자열에 담긴 해석된 host 경로를 다시 virtual 경로로
+    마스킹해서, 사용자에게 보이는 출력이 host 디렉터리 구조를 절대 드러내지 않게 한다.
     """
     msg = f"{type(error).__name__}: {error}"
     if runtime is not None and is_local_sandbox(runtime):
@@ -640,7 +626,7 @@ def _sanitize_error(error: Exception, runtime: Runtime | None = None) -> str:
 
 
 def _truncate_write_file_error_detail(detail: str, max_chars: int) -> str:
-    """Middle-truncate write_file error details, preserving the head and tail."""
+    """write_file 오류 상세를 앞뒤를 남기고 가운데에서 잘라낸다."""
     if max_chars == 0:
         return detail
     if len(detail) <= max_chars:
@@ -664,7 +650,7 @@ def _format_write_file_error(
     *,
     max_chars: int = _DEFAULT_WRITE_FILE_ERROR_MAX_CHARS,
 ) -> str:
-    """Return a bounded, sanitized error string for write_file failures."""
+    """write_file 실패에 대해 길이가 제한되고 정제된 오류 문자열을 반환한다."""
     header = f"Error: Failed to write file '{requested_path}'"
     detail = _sanitize_error(error, runtime)
     if max_chars == 0:
@@ -676,19 +662,19 @@ def _format_write_file_error(
 
 
 def replace_virtual_path(path: str, thread_data: ThreadDataState | None) -> str:
-    """Replace virtual /mnt/user-data paths with actual thread data paths.
+    """virtual /mnt/user-data 경로를 실제 thread data 경로로 치환한다.
 
-    Mapping:
+    매핑:
         /mnt/user-data/workspace/* -> thread_data['workspace_path']/*
         /mnt/user-data/uploads/* -> thread_data['uploads_path']/*
         /mnt/user-data/outputs/* -> thread_data['outputs_path']/*
 
     Args:
-        path: The path that may contain virtual path prefix.
-        thread_data: The thread data containing actual paths.
+        path: virtual path prefix를 포함할 수 있는 경로.
+        thread_data: 실제 경로들을 담은 thread data.
 
     Returns:
-        The path with virtual prefix replaced by actual path.
+        virtual prefix가 실제 경로로 치환된 경로.
     """
     if thread_data is None:
         return path
@@ -697,7 +683,7 @@ def replace_virtual_path(path: str, thread_data: ThreadDataState | None) -> str:
     if not mappings:
         return path
 
-    # Longest-prefix-first replacement with segment-boundary checks.
+    # segment 경계를 검사하면서 가장 긴 prefix부터 치환한다.
     for virtual_base, actual_base in sorted(mappings.items(), key=lambda item: len(item[0]), reverse=True):
         if path == virtual_base:
             return actual_base
@@ -712,7 +698,7 @@ def replace_virtual_path(path: str, thread_data: ThreadDataState | None) -> str:
 
 
 def _thread_virtual_to_actual_mappings(thread_data: ThreadDataState) -> dict[str, str]:
-    """Build virtual-to-actual path mappings for a thread."""
+    """thread에 대한 virtual → 실제 경로 매핑을 만든다."""
     mappings: dict[str, str] = {}
 
     workspace = thread_data.get("workspace_path")
@@ -726,7 +712,7 @@ def _thread_virtual_to_actual_mappings(thread_data: ThreadDataState) -> dict[str
     if outputs:
         mappings[f"{VIRTUAL_PATH_PREFIX}/outputs"] = outputs
 
-    # Also map the virtual root when all known dirs share the same parent.
+    # 알려진 디렉터리가 모두 같은 부모를 공유하면 virtual root도 매핑한다.
     actual_dirs = [Path(p) for p in (workspace, uploads, outputs) if p]
     if actual_dirs:
         common_parent = str(Path(actual_dirs[0]).parent)
@@ -737,40 +723,36 @@ def _thread_virtual_to_actual_mappings(thread_data: ThreadDataState) -> dict[str
 
 
 def _thread_actual_to_virtual_mappings(thread_data: ThreadDataState) -> dict[str, str]:
-    """Build actual-to-virtual mappings for output masking."""
+    """output masking에 쓸 실제 → virtual 매핑을 만든다."""
     return {actual: virtual for virtual, actual in _thread_virtual_to_actual_mappings(thread_data).items()}
 
 
 @lru_cache(maxsize=512)
 def _compiled_mask_patterns(sources: tuple[tuple[str, str], ...]) -> tuple[tuple[re.Pattern[str], str, str], ...]:
-    """Compile the host→virtual masking patterns once per source set.
+    """host→virtual masking 패턴을 source 집합마다 한 번만 컴파일한다.
 
-    ``sources`` is an ordered tuple of ``(host_base, virtual_base)`` pairs
-    (skills, then ACP workspace, then per-thread user-data mappings sorted by
-    host-path length, longest first). The patterns derive only from
-    config-stable + per-thread inputs, so they're cached and reused instead of
-    being rebuilt — ``re.escape`` + ``re.compile`` + ``Path.resolve`` (a
-    syscall) — on every call. ``mask_local_paths_in_output`` runs once per
-    glob/grep match, so without this the same patterns are recompiled per
-    match.
+    ``sources``는 ``(host_base, virtual_base)`` 쌍의 순서 있는 tuple이다(skills, ACP
+    workspace, 그다음 host 경로 길이 기준 내림차순으로 정렬된 per-thread user-data 매핑).
+    패턴은 config에서 안정적인 입력과 per-thread 입력에서만 파생되므로, 매 호출마다
+    ``re.escape`` + ``re.compile`` + ``Path.resolve``(syscall)로 다시 만들지 않고 캐시해서
+    재사용한다. ``mask_local_paths_in_output``은 glob/grep 매치마다 한 번씩 실행되므로,
+    이 캐시가 없으면 매치마다 같은 패턴을 다시 컴파일하게 된다.
     """
-    # The segment boundary and path tail are shared with
-    # ``LocalSandbox._reverse_output_patterns`` — see
-    # ``deerflow.sandbox.path_patterns``, which owns that rule so the two copies
-    # cannot drift again (#4035 fixed one and missed the other; #4053 fixed the
-    # other).
+    # segment 경계와 경로 tail 규칙은 ``LocalSandbox._reverse_output_patterns``와 공유한다.
+    # 그 규칙을 소유한 ``deerflow.sandbox.path_patterns``를 참고. 두 사본이 다시 어긋나지
+    # 않도록 한곳에 모아둔 것이다(#4035가 한쪽을 고치면서 다른 쪽을 놓쳤고, #4053이 나머지를
+    # 고쳤다).
     #
-    # ``separator_agnostic=True`` is the one thing this site does differently:
-    # its bases come from ``_path_variants``, which yields Windows-style
-    # spellings, and they are matched against output whose separators this layer
-    # does not control.
+    # 이 지점이 다르게 하는 것은 ``separator_agnostic=True`` 하나다. 여기의 base는
+    # Windows 스타일 표기까지 만들어내는 ``_path_variants``에서 오고, 이 레이어가 구분자를
+    # 통제하지 못하는 출력과 매칭되기 때문이다.
     compiled: list[tuple[re.Pattern[str], str, str]] = []
     for host_base, virtual_base in sources:
         seen: set[str] = set()
-        # Same base set as ``_path_variants(raw) | _path_variants(resolved)``;
-        # ordered deterministically so the cached tuple is stable (variants of
-        # one host map to the same virtual and don't overlap after substitution,
-        # so order within a source is irrelevant to the result).
+        # ``_path_variants(raw) | _path_variants(resolved)``와 같은 base 집합이며,
+        # 캐시된 tuple이 안정적이도록 결정적으로 정렬한다(한 host의 variant들은 같은
+        # virtual로 매핑되고 치환 후에도 겹치지 않으므로, source 내부 순서는 결과에
+        # 영향을 주지 않는다).
         for root in (str(Path(host_base)), str(Path(host_base).resolve())):
             for variant in sorted(_path_variants(root)):
                 if variant in seen:
@@ -781,27 +763,25 @@ def _compiled_mask_patterns(sources: tuple[tuple[str, str], ...]) -> tuple[tuple
 
 
 def mask_local_paths_in_output(output: str, thread_data: ThreadDataState | None) -> str:
-    """Mask host absolute paths from local sandbox output using virtual paths.
+    """local sandbox 출력의 host 절대 경로를 virtual 경로로 마스킹한다.
 
-    Handles user-data paths (per-thread), skills paths (global + per-user
-    custom + managed integrations), and ACP workspace paths (per-thread).
+    user-data 경로(per-thread), skills 경로(전역 + per-user custom + 관리형 integration),
+    ACP workspace 경로(per-thread)를 처리한다.
     """
-    # Build the ordered (host_base, virtual_base) source list. Order is
-    # preserved from the original implementation: skills, then per-user
-    # custom/integration skills, then ACP workspace, then user-data mappings (longest
-    # host path first). Custom mount host paths are masked by
-    # LocalSandbox._reverse_resolve_paths_in_output().
+    # (host_base, virtual_base) source 목록을 순서대로 구성한다. 순서는 원래 구현을
+    # 그대로 유지한다: skills, per-user custom/integration skills, ACP workspace,
+    # 그다음 user-data 매핑(host 경로가 긴 것부터). custom mount의 host 경로는
+    # LocalSandbox._reverse_resolve_paths_in_output()이 마스킹한다.
     sources: list[tuple[str, str]] = []
 
     skills_host = _get_skills_host_path()
     if skills_host:
         sources.append((skills_host, _get_skills_container_path()))
 
-    # Per-user custom skills: mask host paths under the user's custom
-    # skills directory back to /mnt/skills/custom. The sandbox's
-    # _reverse_resolve_path handles this for its own operations, but
-    # mask_local_paths_in_output serves as a safety net for edge cases
-    # where host paths appear in output that bypassed sandbox resolution.
+    # per-user custom skills: 사용자의 custom skills 디렉터리 아래 host 경로를 다시
+    # /mnt/skills/custom으로 마스킹한다. sandbox의 _reverse_resolve_path가 자체 작업에
+    # 대해 처리하지만, mask_local_paths_in_output은 sandbox 해석을 우회한 출력에 host
+    # 경로가 나타나는 엣지 케이스를 위한 안전망 역할을 한다.
     try:
         from deerflow.config.paths import get_paths
         from deerflow.runtime.user_context import get_effective_user_id
@@ -846,8 +826,8 @@ def mask_local_paths_in_output(output: str, thread_data: ThreadDataState | None)
 
 
 def _reject_path_traversal(path: str) -> None:
-    """Reject paths that contain '..' segments to prevent directory traversal."""
-    # Normalise to forward slashes, then check for '..' segments.
+    """directory traversal을 막기 위해 '..' segment가 포함된 경로를 거부한다."""
+    # 슬래시로 정규화한 뒤 '..' segment를 검사한다.
     normalised = path.replace("\\", "/")
     for segment in normalised.split("/"):
         if segment == "..":
@@ -855,50 +835,49 @@ def _reject_path_traversal(path: str) -> None:
 
 
 def validate_local_tool_path(path: str, thread_data: ThreadDataState | None, *, read_only: bool = False) -> None:
-    """Validate that a virtual path is allowed for local-sandbox access.
+    """virtual 경로가 local sandbox 접근에 허용되는지 검증한다.
 
-    This function is a security gate — it checks whether *path* may be
-    accessed and raises on violation.  It does **not** resolve the virtual
-    path to a host path; callers are responsible for resolution via
-    ``resolve_and_validate_user_data_path`` or ``_resolve_skills_path``.
+    이 함수는 보안 gate다 — *path*에 접근해도 되는지 검사하고 위반이면 raise한다.
+    virtual 경로를 host 경로로 해석하지는 **않는다**. 해석은 호출자가
+    ``resolve_and_validate_user_data_path`` 또는 ``_resolve_skills_path``로 처리한다.
 
-    Allowed virtual-path families:
-      - ``/mnt/user-data/*``  — always allowed (read + write)
-      - ``/mnt/skills/*``     — allowed only when *read_only* is True
-      - ``/mnt/acp-workspace/*`` — allowed only when *read_only* is True
-      - Custom mount paths (from config.yaml) — respects per-mount ``read_only`` flag
+    허용되는 virtual 경로 계열:
+      - ``/mnt/user-data/*``  — 항상 허용(읽기 + 쓰기)
+      - ``/mnt/skills/*``     — *read_only*가 True일 때만 허용
+      - ``/mnt/acp-workspace/*`` — *read_only*가 True일 때만 허용
+      - custom mount 경로(config.yaml) — mount별 ``read_only`` 플래그를 따른다
 
     Args:
-        path: The virtual path to validate.
-        thread_data: Thread data (must be present for local sandbox).
-        read_only: When True, skills and ACP workspace paths are permitted.
+        path: 검증할 virtual 경로.
+        thread_data: thread data(local sandbox에서는 반드시 있어야 한다).
+        read_only: True면 skills와 ACP workspace 경로를 허용한다.
 
     Raises:
-        SandboxRuntimeError: If thread data is missing.
-        PermissionError: If the path is not allowed or contains traversal.
+        SandboxRuntimeError: thread data가 없을 때.
+        PermissionError: 경로가 허용되지 않거나 traversal을 포함할 때.
     """
     if thread_data is None:
         raise SandboxRuntimeError("Thread data not available for local sandbox")
 
     _reject_path_traversal(path)
 
-    # Skills paths — read-only access only
+    # skills 경로 — 읽기 전용 접근만 허용
     if _is_skills_path(path):
         if not read_only:
             raise PermissionError(f"Write access to skills path is not allowed: {path}")
         return
 
-    # ACP workspace paths — read-only access only
+    # ACP workspace 경로 — 읽기 전용 접근만 허용
     if _is_acp_workspace_path(path):
         if not read_only:
             raise PermissionError(f"Write access to ACP workspace is not allowed: {path}")
         return
 
-    # User-data paths
+    # user-data 경로
     if path.startswith(f"{VIRTUAL_PATH_PREFIX}/"):
         return
 
-    # Custom mount paths — respect read_only config
+    # custom mount 경로 — read_only 설정을 따른다
     if _is_custom_mount_path(path):
         mount = _get_custom_mount_for_path(path)
         if mount and mount.read_only and not read_only:
@@ -909,9 +888,9 @@ def validate_local_tool_path(path: str, thread_data: ThreadDataState | None, *, 
 
 
 def _validate_resolved_user_data_path(resolved: Path, thread_data: ThreadDataState) -> None:
-    """Verify that a resolved host path stays inside allowed per-thread roots.
+    """해석된 host 경로가 허용된 per-thread root 안에 머무는지 확인한다.
 
-    Raises PermissionError if the path escapes workspace/uploads/outputs.
+    경로가 workspace/uploads/outputs를 벗어나면 PermissionError를 raise한다.
     """
     allowed_roots = [
         Path(p).resolve()
@@ -937,9 +916,9 @@ def _validate_resolved_user_data_path(resolved: Path, thread_data: ThreadDataSta
 
 
 def _resolve_and_validate_user_data_path(path: str, thread_data: ThreadDataState) -> str:
-    """Resolve a /mnt/user-data virtual path and validate it stays in bounds.
+    """/mnt/user-data virtual 경로를 해석하고 허용 범위 안에 머무는지 검증한다.
 
-    Returns the resolved host path string.
+    해석된 host 경로 문자열을 반환한다.
     """
     resolved_str = replace_virtual_path(path, thread_data)
     resolved = Path(resolved_str).resolve()
@@ -948,7 +927,7 @@ def _resolve_and_validate_user_data_path(path: str, thread_data: ThreadDataState
 
 
 def _is_non_file_url_token(token: str) -> bool:
-    """Return True for URL tokens that should not be interpreted as paths."""
+    """경로로 해석하면 안 되는 URL token이면 True를 반환한다."""
     values = [token]
     if "=" in token:
         values.append(token.split("=", 1)[1])
@@ -986,8 +965,8 @@ def _split_shell_tokens(command: str) -> list[str]:
         lexer.commenters = ""
         return list(lexer)
     except ValueError:
-        # The shell will reject malformed quoting later; keep validation
-        # best-effort instead of turning syntax errors into security messages.
+        # 잘못된 따옴표는 나중에 shell이 거부한다. 문법 오류를 보안 메시지로 바꾸는 대신
+        # 검증을 best-effort로 유지한다.
         return command.split()
 
 
@@ -1007,7 +986,7 @@ def _is_shell_assignment(token: str) -> bool:
 
 
 def _is_allowed_local_bash_absolute_path(path: str, allowed_paths: list[str], *, allow_system_paths: bool) -> bool:
-    # Check for MCP filesystem server allowed paths
+    # MCP filesystem server의 허용 경로인지 확인한다.
     if any(path.startswith(allowed_path) or path == allowed_path.rstrip("/") for allowed_path in allowed_paths):
         _reject_path_traversal(path)
         return True
@@ -1016,17 +995,17 @@ def _is_allowed_local_bash_absolute_path(path: str, allowed_paths: list[str], *,
         _reject_path_traversal(path)
         return True
 
-    # Allow skills container path (resolved by tools.py before passing to sandbox)
+    # skills container 경로 허용(sandbox로 넘기기 전에 tools.py가 해석한다)
     if _is_skills_path(path):
         _reject_path_traversal(path)
         return True
 
-    # Allow ACP workspace path (path-traversal check only)
+    # ACP workspace 경로 허용(path traversal 검사만 수행)
     if _is_acp_workspace_path(path):
         _reject_path_traversal(path)
         return True
 
-    # Allow custom mount container paths
+    # custom mount container 경로 허용
     if _is_custom_mount_path(path):
         _reject_path_traversal(path)
         return True
@@ -1090,7 +1069,7 @@ def _validate_local_bash_root_path_args(command_name: str, tokens: list[str], st
 
 
 def _validate_local_bash_shell_tokens(command: str, allowed_paths: list[str]) -> None:
-    """Conservatively reject relative path escapes missed by absolute-path scanning."""
+    """절대 경로 스캔이 놓친 상대 경로 이탈을 보수적으로 거부한다."""
     if re.search(r"\$\([^)]*\b(?:cd|pushd)\b", command):
         raise PermissionError(f"Unsafe working directory change in command substitution. Use paths under {VIRTUAL_PATH_PREFIX}")
 
@@ -1150,50 +1129,46 @@ def _validate_local_bash_shell_tokens(command: str, allowed_paths: list[str]) ->
 
 
 def resolve_and_validate_user_data_path(path: str, thread_data: ThreadDataState) -> str:
-    """Resolve a /mnt/user-data virtual path and validate it stays in bounds."""
+    """/mnt/user-data virtual 경로를 해석하고 허용 범위 안에 머무는지 검증한다."""
     return _resolve_and_validate_user_data_path(path, thread_data)
 
 
 def _braces_are_identifier_placeholders_only(fragment: str) -> bool:
-    """Return True only if every ``{...}`` block is a single identifier placeholder.
+    """모든 ``{...}`` 블록이 identifier placeholder 하나일 때만 True를 반환한다.
 
-    Identifier-only blocks (``{id}``, ``{port}``) come from REST templates and
-    f-strings and are text. Bash brace expansion (``{passwd,shadow}``, ``{,.bak}``,
-    ``{etc,var}``) reconstitutes real host paths at runtime, so it must NOT be
-    exempted. Stray, empty, or nested braces are rejected too (each ``{``/``}``
-    must belong to one balanced single-placeholder block).
+    identifier만 담은 블록(``{id}``, ``{port}``)은 REST 템플릿과 f-string에서 나온 텍스트다.
+    반면 bash brace expansion(``{passwd,shadow}``, ``{,.bak}``, ``{etc,var}``)은 runtime에
+    실제 host 경로를 만들어내므로 예외로 두면 안 된다. 짝이 맞지 않거나 비었거나 중첩된
+    중괄호도 거부한다(모든 ``{``/``}``는 균형 잡힌 단일 placeholder 블록에 속해야 한다).
 
-    ``${VAR}`` shell variable expansion (e.g. ``/home/${USER}/.ssh/id_rsa``) also
-    expands to a real host path at runtime, so a ``${`` anywhere disqualifies the
-    fragment even though the inner name is identifier-shaped.
+    ``${VAR}`` shell 변수 확장(예: ``/home/${USER}/.ssh/id_rsa``)도 runtime에 실제 host
+    경로로 확장되므로, 안쪽 이름이 identifier 형태여도 ``${``가 어디든 있으면 이 fragment는
+    자격을 잃는다.
     """
     if "${" in fragment:
         return False
     blocks = _IDENTIFIER_BRACE_BLOCK_PATTERN.findall(fragment)
-    # Every brace must be part of a balanced ``{...}`` block (no stray/nested braces).
+    # 모든 중괄호는 균형 잡힌 ``{...}`` 블록의 일부여야 한다(짝 없는/중첩된 중괄호 금지).
     if fragment.count("{") != len(blocks) or fragment.count("}") != len(blocks):
         return False
     return all(_IDENTIFIER_PATTERN.fullmatch(inner) for inner in blocks)
 
 
 def _is_non_path_literal_fragment(fragment: str) -> bool:
-    """Return True if a ``/segment`` match is almost certainly text, not a path.
+    """``/segment`` 매치가 경로가 아니라 사실상 텍스트일 때 True를 반환한다.
 
-    The absolute-path scan runs over the raw command string, so it also matches
-    ``/segment`` sequences sitting inside string literals, f-strings, and
-    templates (e.g. ``python -c "print(f'/端口{port}')"`` or a REST template
-    like ``/devices/{id}/port``). Non-ASCII characters and single identifier-like
-    ``{placeholder}`` braces do not appear in real host filesystem paths a command
-    would open, so treating such fragments as text removes those false positives.
+    절대 경로 스캔은 raw command 문자열 전체에 대해 돌기 때문에, 문자열 리터럴, f-string,
+    템플릿 안에 있는 ``/segment`` 시퀀스도 매칭한다(예: ``python -c "print(f'/端口{port}')"``
+    또는 ``/devices/{id}/port`` 같은 REST 템플릿). 비ASCII 문자나 identifier 하나짜리
+    ``{placeholder}`` 중괄호는 명령이 실제로 열 host 파일시스템 경로에는 나타나지 않으므로,
+    그런 fragment를 텍스트로 처리하면 이런 오탐이 사라진다.
 
-    Bash brace expansion (``cat /etc/{passwd,shadow}``) is deliberately NOT
-    exempted: it expands to plain host paths at runtime, so only braces that are
-    single identifier placeholders are treated as text (see
-    :func:`_braces_are_identifier_placeholders_only`).
+    bash brace expansion(``cat /etc/{passwd,shadow}``)은 의도적으로 예외 처리하지 않는다.
+    runtime에 평범한 host 경로로 확장되므로, identifier 하나짜리 placeholder인 중괄호만
+    텍스트로 취급한다(:func:`_braces_are_identifier_placeholders_only` 참고).
 
-    This guard is best-effort, not a security boundary (see
-    :func:`validate_local_bash_command_paths`): plain ASCII host paths such as
-    ``/etc/passwd`` contain none of these markers and are still rejected.
+    이 guard는 보안 경계가 아니라 best-effort다(:func:`validate_local_bash_command_paths`
+    참고). ``/etc/passwd`` 같은 순수 ASCII host 경로에는 이런 표식이 없으므로 여전히 거부된다.
     """
     if any(ord(ch) > 127 for ch in fragment):
         return True
@@ -1203,24 +1178,22 @@ def _is_non_path_literal_fragment(fragment: str) -> bool:
 
 
 def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState | None) -> None:
-    """Validate absolute paths in local-sandbox bash commands.
+    """local sandbox bash 명령의 절대 경로를 검증한다.
 
-    This validation is only a best-effort guard for the explicit
-    ``sandbox.allow_host_bash: true`` opt-in. It is not a secure sandbox
-    boundary and must not be treated as isolation from the host filesystem.
+    이 검증은 명시적인 ``sandbox.allow_host_bash: true`` opt-in에 대한 best-effort guard일
+    뿐이다. 안전한 sandbox 경계가 아니며 host 파일시스템으로부터의 격리로 취급하면 안 된다.
 
-    In local mode, commands must use virtual paths under /mnt/user-data for
-    user data access. Skills paths under /mnt/skills, ACP workspace paths
-    under /mnt/acp-workspace, and custom mount container paths (configured in
-    config.yaml) are allowed (path-traversal checks only; write prevention
-    for bash commands is not enforced here).
-    A small allowlist of common system path prefixes is kept for executable
-    and device references (e.g. /bin/sh, /dev/null).
+    local 모드에서 명령은 사용자 데이터 접근에 /mnt/user-data 아래 virtual 경로를 써야 한다.
+    /mnt/skills 아래 skills 경로, /mnt/acp-workspace 아래 ACP workspace 경로, config.yaml에
+    설정된 custom mount container 경로는 허용된다(path traversal 검사만 하며, bash 명령에
+    대한 쓰기 차단은 여기서 강제하지 않는다).
+    실행 파일과 device 참조(예: /bin/sh, /dev/null)를 위해 흔한 시스템 경로 prefix의 작은
+    allowlist를 유지한다.
     """
     if thread_data is None:
         raise SandboxRuntimeError("Thread data not available for local sandbox")
 
-    # Block file:// URLs which bypass the absolute-path regex but allow local file exfiltration
+    # 절대 경로 정규식은 우회하면서 로컬 파일 유출은 가능한 file:// URL을 차단한다.
     file_url_match = _FILE_URL_PATTERN.search(command)
     if file_url_match:
         raise PermissionError(f"Unsafe file:// URL in command: {file_url_match.group()}. Use paths under {VIRTUAL_PATH_PREFIX}")
@@ -1247,43 +1220,39 @@ def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState
 
 
 def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState | None) -> str:
-    """Replace /mnt/user-data virtual paths in a command string for local sandbox.
+    """local sandbox를 위해 명령 문자열 안의 /mnt/user-data virtual 경로를 치환한다.
 
-    Skills paths (/mnt/skills) and ACP workspace paths (/mnt/acp-workspace)
-    are NOT replaced here — LocalSandbox._resolve_paths_in_command() resolves
-    them via PathMapping at execution time, which uses the correct user_id
-    from sandbox acquire. Pre-resolving with _resolve_skills_path /
-    _resolve_acp_workspace_path uses get_effective_user_id() from contextvar
-    which may differ from the sandbox mapping's user_id.
+    skills 경로(/mnt/skills)와 ACP workspace 경로(/mnt/acp-workspace)는 여기서 치환하지
+    않는다 — 실행 시점에 LocalSandbox._resolve_paths_in_command()가 PathMapping으로
+    해석하며, 이는 sandbox acquire에서 얻은 올바른 user_id를 쓴다. _resolve_skills_path /
+    _resolve_acp_workspace_path로 미리 해석하면 contextvar의 get_effective_user_id()를
+    쓰게 되는데, 이는 sandbox mapping의 user_id와 다를 수 있다.
 
     Args:
-        command: The command string that may contain virtual paths.
-        thread_data: The thread data containing actual paths.
+        command: virtual 경로를 포함할 수 있는 명령 문자열.
+        thread_data: 실제 경로들을 담은 thread data.
 
     Returns:
-        The command with user-data virtual paths replaced.
+        user-data virtual 경로가 치환된 명령.
     """
     result = command
 
-    # Skills, ACP workspace, and custom mount paths are resolved by
-    # LocalSandbox._resolve_paths_in_command() via PathMapping.
+    # skills, ACP workspace, custom mount 경로는 LocalSandbox._resolve_paths_in_command()가
+    # PathMapping으로 해석한다.
 
-    # Replace user-data paths
+    # user-data 경로를 치환한다.
     if VIRTUAL_PATH_PREFIX in result and thread_data is not None:
-        # The segment-boundary lookahead is what keeps the virtual root from
-        # matching inside a sibling that merely shares its prefix
-        # (``/mnt/user-data`` inside ``/mnt/user-data-backup``). The trailing
-        # group needs a ``/`` to consume anything, so without the lookahead the
-        # bare root still matches and the sibling is rewritten into the thread's
-        # host directory — a real path outside the mount contract. Same defect as
-        # #4035 (reverse patterns) and #4053 (masking patterns), mirrored into
-        # this direction.
+        # segment 경계 lookahead가 있어야 virtual root가 prefix만 공유하는 형제 경로
+        # (``/mnt/user-data-backup`` 안의 ``/mnt/user-data``) 안에서 매칭되지 않는다.
+        # 뒤쪽 group은 무언가를 소비하려면 ``/``가 필요하므로, lookahead가 없으면 맨 root가
+        # 그대로 매칭되어 형제 경로가 thread의 host 디렉터리로 재작성된다 — mount 계약을
+        # 벗어난 실제 경로가 되는 것이다. #4035(reverse pattern), #4053(masking pattern)과
+        # 같은 결함을 이 방향으로 옮긴 것이다.
         #
-        # The class mirrors ``LocalSandbox._content_pattern``'s rather than
-        # ``_command_pattern``'s: a virtual root can legitimately be followed by
-        # ``:`` (PATH-style concatenation) or ``,``, which the shell-oriented
-        # class rejects — narrowing to it would stop translating paths that
-        # translate today. ``$`` covers a command ending exactly at the root.
+        # 문자 클래스는 ``LocalSandbox._command_pattern``이 아니라 ``_content_pattern``의
+        # 것을 따른다. virtual root 뒤에는 ``:``(PATH 스타일 연결)나 ``,``가 정당하게 올 수
+        # 있는데, shell 지향 클래스는 이를 거부한다 — 그쪽으로 좁히면 지금 변환되는 경로가
+        # 변환되지 않는다. ``$``는 명령이 정확히 root에서 끝나는 경우를 커버한다.
         pattern = re.compile(rf"{re.escape(VIRTUAL_PATH_PREFIX)}(?=/|$|[^\w./-])(/[^\s\"';&|<>()]*)?")
 
         def replace_user_data_match(match: re.Match) -> str:
@@ -1295,15 +1264,15 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
 
 
 def _apply_cwd_prefix(command: str, thread_data: ThreadDataState | None) -> str:
-    """Prepend 'cd <workspace> &&' so relative paths are anchored to the thread workspace.
+    """상대 경로가 thread workspace를 기준으로 잡히도록 'cd <workspace> &&'를 앞에 붙인다.
 
     Args:
-        command: The bash command to execute.
-        thread_data: The thread data containing the workspace path.
+        command: 실행할 bash 명령.
+        thread_data: workspace 경로를 담은 thread data.
 
     Returns:
-        The command prefixed with 'cd <workspace> &&' if workspace_path is available,
-        otherwise the original command unchanged.
+        workspace_path가 있으면 'cd <workspace> &&'가 붙은 명령을, 없으면 원래 명령을
+        그대로 반환한다.
     """
     if thread_data and (workspace := thread_data.get("workspace_path")):
         return f"cd {shlex.quote(workspace)} && {command}"
@@ -1311,7 +1280,7 @@ def _apply_cwd_prefix(command: str, thread_data: ThreadDataState | None) -> str:
 
 
 def get_thread_data(runtime: Runtime | None) -> ThreadDataState | None:
-    """Extract thread_data from runtime state."""
+    """runtime state에서 thread_data를 추출한다."""
     if runtime is None:
         return None
     if runtime.state is None:
@@ -1320,18 +1289,18 @@ def get_thread_data(runtime: Runtime | None) -> ThreadDataState | None:
 
 
 def is_local_sandbox(runtime: Runtime | None) -> bool:
-    """Check if the current sandbox is a local sandbox.
+    """현재 sandbox가 local sandbox인지 확인한다.
 
-    Accepts both the generic id ``"local"`` (acquire with no thread context)
-    and the per-thread id format ``"local:{user_id}:{thread_id}"`` produced
-    by :meth:`LocalSandboxProvider.acquire` once a thread is known.
+    thread context 없이 acquire했을 때의 일반 id ``"local"``과, thread를 알게 된 뒤
+    :meth:`LocalSandboxProvider.acquire`가 만드는 per-thread id 형식
+    ``"local:{user_id}:{thread_id}"``를 모두 받아들인다.
     """
     if runtime is None:
         return False
     if runtime.state is None:
         return False
-    # Read-only classification: the id is only matched, so a fork-restored
-    # wrapper is safe to discard here (nothing gets released on this path).
+    # 읽기 전용 분류다. id를 매칭하기만 하므로 fork로 복원된 wrapper는 여기서 버려도
+    # 안전하다(이 경로에서는 아무것도 release하지 않는다).
     sandbox_state, _ = unwrap_sandbox(runtime.state.get("sandbox"))
     if sandbox_state is None:
         return False
@@ -1342,21 +1311,21 @@ def is_local_sandbox(runtime: Runtime | None) -> bool:
 
 
 def sandbox_from_runtime(runtime: Runtime | None = None) -> Sandbox:
-    """Extract sandbox instance from tool runtime.
+    """tool runtime에서 sandbox 인스턴스를 추출한다.
 
-    DEPRECATED: Use ensure_sandbox_initialized() for lazy initialization support.
-    This function assumes sandbox is already initialized and will raise error if not.
+    DEPRECATED: lazy 초기화를 지원하려면 ensure_sandbox_initialized()를 사용한다.
+    이 함수는 sandbox가 이미 초기화되었다고 가정하며, 아니면 오류를 raise한다.
 
     Raises:
-        SandboxRuntimeError: If runtime is not available or sandbox state is missing.
-        SandboxNotFoundError: If sandbox with the given ID cannot be found.
+        SandboxRuntimeError: runtime을 쓸 수 없거나 sandbox state가 없을 때.
+        SandboxNotFoundError: 주어진 ID의 sandbox를 찾을 수 없을 때.
     """
     if runtime is None:
         raise SandboxRuntimeError("Tool runtime not available")
     if runtime.state is None:
         raise SandboxRuntimeError("Tool runtime state not available")
-    # Read-only lookup: this only resolves the provider entry, and ownership
-    # (release) stays with after_agent's short-circuit on the wrapped state.
+    # 읽기 전용 조회다. provider 항목만 해석하며, 소유권(release)은 wrapping된 state에
+    # 대한 after_agent의 short-circuit이 계속 가진다.
     sandbox_state, _ = unwrap_sandbox(runtime.state.get("sandbox"))
     if sandbox_state is None:
         raise SandboxRuntimeError("Sandbox state not initialized in runtime")
@@ -1368,27 +1337,27 @@ def sandbox_from_runtime(runtime: Runtime | None = None) -> Sandbox:
         raise SandboxNotFoundError(f"Sandbox with ID '{sandbox_id}' not found", sandbox_id=sandbox_id)
 
     if runtime.context is not None:
-        runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for downstream use
+        runtime.context["sandbox_id"] = sandbox_id  # 이후 단계에서 쓰도록 sandbox_id를 context에 보장한다
     return sandbox
 
 
 def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
-    """Ensure sandbox is initialized, acquiring lazily if needed.
+    """sandbox가 초기화되어 있는지 보장하고, 필요하면 lazy하게 acquire한다.
 
-    On first call, acquires a sandbox from the provider and stores it in runtime state.
-    Subsequent calls return the existing sandbox.
+    첫 호출에서 provider로부터 sandbox를 acquire해 runtime state에 저장한다. 이후 호출은
+    기존 sandbox를 반환한다.
 
-    Thread-safety is guaranteed by the provider's internal locking mechanism.
+    thread 안전성은 provider의 내부 락 메커니즘이 보장한다.
 
     Args:
-        runtime: Tool runtime containing state and context.
+        runtime: state와 context를 담은 tool runtime.
 
     Returns:
-        Initialized sandbox instance.
+        초기화된 sandbox 인스턴스.
 
     Raises:
-        SandboxRuntimeError: If runtime is not available or thread_id is missing.
-        SandboxNotFoundError: If sandbox acquisition fails.
+        SandboxRuntimeError: runtime을 쓸 수 없거나 thread_id가 없을 때.
+        SandboxNotFoundError: sandbox acquire에 실패했을 때.
     """
     if runtime is None:
         raise SandboxRuntimeError("Tool runtime not available")
@@ -1396,10 +1365,10 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
     if runtime.state is None:
         raise SandboxRuntimeError("Tool runtime state not available")
 
-    # Check if sandbox already exists in state
-    # Discarding fork_restored is safe: after_agent short-circuits on the
-    # still-wrapped state before the context-based release branch, so this
-    # reuse path never releases the parent sandbox.
+    # state에 sandbox가 이미 있는지 확인한다.
+    # fork_restored를 버려도 안전하다. after_agent가 context 기반 release 분기보다 먼저
+    # 아직 wrapping된 state에서 short-circuit하므로, 이 재사용 경로는 부모 sandbox를
+    # 절대 release하지 않는다.
     sandbox_state, _ = unwrap_sandbox(runtime.state.get("sandbox"))
     if sandbox_state is not None:
         sandbox_id = sandbox_state.get("sandbox_id")
@@ -1407,11 +1376,11 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
             sandbox = get_sandbox_provider().get(sandbox_id)
             if sandbox is not None:
                 if runtime.context is not None:
-                    runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
+                    runtime.context["sandbox_id"] = sandbox_id  # after_agent에서 release할 수 있도록 sandbox_id를 context에 보장한다
                 return sandbox
-            # Sandbox was released, fall through to acquire new one
+            # sandbox가 이미 release되었으므로 아래로 내려가 새로 acquire한다.
 
-    # Lazy acquisition: get thread_id and acquire sandbox
+    # lazy acquire: thread_id를 얻어 sandbox를 acquire한다.
     thread_id = runtime.context.get("thread_id") if runtime.context else None
     if thread_id is None:
         thread_id = runtime.config.get("configurable", {}).get("thread_id") if runtime.config else None
@@ -1421,25 +1390,24 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
     provider = get_sandbox_provider()
     sandbox_id = provider.acquire(thread_id, user_id=resolve_runtime_user_id(runtime))
 
-    # Update runtime state - this persists across tool calls
+    # runtime state를 갱신한다 — 이 값은 tool call 간에 유지된다.
     runtime.state["sandbox"] = {"sandbox_id": sandbox_id}
 
-    # Retrieve and return the sandbox
+    # sandbox를 조회해 반환한다.
     sandbox = provider.get(sandbox_id)
     if sandbox is None:
         raise SandboxNotFoundError("Sandbox not found after acquisition", sandbox_id=sandbox_id)
 
     if runtime.context is not None:
-        runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
+        runtime.context["sandbox_id"] = sandbox_id  # after_agent에서 release할 수 있도록 sandbox_id를 context에 보장한다
     return sandbox
 
 
 async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sandbox:
-    """Async counterpart to ``ensure_sandbox_initialized`` for tool runtimes.
+    """tool runtime을 위한 ``ensure_sandbox_initialized``의 async 대응 함수.
 
-    This keeps lazy sandbox acquisition on the async provider hook, so AIO
-    sandbox startup and readiness polling do not fall back to synchronous
-    ``provider.acquire()`` during async tool execution.
+    lazy sandbox acquire를 async provider hook에 유지하므로, async tool 실행 중에 AIO
+    sandbox 시작과 readiness 폴링이 동기 ``provider.acquire()``로 떨어지지 않는다.
     """
     if runtime is None:
         raise SandboxRuntimeError("Tool runtime not available")
@@ -1447,8 +1415,8 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
     if runtime.state is None:
         raise SandboxRuntimeError("Tool runtime state not available")
 
-    # Same discard as the sync path above: the reuse path never releases,
-    # because after_agent short-circuits on the still-wrapped state first.
+    # 위 동기 경로와 동일하게 버린다. after_agent가 아직 wrapping된 state에서 먼저
+    # short-circuit하므로, 재사용 경로는 절대 release하지 않는다.
     sandbox_state, _ = unwrap_sandbox(runtime.state.get("sandbox"))
     if sandbox_state is not None:
         sandbox_id = sandbox_state.get("sandbox_id")
@@ -1484,7 +1452,7 @@ async def _run_sync_tool_after_async_sandbox_init(
     runtime: Runtime,
     *args: object,
 ) -> str:
-    """Initialize lazily via async provider, then run sync tool body off-thread."""
+    """async provider로 lazy 초기화한 뒤, 동기 tool 본문을 별도 thread에서 실행한다."""
     try:
         await ensure_sandbox_initialized_async(runtime)
     except SandboxError as e:
@@ -1499,19 +1467,19 @@ async def _run_sync_tool_after_async_sandbox_init(
 
 
 def ensure_thread_directories_exist(runtime: Runtime | None) -> None:
-    """Ensure thread data directories (workspace, uploads, outputs) exist.
+    """thread data 디렉터리(workspace, uploads, outputs)가 존재하도록 보장한다.
 
-    This function is called lazily when any sandbox tool is first used.
-    For local sandbox, it creates the directories on the filesystem.
-    For other sandboxes (like aio), directories are already mounted in the container.
+    sandbox 도구를 처음 쓸 때 lazy하게 호출된다.
+    local sandbox에서는 파일시스템에 디렉터리를 만든다.
+    aio 같은 다른 sandbox에서는 디렉터리가 이미 container에 마운트되어 있다.
 
     Args:
-        runtime: Tool runtime containing state and context.
+        runtime: state와 context를 담은 tool runtime.
     """
     if runtime is None:
         return
 
-    # Only create directories for local sandbox
+    # local sandbox에서만 디렉터리를 만든다.
     if not is_local_sandbox(runtime):
         return
 
@@ -1519,11 +1487,11 @@ def ensure_thread_directories_exist(runtime: Runtime | None) -> None:
     if thread_data is None:
         return
 
-    # Check if directories have already been created
+    # 디렉터리가 이미 만들어졌는지 확인한다.
     if runtime.state.get("thread_directories_created"):
         return
 
-    # Create the three directories
+    # 세 디렉터리를 만든다.
     import os
 
     for key in ["workspace_path", "uploads_path", "outputs_path"]:
@@ -1531,33 +1499,30 @@ def ensure_thread_directories_exist(runtime: Runtime | None) -> None:
         if path:
             os.makedirs(path, exist_ok=True)
 
-    # Mark as created to avoid redundant operations
+    # 중복 작업을 피하기 위해 생성 완료로 표시한다.
     runtime.state["thread_directories_created"] = True
 
 
 _SECRET_REDACTION = "[redacted]"
 
-# Values shorter than this are not redacted from bash output. A short secret
-# value (a 2-char region code, a numeric id, a PIN) would otherwise shred
-# unrelated bytes of tool output — exit codes, timestamps, sizes, paths —
-# corrupting the result the model reads back. The redaction of a value this
-# short is more likely noise than genuine leak protection; the secret is still
-# injected into the subprocess, only the output mask skips it.
+# 이보다 짧은 값은 bash 출력에서 마스킹하지 않는다. 짧은 secret 값(2글자 지역 코드,
+# 숫자 id, PIN)은 exit code, timestamp, 크기, 경로 등 tool 출력의 무관한 바이트를 갈기갈기
+# 찢어서 모델이 다시 읽는 결과를 망가뜨린다. 이 정도로 짧은 값을 마스킹하는 것은 실질적인
+# 유출 방지보다 노이즈에 가깝다. secret은 여전히 subprocess에 주입되며 출력 마스킹만
+# 건너뛴다.
 _MIN_MASK_LENGTH = 8
 
 
 def mask_secret_values(output: str, injected_env: dict[str, str] | None) -> str:
-    """Redact injected secret values from bash output before it re-enters context.
+    """bash 출력이 context로 다시 들어가기 전에 주입된 secret 값을 가린다.
 
-    Skill scripts receive request-scoped secrets as env vars (#3861). If a script
-    echoes one (debugging, ``set -x``, an error dump), the value would otherwise
-    flow into the tool result — and thus into the prompt and the trace. This is
-    the skill-specific fifth leak surface (the bash tool returns subprocess stdout,
-    unlike MCP tools). Replace each non-empty secret value with a redaction marker.
-    Longest values first so a value that is a substring of another is not partially
-    revealed. Values shorter than ``_MIN_MASK_LENGTH`` are skipped — a redacted
-    3-char token is more likely to corrupt unrelated output than to protect a
-    real secret.
+    skill script는 request-scoped secret을 env var로 받는다(#3861). script가 그 값을
+    출력하면(디버깅, ``set -x``, 오류 덤프) 값이 tool 결과로 흘러 들어가고, 결국 prompt와
+    trace까지 도달한다. 이것이 skill 고유의 다섯 번째 유출 지점이다(MCP tool과 달리 bash
+    tool은 subprocess stdout을 반환한다). 비어 있지 않은 각 secret 값을 마스킹 마커로
+    치환한다. 어떤 값이 다른 값의 부분 문자열일 때 일부만 드러나지 않도록 긴 값부터
+    처리한다. ``_MIN_MASK_LENGTH``보다 짧은 값은 건너뛴다 — 3글자 토큰을 마스킹하는 것은
+    실제 secret을 보호하기보다 무관한 출력을 망가뜨릴 가능성이 크다.
     """
     if not injected_env or not output:
         return output
@@ -1567,22 +1532,21 @@ def mask_secret_values(output: str, injected_env: dict[str, str] | None) -> str:
 
 
 def _truncate_bash_output(output: str, max_chars: int) -> str:
-    """Middle-truncate bash output, preserving head and tail (50/50 split).
+    """bash 출력을 앞뒤(50/50)를 남기고 가운데에서 잘라낸다.
 
-    bash output may have errors at either end (stderr/stdout ordering is
-    non-deterministic), so both ends are preserved equally.
+    bash 출력은 양쪽 끝 어디에나 오류가 있을 수 있으므로(stderr/stdout 순서가 비결정적),
+    양쪽 끝을 균등하게 남긴다.
 
-    The returned string (including the truncation marker) is guaranteed to be
-    no longer than max_chars characters. Pass max_chars=0 to disable truncation
-    and return the full output unchanged.
+    반환 문자열은 truncation 마커를 포함해 max_chars를 넘지 않는다. max_chars=0을 넘기면
+    truncation을 끄고 전체 출력을 그대로 반환한다.
     """
     if max_chars == 0:
         return output
     if len(output) <= max_chars:
         return output
     total_len = len(output)
-    # Compute the exact worst-case marker length: skipped chars is at most
-    # total_len, so this is a tight upper bound.
+    # 최악의 경우 마커 길이를 정확히 계산한다. 건너뛴 문자 수는 최대 total_len이므로
+    # 이 값이 빡빡한 상한이 된다.
     marker_max_len = len(f"\n... [middle truncated: {total_len} chars skipped] ...\n")
     kept = max(0, max_chars - marker_max_len)
     if kept == 0:
@@ -1595,22 +1559,21 @@ def _truncate_bash_output(output: str, max_chars: int) -> str:
 
 
 def _truncate_read_file_output(output: str, max_chars: int) -> str:
-    """Head-truncate read_file output, preserving the beginning of the file.
+    """read_file 출력을 앞부분을 남기고 뒤에서 잘라낸다.
 
-    Source code and documents are read top-to-bottom; the head contains the
-    most context (imports, class definitions, function signatures).
+    소스 코드와 문서는 위에서 아래로 읽으며, 앞부분에 가장 많은 맥락(import, 클래스 정의,
+    함수 시그니처)이 담긴다.
 
-    The returned string (including the truncation marker) is guaranteed to be
-    no longer than max_chars characters. Pass max_chars=0 to disable truncation
-    and return the full output unchanged.
+    반환 문자열은 truncation 마커를 포함해 max_chars를 넘지 않는다. max_chars=0을 넘기면
+    truncation을 끄고 전체 출력을 그대로 반환한다.
     """
     if max_chars == 0:
         return output
     if len(output) <= max_chars:
         return output
     total = len(output)
-    # Compute the exact worst-case marker length: both numeric fields are at
-    # their maximum (total chars), so this is a tight upper bound.
+    # 최악의 경우 마커 길이를 정확히 계산한다. 두 숫자 필드가 모두 최대값(전체 문자 수)일
+    # 때이므로 이 값이 빡빡한 상한이 된다.
     marker_max_len = len(f"\n... [truncated: showing first {total} of {total} chars. Use start_line/end_line to read a specific range] ...")
     kept = max(0, max_chars - marker_max_len)
     if kept == 0:
@@ -1620,14 +1583,12 @@ def _truncate_read_file_output(output: str, max_chars: int) -> str:
 
 
 def _truncate_ls_output(output: str, max_chars: int) -> str:
-    """Head-truncate ls output, preserving the beginning of the listing.
+    """ls 출력을 앞부분을 남기고 뒤에서 잘라낸다.
 
-    Directory listings are read top-to-bottom; the head shows the most
-    relevant structure.
+    디렉터리 목록은 위에서 아래로 읽으며, 앞부분이 가장 관련 있는 구조를 보여준다.
 
-    The returned string (including the truncation marker) is guaranteed to be
-    no longer than max_chars characters. Pass max_chars=0 to disable truncation
-    and return the full output unchanged.
+    반환 문자열은 truncation 마커를 포함해 max_chars를 넘지 않는다. max_chars=0을 넘기면
+    truncation을 끄고 전체 출력을 그대로 반환한다.
     """
     if max_chars == 0:
         return output
@@ -1642,17 +1603,17 @@ def _truncate_ls_output(output: str, max_chars: int) -> str:
     return f"{output[:kept]}{marker}"
 
 
-# Fixed env var exposing the IM-channel platform user id (Feishu open_id,
-# Slack Uxxx, ...) to sandbox commands, so skills can act on the current end
-# user's channel identity (#3914). An identifier, not a secret.
+# IM channel 플랫폼 user id(Feishu open_id, Slack Uxxx, ...)를 sandbox 명령에 노출하는
+# 고정 env var. skill이 현재 최종 사용자의 channel identity를 기준으로 동작할 수 있게
+# 한다(#3914). secret이 아니라 식별자다.
 CHANNEL_USER_ID_ENV = "DEERFLOW_CHANNEL_USER_ID"
 
 _CHANNEL_USER_ID_CONTEXT_KEY = "channel_user_id"
 
-# Gateway accepts this identity only from internally authenticated channel
-# requests, but embedded runtimes can still construct context directly. Bound
-# the value defensively: real platform ids are tens of chars; anything past
-# this is corrupt and must not bloat every sandbox command string.
+# Gateway는 내부적으로 인증된 channel 요청에서만 이 identity를 받아들이지만, 임베디드
+# runtime은 여전히 context를 직접 구성할 수 있다. 값을 방어적으로 제한한다. 실제 플랫폼
+# id는 수십 글자 수준이며, 이를 넘는 값은 손상된 것이므로 모든 sandbox 명령 문자열을
+# 부풀리게 두어서는 안 된다.
 _CHANNEL_USER_ID_MAX_LEN = 256
 
 
@@ -1661,26 +1622,24 @@ def _is_windows() -> bool:
 
 
 def _channel_identity_prefix(runtime: Runtime) -> str | None:
-    """Build the command prefix that sets or clears the channel-user-id env var.
+    """channel-user-id env var를 설정하거나 지우는 명령 prefix를 만든다.
 
-    Returns ``None`` for a non-IM run (no ``channel_user_id`` key in context) so
-    the command is left untouched. For an IM run the prefix is always emitted:
+    IM이 아닌 run(context에 ``channel_user_id`` key가 없음)에는 ``None``을 반환해서 명령을
+    그대로 둔다. IM run에는 항상 prefix를 내보낸다:
 
-    - valid id (non-empty str within the length cap) → ``export VAR=<quoted>; ``
-    - unusable id (empty / non-str / over the cap) → ``unset VAR; ``
+    - 유효한 id(길이 제한 안의 비어 있지 않은 str) → ``export VAR=<quoted>; ``
+    - 쓸 수 없는 id(빈 값 / str이 아님 / 길이 초과) → ``unset VAR; ``
 
-    The id deliberately rides the command string instead of the
-    ``execute_command(env=...)`` channel: a non-empty ``env`` switches
-    ``AioSandbox`` to the ``bash.exec`` API (fresh session per call, image
-    >= 1.9.3 required), which is reserved for request-scoped secrets. Emitting an
-    explicit ``export``-or-``unset`` on every IM command makes per-call identity
-    correct **without depending on the AIO shell's session semantics**: the AIO
-    no-env path reuses a persistent shell session (the reason for the class lock,
-    #1433), so a bare command could otherwise resolve a stale value exported by
-    an earlier sender in a shared group-chat sandbox. The ``unset`` closes the
-    window the length/type guard would otherwise open — a sender whose id is
-    dropped inherits the previous sender's value. Values are identifiers, not
-    secrets, so keeping them in the audit-visible command string is fine.
+    이 id는 ``execute_command(env=...)`` 채널이 아니라 명령 문자열에 태우도록 의도적으로
+    설계했다. 비어 있지 않은 ``env``는 ``AioSandbox``를 ``bash.exec`` API(호출마다 새 session,
+    image >= 1.9.3 필요)로 전환시키는데, 그 경로는 request-scoped secret 전용이다. 모든 IM
+    명령에 명시적인 ``export`` 또는 ``unset``을 내보내면 **AIO shell의 session 의미론에
+    의존하지 않고** 호출 단위 identity가 정확해진다. AIO의 env 없는 경로는 영속 shell
+    session을 재사용하므로(클래스 락의 이유, #1433), 아무 처리 없는 명령은 공유된
+    group chat sandbox에서 앞선 발신자가 export한 낡은 값을 그대로 읽을 수 있다.
+    ``unset``은 길이/타입 guard가 열어둘 뻔한 구멍을 막는다 — id가 버려진 발신자가 이전
+    발신자의 값을 물려받는 상황이다. 값은 secret이 아니라 식별자이므로 감사에 노출되는
+    명령 문자열에 남겨도 문제없다.
     """
     context = getattr(runtime, "context", None)
     if not isinstance(context, dict) or _CHANNEL_USER_ID_CONTEXT_KEY not in context:
@@ -1692,34 +1651,31 @@ def _channel_identity_prefix(runtime: Runtime) -> str | None:
 
 
 def _github_env_from_runtime(runtime: Runtime) -> dict[str, str] | None:
-    """Build a per-call env overlay carrying a GitHub App installation token.
+    """GitHub App installation token을 실어 나르는 호출 단위 env overlay를 만든다.
 
-    The GitHub channel mints a short-lived installation token in the
-    ``ChannelManager`` (app layer) and threads it through ``run_context``
-    so it lands in ``runtime.context["github_token"]``. We expose it to
-    the agent's bash as both ``GH_TOKEN`` (what the ``gh`` CLI reads) and
-    ``GITHUB_TOKEN`` (the conventional name). Returning ``None`` when no
-    token is present keeps non-GitHub runs identical to before.
+    GitHub channel은 ``ChannelManager``(app 레이어)에서 짧은 수명의 installation token을
+    발급하고 ``run_context``를 통해 넘겨서 ``runtime.context["github_token"]``에 도달하게
+    한다. 여기서는 이를 agent의 bash에 ``GH_TOKEN``(``gh`` CLI가 읽는 이름)과
+    ``GITHUB_TOKEN``(관례적인 이름) 양쪽으로 노출한다. token이 없으면 ``None``을 반환하므로
+    GitHub가 아닌 run은 이전과 동일하게 동작한다.
 
-    The value at ``runtime.context["github_token"]`` may be either:
+    ``runtime.context["github_token"]``의 값은 다음 둘 중 하나다:
 
-    * a ``str`` — the captured token, the simple shape used by tests and
-      by older code paths that don't need refresh; or
-    * a zero-arg sync callable returning ``str`` — a provider that re-mints
-      transparently when the underlying installation token's 1h TTL is
-      nearing expiry. The provider's cache logic lives app-side (see
-      ``app.gateway.github.app_auth.mint_installation_token`` for the
-      cache + leeway semantics); the harness just calls it.
+    * ``str`` — 캡처된 token. 테스트와 refresh가 필요 없는 오래된 코드 경로가 쓰는
+      단순한 형태다.
+    * ``str``을 반환하는 인자 없는 동기 callable — 기반 installation token의 1시간 TTL이
+      만료에 가까워지면 투명하게 재발급하는 provider다. provider의 캐시 로직은 app 쪽에
+      있으며(캐시 + 여유 시간 의미론은 ``app.gateway.github.app_auth.mint_installation_token``
+      참고), harness는 호출만 한다.
 
-    The callable path is what lets long autonomous runs survive past the
-    60-minute installation-token life: every bash invocation re-asks the
-    provider, which returns the cached token until ~55 min, then mints a
-    fresh one. Without this, a coder agent doing a multi-hour refactor
-    would do most of the work and then 401 on the final ``git push``.
+    callable 경로 덕분에 긴 자율 run이 60분짜리 installation token 수명을 넘겨 살아남는다.
+    bash 호출마다 provider에 다시 물어보고, provider는 약 55분까지는 캐시된 token을 주다가
+    이후 새로 발급한다. 이것이 없으면 몇 시간짜리 리팩터링을 하는 coder agent가 작업을
+    거의 다 끝내놓고 마지막 ``git push``에서 401을 받는다.
 
-    The token still crosses the harness/app boundary as opaque data — the
-    harness never imports the app-layer minting code, preserving the
-    dependency firewall enforced by ``tests/test_harness_boundary.py``.
+    token은 여전히 불투명한 데이터로서 harness/app 경계를 넘는다 — harness는 app 레이어의
+    발급 코드를 절대 import하지 않으므로 ``tests/test_harness_boundary.py``가 강제하는
+    의존성 방화벽이 유지된다.
     """
     context = runtime.context if runtime.context is not None else None
     value = context.get("github_token") if context else None
@@ -1740,18 +1696,17 @@ _LARK_CLI_COMMAND_RE = re.compile(r"(?<![A-Za-z0-9_.-])lark-cli(?![A-Za-z0-9_.-]
 
 
 def _lark_cli_env_from_runtime(runtime: Runtime, command: str, *, sandbox_paths: bool) -> dict[str, str] | None:
-    """Expose Settings-page Lark auth to sandbox ``lark-cli`` commands.
+    """Settings 페이지의 Lark 인증을 sandbox의 ``lark-cli`` 명령에 노출한다.
 
-    Settings authorizes ``lark-cli`` under DeerFlow's per-user integration
-    config/data directories. Agent conversations invoke ``lark-cli`` through the
-    sandbox, so lark commands must receive those same directories or they see an
-    unrelated unauthenticated profile. Keep this scoped to commands that
-    actually call ``lark-cli`` so ordinary bash calls do not switch AIO into the
-    env-bearing execution path.
+    Settings는 DeerFlow의 per-user integration config/data 디렉터리 아래에서 ``lark-cli``를
+    인가한다. agent 대화는 sandbox를 통해 ``lark-cli``를 호출하므로, lark 명령이 같은
+    디렉터리를 받지 못하면 무관한 미인증 프로필을 보게 된다. 실제로 ``lark-cli``를 부르는
+    명령에만 적용해서, 평범한 bash 호출이 AIO를 env를 실어 나르는 실행 경로로 전환시키지
+    않게 한다.
 
-    In broker mode (Pattern B, issue #4338) a sidecar owns the credentials, so
-    the overlay carries only the broker URL + runtime PATH — the config/data
-    directories are never injected into the sandbox.
+    broker 모드(Pattern B, issue #4338)에서는 sidecar가 credential을 소유하므로, overlay는
+    broker URL과 runtime PATH만 담는다 — config/data 디렉터리는 sandbox에 절대 주입되지
+    않는다.
     """
     if not _LARK_CLI_COMMAND_RE.search(command):
         return None
@@ -1767,27 +1722,26 @@ def _lark_cli_env_from_runtime(runtime: Runtime, command: str, *, sandbox_paths:
 
 @tool("bash", parse_docstring=True)
 def bash_tool(runtime: Runtime, description: str, command: str) -> str:
-    """Execute a bash command in a Linux environment.
+    """Linux 환경에서 bash 명령을 실행한다.
 
 
-    - Use `python` to run Python code.
-    - Prefer a thread-local virtual environment in `/mnt/user-data/workspace/.venv`.
-    - Use `python -m pip` (inside the virtual environment) to install Python packages.
-    - To start a long-lived process such as a web server, ALWAYS run it in the background with its
-      output redirected, e.g. `your-command > /mnt/user-data/workspace/server.log 2>&1 &`, then check
-      the log file or poll the port. A long-lived process run in the foreground blocks the turn until
-      it is killed at the command timeout.
+    - Python 코드를 실행할 때는 `python`을 사용하라.
+    - `/mnt/user-data/workspace/.venv`의 thread 전용 virtual environment를 우선 사용하라.
+    - Python 패키지 설치는 (virtual environment 안에서) `python -m pip`로 하라.
+    - web server처럼 오래 실행되는 프로세스는 ALWAYS 출력을 리다이렉트해 background로 실행하라.
+      예: `your-command > /mnt/user-data/workspace/server.log 2>&1 &`. 그다음 로그 파일을 확인하거나
+      포트를 폴링하라. foreground로 실행한 장기 프로세스는 command timeout으로 종료될 때까지 해당 턴을
+      차단한다.
 
     Args:
-        description: Explain why you are running this command in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        command: The bash command to execute. Always use absolute paths for files and directories.
+        description: 이 명령을 실행하는 이유를 짧게 설명한다. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        command: 실행할 bash 명령. 파일과 디렉터리는 항상 절대 경로로 지정하라.
     """
     try:
         sandbox = ensure_sandbox_initialized(runtime)
-        # Request-scoped secrets resolved for the active skill (#3861), plus a
-        # short-lived GitHub App installation token threaded through by the
-        # GitHub channel. Both are injected as per-call env into the subprocess,
-        # never placed in the command string.
+        # 활성 skill에 대해 해석된 request-scoped secret(#3861)과, GitHub channel이 넘겨준
+        # 짧은 수명의 GitHub App installation token. 둘 다 호출 단위 env로 subprocess에
+        # 주입되며 명령 문자열에는 절대 넣지 않는다.
         injected_env = read_active_secrets(getattr(runtime, "context", None)) or None
         identity_prefix = _channel_identity_prefix(runtime)
         github_env = _github_env_from_runtime(runtime)
@@ -1804,8 +1758,8 @@ def bash_tool(runtime: Runtime, description: str, command: str) -> str:
             validate_local_bash_command_paths(command, thread_data)
             command = replace_virtual_paths_in_command(command, thread_data)
             command = _apply_cwd_prefix(command, thread_data)
-            # POSIX-only: the Windows local sandbox may execute via
-            # PowerShell/cmd.exe where `export` is not valid syntax.
+            # POSIX 전용. Windows local sandbox는 `export`가 유효한 문법이 아닌
+            # PowerShell/cmd.exe로 실행될 수 있다.
             if identity_prefix and not _is_windows():
                 command = identity_prefix + command
             try:
@@ -1851,15 +1805,15 @@ bash_tool.coroutine = _bash_tool_async
 
 @tool("ls", parse_docstring=True)
 def ls_tool(runtime: Runtime, description: str, path: str) -> str:
-    """List the contents of a directory up to 2 levels deep in tree format.
+    """디렉터리 내용을 최대 2단계 깊이까지 tree 형식으로 나열한다.
 
     Args:
-        description: Explain why you are listing this directory in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        path: The **absolute** path to the directory to list.
+        description: 이 디렉터리를 나열하는 이유를 짧게 설명한다. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        path: 나열할 디렉터리의 **절대** 경로.
     """
     try:
         user_id = resolve_runtime_user_id(runtime)
-        # Block access to disabled skill directories
+        # 비활성화된 skill 디렉터리 접근을 차단한다.
         if _is_disabled_skill_path(path, user_id=user_id):
             skill_name = _extract_skill_name_from_skills_path(path) or "unknown"
             return f"Error: Skill '{skill_name}' is disabled. Access to its files is blocked. Enable the skill in settings before using it."
@@ -1871,23 +1825,22 @@ def ls_tool(runtime: Runtime, description: str, path: str) -> str:
             thread_data = get_thread_data(runtime)
             validate_local_tool_path(path, thread_data, read_only=True)
             if _is_skills_path(path) or _is_acp_workspace_path(path):
-                # Skills and ACP workspace paths are resolved by the sandbox's
-                # PathMapping (which uses the user_id from acquire time), not
-                # by _resolve_skills_path / _resolve_acp_workspace_path (which
-                # use get_effective_user_id() from contextvar and may differ
-                # from the sandbox mapping's user_id).
+                # skills와 ACP workspace 경로는 sandbox의 PathMapping(acquire 시점의
+                # user_id 사용)이 해석한다. contextvar의 get_effective_user_id()를 쓰는
+                # _resolve_skills_path / _resolve_acp_workspace_path는 sandbox mapping의
+                # user_id와 다를 수 있으므로 여기서 쓰지 않는다.
                 pass
             elif not _is_custom_mount_path(path):
                 path = _resolve_and_validate_user_data_path(path, thread_data)
-            # Custom mount paths and skills/ACP paths are resolved by LocalSandbox._resolve_path()
+            # custom mount 경로와 skills/ACP 경로는 LocalSandbox._resolve_path()가 해석한다.
         children = sandbox.list_dir(path)
         if not children:
             return "(empty)"
         output = "\n".join(children)
         if thread_data is not None:
             output = mask_local_paths_in_output(output, thread_data)
-        # The gate above only covers `path` itself; the listing descends into
-        # children, so a root above a disabled skill still exposes its files.
+        # 위 gate는 `path` 자체만 막는다. 목록은 하위로 내려가므로, 비활성 skill 위쪽을
+        # root로 잡으면 여전히 그 파일이 노출된다.
         entries = _drop_disabled_skill_paths(output.splitlines(), user_id=user_id)
         if not entries:
             return "(empty)"
@@ -1926,18 +1879,18 @@ def glob_tool(
     include_dirs: bool = False,
     max_results: int = _DEFAULT_GLOB_MAX_RESULTS,
 ) -> str:
-    """Find files or directories that match a glob pattern under a root directory.
+    """root 디렉터리 아래에서 glob pattern과 일치하는 파일이나 디렉터리를 찾는다.
 
     Args:
-        description: Explain why you are searching for these paths in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        pattern: The glob pattern to match relative to the root path, for example `**/*.py`.
-        path: The **absolute** root directory to search under.
-        include_dirs: Whether matching directories should also be returned. Default is False.
-        max_results: Maximum number of paths to return. Default is 200.
+        description: 이 경로들을 검색하는 이유를 짧게 설명한다. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        pattern: root 경로 기준 상대 glob pattern. 예: `**/*.py`.
+        path: 검색 대상이 되는 **절대** root 디렉터리.
+        include_dirs: 일치하는 디렉터리도 함께 반환할지 여부. 기본값은 False.
+        max_results: 반환할 최대 경로 수. 기본값은 200.
     """
     try:
         user_id = resolve_runtime_user_id(runtime)
-        # Block access to disabled skill directories
+        # 비활성화된 skill 디렉터리 접근을 차단한다.
         if _is_disabled_skill_path(path, user_id=user_id):
             skill_name = _extract_skill_name_from_skills_path(path) or "unknown"
             return f"Error: Skill '{skill_name}' is disabled. Access to its files is blocked. Enable the skill in settings before using it."
@@ -1959,8 +1912,8 @@ def glob_tool(
         matches, truncated = sandbox.glob(path, pattern, include_dirs=include_dirs, max_results=effective_max_results)
         if thread_data is not None:
             matches = [mask_local_paths_in_output(match, thread_data) for match in matches]
-        # The gate above only covers `path` itself; the search descends into it,
-        # so a root above a disabled skill still surfaces its files.
+        # 위 gate는 `path` 자체만 막는다. 검색은 하위로 내려가므로, 비활성 skill 위쪽을
+        # root로 잡으면 여전히 그 파일이 드러난다.
         matches = _drop_disabled_skill_paths(matches, user_id=user_id)
         return _format_glob_results(requested_path, matches, truncated)
     except SandboxError as e:
@@ -2008,20 +1961,20 @@ def grep_tool(
     case_sensitive: bool = False,
     max_results: int = _DEFAULT_GREP_MAX_RESULTS,
 ) -> str:
-    """Search for matching lines inside a text file or files under a root directory.
+    """텍스트 파일 하나 또는 root 디렉터리 아래 파일들에서 일치하는 줄을 검색한다.
 
     Args:
-        description: Explain why you are searching file contents in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        pattern: The string or regex pattern to search for.
-        path: The **absolute** file or root directory to search.
-        glob: Optional glob filter for candidate files, for example `**/*.py`.
-        literal: Whether to treat `pattern` as a plain string. Default is False.
-        case_sensitive: Whether matching is case-sensitive. Default is False.
-        max_results: Maximum number of matching lines to return. Default is 100.
+        description: 파일 내용을 검색하는 이유를 짧게 설명한다. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        pattern: 검색할 문자열 또는 regex pattern.
+        path: 검색 대상 파일 또는 root 디렉터리의 **절대** 경로.
+        glob: 후보 파일을 걸러낼 선택적 glob filter. 예: `**/*.py`.
+        literal: `pattern`을 일반 문자열로 취급할지 여부. 기본값은 False.
+        case_sensitive: 대소문자를 구분해 매칭할지 여부. 기본값은 False.
+        max_results: 반환할 최대 일치 줄 수. 기본값은 100.
     """
     try:
         user_id = resolve_runtime_user_id(runtime)
-        # Block access to disabled skill directories
+        # 비활성화된 skill 디렉터리 접근을 차단한다.
         if _is_disabled_skill_path(path, user_id=user_id):
             skill_name = _extract_skill_name_from_skills_path(path) or "unknown"
             return f"Error: Skill '{skill_name}' is disabled. Access to its files is blocked. Enable the skill in settings before using it."
@@ -2057,8 +2010,8 @@ def grep_tool(
                 )
                 for match in matches
             ]
-        # The gate above only covers `path` itself; the search descends into it,
-        # so a root above a disabled skill still surfaces its file contents.
+        # 위 gate는 `path` 자체만 막는다. 검색은 하위로 내려가므로, 비활성 skill 위쪽을
+        # root로 잡으면 여전히 그 파일 내용이 드러난다.
         allowed = set(_drop_disabled_skill_paths([match.path for match in matches], user_id=user_id))
         matches = [match for match in matches if match.path in allowed]
         return _format_grep_results(requested_path, matches, truncated)
@@ -2103,12 +2056,11 @@ grep_tool.coroutine = _grep_tool_async
 
 
 def read_current_file_content(runtime: Runtime | None, path: str) -> str:
-    """Read the full current content of ``path`` using read_file's resolution rules.
+    """read_file의 해석 규칙을 그대로 써서 ``path``의 현재 전체 내용을 읽는다.
 
-    Shared by ``read_file_tool`` and ``ReadBeforeWriteMiddleware`` (issue #3857)
-    so the gate hashes exactly the bytes the read tool would see. Raises
-    ``FileNotFoundError`` when the file does not exist; other sandbox errors
-    propagate to the caller.
+    ``read_file_tool``과 ``ReadBeforeWriteMiddleware``(issue #3857)가 공유하므로, gate가
+    read 도구가 보게 될 바이트를 그대로 해시한다. 파일이 없으면 ``FileNotFoundError``를
+    raise하고, 다른 sandbox 오류는 호출자에게 전파된다.
     """
     sandbox = ensure_sandbox_initialized(runtime)
     ensure_thread_directories_exist(runtime)
@@ -2121,7 +2073,7 @@ def read_current_file_content(runtime: Runtime | None, path: str) -> str:
             path = _resolve_acp_workspace_path(path, _extract_thread_id_from_thread_data(thread_data))
         elif not _is_custom_mount_path(path):
             path = _resolve_and_validate_user_data_path(path, thread_data)
-        # Custom mount paths are resolved by LocalSandbox._resolve_path()
+        # custom mount 경로는 LocalSandbox._resolve_path()가 해석한다.
     return sandbox.read_file(path)
 
 
@@ -2133,16 +2085,16 @@ def read_file_tool(
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> str:
-    """Read the contents of a text file. Use this to examine source code, configuration files, logs, or any text-based file.
+    """텍스트 파일의 내용을 읽는다. 소스 코드, 설정 파일, 로그 등 텍스트 기반 파일을 확인할 때 사용하라.
 
     Args:
-        description: Explain why you are reading this file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        path: The **absolute** path to the file to read.
-        start_line: Optional starting line number (1-indexed, inclusive). Omit to start at the first line.
-        end_line: Optional ending line number (1-indexed, inclusive). Omit to read through the last line.
+        description: 이 파일을 읽는 이유를 짧게 설명한다. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        path: 읽을 파일의 **절대** 경로.
+        start_line: 선택적 시작 줄 번호(1부터 시작, 포함). 생략하면 첫 줄부터 읽는다.
+        end_line: 선택적 종료 줄 번호(1부터 시작, 포함). 생략하면 마지막 줄까지 읽는다.
     """
     try:
-        # Block access to disabled skill files
+        # 비활성화된 skill 파일 접근을 차단한다.
         if _is_disabled_skill_path(path, user_id=resolve_runtime_user_id(runtime)):
             skill_name = _extract_skill_name_from_skills_path(path) or "unknown"
             return f"Error: Skill '{skill_name}' is disabled. Access to its files is blocked. Enable the skill in settings before using it."
@@ -2168,7 +2120,7 @@ def read_file_tool(
                     path = _resolve_acp_workspace_path(path, _extract_thread_id_from_thread_data(thread_data))
                 elif not _is_custom_mount_path(path):
                     path = _resolve_and_validate_user_data_path(path, thread_data)
-                # Custom mount paths are resolved by LocalSandbox._resolve_path()
+                # custom mount 경로는 LocalSandbox._resolve_path()가 해석한다.
             content = sandbox.read_file(path, start_line=start_line, end_line=end_line)
         else:
             content = read_current_file_content(runtime, path)
@@ -2216,12 +2168,11 @@ read_file_tool.coroutine = _read_file_tool_async
 
 
 def _effective_write_file_max_bytes() -> int:
-    """Return the active size cap for non-append write_file calls.
+    """append가 아닌 write_file 호출에 적용되는 현재 크기 상한을 반환한다.
 
-    Reads ``DEERFLOW_WRITE_FILE_MAX_BYTES`` at call time (not import time)
-    so tests and runtime tweaks take effect without restart. Falls back to
-    the default on missing/malformed values. A non-positive value disables
-    the guard.
+    ``DEERFLOW_WRITE_FILE_MAX_BYTES``를 import 시점이 아니라 호출 시점에 읽으므로,
+    테스트나 runtime 조정이 재시작 없이 반영된다. 값이 없거나 잘못되었으면 기본값으로
+    fallback한다. 0 이하 값은 이 guard를 끈다.
     """
     raw = os.environ.get(_WRITE_FILE_MAX_BYTES_ENV)
     if raw is None:
@@ -2240,39 +2191,35 @@ def write_file_tool(
     content: str,
     append: bool = False,
 ) -> str:
-    """Write text content to a file. By default this overwrites the target file; set append=True to add content to the end without replacing existing content.
+    """파일에 텍스트 내용을 쓴다. 기본적으로 대상 파일을 덮어쓰며, append=True로 지정하면 기존 내용을 지우지 않고 끝에 이어 붙인다.
 
-    READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
-    append=True), you must have read its CURRENT version with read_file first.
-    Any write invalidates earlier reads, so re-read between consecutive
-    modifications — a ranged read of the relevant section is enough. Writes
-    that fail this check are rejected with an error.
+    READ-BEFORE-WRITE (issue #3857): 대상 파일이 이미 존재하면(append=True인 경우 포함)
+    먼저 read_file로 그 파일의 CURRENT 버전을 읽어야 한다. 모든 쓰기는 이전 읽기를
+    무효화하므로, 연속 수정 사이에는 다시 읽어야 한다 — 해당 구간만 범위 지정해
+    읽어도 충분하다. 이 검사를 통과하지 못한 쓰기는 에러로 거부된다.
 
-    SIZE POLICY (issue #3189):
-    A single non-append write_file call must not exceed 80 KB of UTF-8 content.
-    Oversized single-shot writes correlate with LLM streaming chunk-gap
-    timeouts because the tool-call JSON payload — which the model must emit as
-    one continuous stream — grows past the safe window. For larger documents,
-    use ONE of these strategies (write_file rejects oversized payloads with an
-    actionable error):
+    크기 정책 (issue #3189):
+    append가 아닌 단일 write_file 호출은 UTF-8 기준 80 KB를 초과해서는 안 된다.
+    한 번에 너무 큰 내용을 쓰면 LLM streaming chunk-gap timeout과 연결된다. 모델이
+    하나의 연속 스트림으로 내보내야 하는 tool call JSON payload가 안전 범위를 넘기
+    때문이다. 더 큰 문서에는 아래 전략 중 ONE을 사용하라(write_file은 초과 payload를
+    실행 가능한 안내와 함께 거부한다):
 
-      1. INCREMENTAL EDIT (preferred for revisions): after the initial write,
-         use `str_replace` to surgically update sections. This is the same
-         pattern Claude Code's Write+Edit and OpenAI Codex's apply_patch use,
-         and keeps each tool call's payload small.
-      2. APPEND-IN-CHUNKS (for new long-form content): split the document into
-         sections, each well under 80 KB. First call uses append=False to
-         create the file; subsequent calls use append=True. The 80 KB cap does
-         NOT apply to append=True calls.
+      1. INCREMENTAL EDIT (수정 작업에 권장): 최초 쓰기 이후에는 `str_replace`로
+         필요한 구간만 정밀하게 갱신하라. Claude Code의 Write+Edit과 OpenAI Codex의
+         apply_patch가 쓰는 것과 같은 패턴이며, 각 tool call의 payload를 작게 유지한다.
+      2. APPEND-IN-CHUNKS (새로 작성하는 긴 문서용): 문서를 각각 80 KB보다 충분히
+         작은 구간으로 나눠라. 첫 호출은 append=False로 파일을 만들고, 이후 호출은
+         append=True를 쓴다. 80 KB 상한은 append=True 호출에는 적용되지 NOT.
 
-    Operators can override the cap via env var `DEERFLOW_WRITE_FILE_MAX_BYTES`
-    (0 disables the guard entirely). Raising it risks streaming timeouts.
+    운영자는 env var `DEERFLOW_WRITE_FILE_MAX_BYTES`로 이 상한을 덮어쓸 수 있다
+    (0이면 guard 자체를 비활성화). 상한을 올리면 streaming timeout 위험이 있다.
 
     Args:
-        description: Explain why you are writing to this file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        path: The **absolute** path to the file to write to. ALWAYS PROVIDE THIS PARAMETER SECOND.
-        content: The content to write to the file. ALWAYS PROVIDE THIS PARAMETER THIRD.
-        append: Whether to append content to the end of the file instead of overwriting it. Defaults to False.
+        description: 이 파일에 쓰는 이유를 짧게 설명한다. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        path: 쓸 대상 파일의 **절대** 경로. ALWAYS PROVIDE THIS PARAMETER SECOND.
+        content: 파일에 쓸 내용. ALWAYS PROVIDE THIS PARAMETER THIRD.
+        append: append 모드 여부. True면 덮어쓰지 않고 파일 끝에 이어 붙인다. 기본값은 False.
     """
     if not append:
         max_bytes = _effective_write_file_max_bytes()
@@ -2296,7 +2243,7 @@ def write_file_tool(
             validate_local_tool_path(path, thread_data)
             if not _is_custom_mount_path(path):
                 path = _resolve_and_validate_user_data_path(path, thread_data)
-            # Custom mount paths are resolved by LocalSandbox._resolve_path()
+            # custom mount 경로는 LocalSandbox._resolve_path()가 해석한다.
         with get_file_operation_lock(sandbox, path):
             sandbox.write_file(path, content, append)
         return "OK"
@@ -2340,18 +2287,18 @@ def str_replace_tool(
     new_str: str,
     replace_all: bool = False,
 ) -> str:
-    """Replace a substring in a file with another substring.
-    If `replace_all` is False (default), the substring to replace must appear **exactly once** in the file.
+    """파일 안의 substring을 다른 substring으로 교체한다.
+    `replace_all`이 False(기본값)이면, 교체할 substring이 파일 안에 **정확히 한 번만** 나타나야 한다.
 
-    READ-BEFORE-WRITE (issue #3857): you must have read the file's CURRENT
-    version with read_file first; any write invalidates earlier reads.
+    READ-BEFORE-WRITE (issue #3857): 먼저 read_file로 그 파일의 CURRENT 버전을 읽어야
+    한다. 모든 쓰기는 이전 읽기를 무효화한다.
 
     Args:
-        description: Explain why you are replacing the substring in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        path: The **absolute** path to the file to replace the substring in. ALWAYS PROVIDE THIS PARAMETER SECOND.
-        old_str: The substring to replace. ALWAYS PROVIDE THIS PARAMETER THIRD.
-        new_str: The new substring. ALWAYS PROVIDE THIS PARAMETER FOURTH.
-        replace_all: Whether to replace all occurrences of the substring. If False, only the first occurrence will be replaced. Default is False.
+        description: 이 substring을 교체하는 이유를 짧게 설명한다. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        path: substring을 교체할 파일의 **절대** 경로. ALWAYS PROVIDE THIS PARAMETER SECOND.
+        old_str: 교체할 substring. ALWAYS PROVIDE THIS PARAMETER THIRD.
+        new_str: 새 substring. ALWAYS PROVIDE THIS PARAMETER FOURTH.
+        replace_all: substring이 나타나는 모든 위치를 교체할지 여부. False이면 첫 번째 위치만 교체된다. 기본값은 False.
     """
     try:
         sandbox = ensure_sandbox_initialized(runtime)
@@ -2362,12 +2309,12 @@ def str_replace_tool(
             validate_local_tool_path(path, thread_data)
             if not _is_custom_mount_path(path):
                 path = _resolve_and_validate_user_data_path(path, thread_data)
-            # Custom mount paths are resolved by LocalSandbox._resolve_path()
+            # custom mount 경로는 LocalSandbox._resolve_path()가 해석한다.
         with get_file_operation_lock(sandbox, path):
             content = sandbox.read_file(path)
             if not old_str:
-                # A no-op edit. str.replace("", new_str) would insert new_str at
-                # every character boundary, so this cannot fall through.
+                # 아무것도 바꾸지 않는 편집이다. str.replace("", new_str)는 모든 문자
+                # 경계에 new_str을 끼워 넣으므로 아래로 흘려보낼 수 없다.
                 return "OK"
             if not content or old_str not in content:
                 return f"Error: String to replace not found in file: {requested_path}"

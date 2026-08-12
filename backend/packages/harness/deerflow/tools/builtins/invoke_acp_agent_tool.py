@@ -1,4 +1,4 @@
-"""Built-in tool for invoking external ACP-compatible agents."""
+"""외부 ACP 호환 agent를 호출하는 built-in 도구."""
 
 import asyncio
 import logging
@@ -19,19 +19,18 @@ class _InvokeACPAgentInput(BaseModel):
 
 
 def _get_work_dir(thread_id: str | None) -> str:
-    """Get the per-thread ACP workspace directory.
+    """thread별 ACP workspace 디렉터리를 얻는다.
 
-    Each thread gets an isolated workspace under
-    ``{base_dir}/threads/{thread_id}/acp-workspace/`` so that concurrent
-    sessions cannot read or overwrite each other's ACP agent outputs.
+    각 thread는 ``{base_dir}/threads/{thread_id}/acp-workspace/`` 아래에 격리된 workspace를
+    받으므로, 동시에 실행되는 session이 서로의 ACP agent 출력을 읽거나 덮어쓸 수 없다.
 
-    Falls back to the legacy global ``{base_dir}/acp-workspace/`` when
-    ``thread_id`` is not available (e.g. embedded / direct invocation).
+    ``thread_id``가 없으면(예: embedded / 직접 호출) legacy 전역 경로
+    ``{base_dir}/acp-workspace/``로 fallback한다.
 
-    The directory is created automatically if it does not exist.
+    디렉터리가 없으면 자동으로 생성한다.
 
     Returns:
-        An absolute physical filesystem path to use as the working directory.
+        작업 디렉터리로 사용할 절대 물리 파일시스템 경로.
     """
     from deerflow.config.paths import get_paths
     from deerflow.runtime.user_context import get_effective_user_id
@@ -52,7 +51,7 @@ def _get_work_dir(thread_id: str | None) -> str:
 
 
 def _build_mcp_servers() -> dict[str, dict[str, Any]]:
-    """Build ACP ``mcpServers`` config from DeerFlow's enabled MCP servers."""
+    """DeerFlow에서 활성화된 MCP 서버로 ACP ``mcpServers`` config를 만든다."""
     from deerflow.config.extensions_config import ExtensionsConfig
     from deerflow.mcp.client import build_servers_config
 
@@ -60,11 +59,11 @@ def _build_mcp_servers() -> dict[str, dict[str, Any]]:
 
 
 def _build_acp_mcp_servers() -> list[dict[str, Any]]:
-    """Build ACP ``mcpServers`` payload for ``new_session``.
+    """``new_session``에 넘길 ACP ``mcpServers`` payload를 만든다.
 
-    The ACP client expects a list of server objects, while DeerFlow's MCP helper
-    returns a name -> config mapping for the LangChain MCP adapter. This helper
-    converts the enabled servers into the ACP wire format.
+    ACP client는 서버 객체의 list를 기대하지만, DeerFlow의 MCP 헬퍼는 LangChain MCP
+    adapter용으로 이름 -> config mapping을 반환한다. 이 헬퍼가 활성화된 서버를 ACP wire
+    format으로 변환한다.
     """
     from deerflow.config.extensions_config import ExtensionsConfig
 
@@ -96,12 +95,11 @@ def _build_acp_mcp_servers() -> list[dict[str, Any]]:
 
 
 def _build_permission_response(options: list[Any], *, auto_approve: bool) -> Any:
-    """Build an ACP permission response.
+    """ACP permission 응답을 만든다.
 
-    When ``auto_approve`` is True, selects the first ``allow_once`` (preferred)
-    or ``allow_always`` option.  When False (the default), always cancels —
-    permission requests must be handled by the ACP agent's own policy or the
-    agent must be configured to operate without requesting permissions.
+    ``auto_approve``가 True면 첫 번째 ``allow_once``(우선) 또는 ``allow_always`` 옵션을
+    선택한다. False(기본값)면 항상 취소한다. 이 경우 permission 요청은 ACP agent 자체
+    정책이 처리하거나, agent가 permission을 요청하지 않도록 설정되어 있어야 한다.
     """
     from acp import RequestPermissionResponse
     from acp.schema import AllowedOutcome, DeniedOutcome
@@ -126,7 +124,7 @@ def _build_permission_response(options: list[Any], *, auto_approve: bool) -> Any
 
 
 def _format_invocation_error(agent: str, cmd: str, exc: Exception) -> str:
-    """Return a user-facing ACP invocation error with actionable remediation."""
+    """조치 방법을 담은 사용자 노출용 ACP 호출 에러 메시지를 반환한다."""
     if not isinstance(exc, FileNotFoundError):
         return f"Error invoking ACP agent '{agent}': {exc}"
 
@@ -138,16 +136,16 @@ def _format_invocation_error(agent: str, cmd: str, exc: Exception) -> str:
 
 
 def build_invoke_acp_agent_tool(agents: dict) -> BaseTool:
-    """Create the ``invoke_acp_agent`` tool with a description generated from configured agents.
+    """설정된 agent들로 description을 생성해 ``invoke_acp_agent`` 도구를 만든다.
 
-    The tool description includes the list of available agents so that the LLM
-    knows which agents it can invoke without requiring hardcoded names.
+    도구 description에 사용 가능한 agent 목록을 포함하므로, LLM은 이름을 하드코딩하지 않고도
+    어떤 agent를 호출할 수 있는지 안다.
 
     Args:
-        agents: Mapping of agent name -> ``ACPAgentConfig``.
+        agents: agent 이름 -> ``ACPAgentConfig`` mapping.
 
     Returns:
-        A LangChain ``BaseTool`` ready to be included in the tool list.
+        도구 목록에 바로 넣을 수 있는 LangChain ``BaseTool``.
     """
     agent_lines = "\n".join(f"- {name}: {cfg.description}" for name, cfg in agents.items())
     description = (
@@ -160,7 +158,7 @@ def build_invoke_acp_agent_tool(agents: dict) -> BaseTool:
         "After the agent completes, its output files are accessible at /mnt/acp-workspace/ (read-only)."
     )
 
-    # Capture agents in closure so the function can reference it
+    # 함수가 참조할 수 있도록 agents를 closure에 담는다
     _agents = dict(agents)
 
     async def _invoke(agent: str, prompt: str, config: Annotated[RunnableConfig, InjectedToolArg] = None) -> str:
@@ -180,7 +178,7 @@ def build_invoke_acp_agent_tool(agents: dict) -> BaseTool:
             return "Error: agent-client-protocol package is not installed. Run `uv sync` to install project dependencies."
 
         class _CollectingClient(Client):
-            """Minimal ACP Client that collects streamed text from session updates."""
+            """session update에서 스트리밍된 텍스트를 모으는 최소 ACP Client."""
 
             def __init__(self) -> None:
                 self._chunks: list[str] = []

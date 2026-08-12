@@ -1,11 +1,10 @@
-"""Native deterministic scanning for DeerFlow skills.
+"""DeerFlow skill을 위한 네이티브 결정적(deterministic) 스캔.
 
-``scan_archive_preflight()`` and ``scan_skill_dir()`` are synchronous pure
-functions of their inputs; async callers must dispatch them off the event
-loop. Policy is one code constant — ``CRITICAL`` blocks, everything else is a
-warning — applied by ``enforce_static_scan()``, which also honours the
-``skill_scan.enabled`` kill switch. Rule specs live next to the analyzers
-that match them so a rule is authored, read, and tested in one place.
+``scan_archive_preflight()``와 ``scan_skill_dir()``는 입력에 대해 순수한 동기 함수이므로,
+async 호출자는 event loop 밖으로 dispatch해야 한다. 정책은 코드 상수 하나다 — ``CRITICAL``은
+차단, 나머지는 경고 — 이를 ``enforce_static_scan()``이 적용하며, ``skill_scan.enabled``
+kill switch도 함께 존중한다. rule spec은 이를 매칭하는 analyzer 옆에 두어 rule을 한곳에서
+작성하고 읽고 테스트할 수 있게 한다.
 """
 
 from __future__ import annotations
@@ -115,9 +114,9 @@ _SENSITIVE_PATH_RE = re.compile(r"(~/.ssh|/etc/passwd|/etc/shadow|/var/run/docke
 _EXTERNAL_HTTP_RE = re.compile(r"http://([A-Za-z0-9.-]+)(?::\d+)?(?:/|\b)")
 _URL_RE = re.compile(r"https?://[^\s)'\"<>]+")
 _LOCAL_HTTP_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-# `rm` with a recursive flag (any order/combination, optional --no-preserve-root)
-# targeting the filesystem root, a wildcard, or a complete system-root directory.
-# Subpaths like ``/tmp/scratch`` or ``/home/user/project`` stay unflagged.
+# 재귀 플래그가 붙은 `rm`(순서/조합 무관, --no-preserve-root 선택)이 파일시스템 root,
+# 와일드카드, 또는 시스템 root 디렉터리 전체를 대상으로 하는 경우.
+# ``/tmp/scratch``나 ``/home/user/project`` 같은 하위 경로는 플래그하지 않는다.
 _DESTRUCTIVE_RM_RE = (
     r"\brm\s+(?:-\S+\s+|--no-preserve-root\s+)*-\S*[rR]\S*\s+"
     r"(?:-\S+\s+|--no-preserve-root\s+)*"
@@ -182,8 +181,8 @@ def scan_archive_preflight(archive_path: Path) -> ScanResult:
         with zipfile.ZipFile(archive_path, "r") as zf:
             members = zf.infolist()
             if len(members) > _MAX_ARCHIVE_MEMBERS:
-                # Early-abort before the per-member reads below: a huge member
-                # count is a bounded DoS vector even when the total size is small.
+                # 아래의 member별 읽기 전에 조기 중단한다. 총 크기가 작더라도 member 수가
+                # 지나치게 많으면 그 자체로 DoS 벡터가 된다.
                 finding = _finding("package-too-many-members", file=None, evidence=f"{len(members)} members")
                 return _scan_result([finding], scanner_errors)
             for info in members:
@@ -407,8 +406,8 @@ def _scan_python(rel_path: str, text: str) -> list[SecurityFinding]:
                 has_network_sink = True
                 network_node = network_node or handle_sink
         except RecursionError:
-            # The AST is untrusted. Preserve deterministic findings collected above when an
-            # adversarially deep tree exceeds the recursive handle-analysis budget.
+            # AST는 신뢰할 수 없는 입력이다. 악의적으로 깊은 트리가 재귀적 handle 분석
+            # 예산을 초과하더라도 위에서 수집한 결정적 finding은 보존한다.
             logger.warning("SkillScan client-handle analysis hit recursion limit for %s", rel_path)
 
     if {"dup2", "socket", "subprocess"} <= reverse_shell_parts:
@@ -425,8 +424,8 @@ def _scan_python(rel_path: str, text: str) -> list[SecurityFinding]:
 
 def _scan_shell(rel_path: str, text: str) -> list[SecurityFinding]:
     findings: list[SecurityFinding] = []
-    # Unmistakable reverse-shell signals hard-block; weaker idioms (bash -i,
-    # mkfifo) only warn->LLM because they appear in legitimate scripts.
+    # 명백한 reverse-shell 신호는 hard-block한다. 더 약한 관용구(bash -i, mkfifo)는
+    # 정상적인 스크립트에도 등장하므로 경고만 내고 LLM으로 넘긴다.
     if match := re.search(r"(/dev/tcp/|nc\s+-e\b)", text):
         findings.append(_finding_from_match("shell-reverse-shell", rel_path, text, match))
     if match := re.search(r"(bash\s+-i\b|mkfifo\s+)", text):
@@ -524,9 +523,9 @@ def _read_archive_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes | 
 
 
 def _redact_secret_evidence(value: str) -> str:
-    # Drop the value entirely: the rule_id already names the secret category, and
-    # any retained prefix (e.g. value[:6]) leaks real token bytes into findings
-    # that flow to Gateway responses and LLM context.
+    # 값을 통째로 버린다. rule_id가 이미 secret 범주를 알려주고, 접두사를 조금이라도
+    # 남기면(예: value[:6]) 실제 token 바이트가 Gateway 응답과 LLM context로 흘러가는
+    # finding에 새어 나간다.
     return "[redacted]"
 
 
@@ -565,14 +564,12 @@ def _archive_member_traverses(name: str) -> bool:
 
 
 def _archive_member_has_colon(name: str) -> bool:
-    # A colon has no legitimate use in a relative archive member path (zip
-    # entries use ``/`` separators; a real Windows drive prefix is already
-    # caught by ``_archive_member_is_absolute``). On Windows/NTFS a colon
-    # elsewhere in the path addresses an Alternate Data Stream on the
-    # preceding path component (e.g. ``scripts/run.sh:hidden.txt`` attaches
-    # hidden content to ``run.sh`` instead of creating a sibling file), and
-    # that stream is invisible to directory-listing-based scanning. Reject
-    # outright rather than trying to allow-list "safe" colon positions.
+    # 상대 archive member 경로에서 콜론은 정당하게 쓰일 일이 없다(zip 엔트리는 ``/``
+    # 구분자를 쓰고, 실제 Windows 드라이브 접두사는 이미 ``_archive_member_is_absolute``가
+    # 잡는다). Windows/NTFS에서 경로 중간의 콜론은 바로 앞 경로 구성요소의 Alternate Data
+    # Stream을 가리키며(예: ``scripts/run.sh:hidden.txt``는 형제 파일을 만드는 대신
+    # ``run.sh``에 숨겨진 내용을 붙인다), 그 스트림은 디렉터리 목록 기반 스캔에 보이지
+    # 않는다. "안전한" 콜론 위치를 allow-list하려 하지 말고 통째로 거부한다.
     return ":" in name
 
 
@@ -615,8 +612,8 @@ def _binary_magic_evidence(prefix: bytes) -> str:
 
 
 def _decode_text_for_analysis(file_bytes: bytes) -> str | None:
-    # Binaries are rejected by the NUL probe and the decode failure below, so
-    # every NUL-free, UTF-8-decodable file is analyzed regardless of extension.
+    # 바이너리는 아래의 NUL 검사와 디코드 실패로 걸러지므로, NUL이 없고 UTF-8로 디코드되는
+    # 파일은 확장자와 무관하게 모두 분석한다.
     if b"\x00" in file_bytes[:4096]:
         return None
     try:
@@ -672,7 +669,7 @@ def _python_name(node: ast.AST, aliases: dict[str, str]) -> str:
 
 
 def _python_import_name(node: ast.AST, aliases: dict[str, str]) -> str:
-    """Resolve only names proven by the scope-local import map."""
+    """scope 내 import map으로 증명된 이름만 해석한다."""
     if isinstance(node, ast.Name):
         return aliases.get(node.id, "")
     if isinstance(node, ast.Attribute):
@@ -692,22 +689,19 @@ def _compile_mode_is_exec(node: ast.Call) -> bool:
 
 
 def _call_shell_may_be_true(node: ast.Call) -> bool:
-    # Fail closed on ambiguity: a ``shell=`` keyword is only safe when it is a
-    # literal, statically-provable ``False``. Any other value under that keyword,
-    # the literal ``True``, any other literal, or a non-literal expression such as
-    # a variable or a function call (``shell=shell_flag``, ``shell=bool(1)``),
-    # cannot be proven safe by static analysis, so it is treated the same as an
-    # explicit ``shell=True`` rather than silently falling through to the
-    # non-blocking ``python-subprocess`` classification.
+    # 모호하면 fail closed한다. ``shell=`` 키워드는 정적으로 증명 가능한 리터럴 ``False``일
+    # 때만 안전하다. 그 키워드에 붙은 다른 값, 리터럴 ``True``, 다른 리터럴, 혹은 변수나
+    # 함수 호출 같은 비리터럴 표현식(``shell=shell_flag``, ``shell=bool(1)``)은 정적 분석으로
+    # 안전을 증명할 수 없으므로, 차단하지 않는 ``python-subprocess`` 분류로 조용히 흘려보내지
+    # 않고 명시적 ``shell=True``와 동일하게 취급한다.
     for keyword in node.keywords:
         if keyword.arg is None:
-            # ``**mapping`` / ``**kwargs`` unpacking: represented in the AST as a
-            # keyword with ``arg is None``. The mapping's contents (and whether it
-            # even carries a ``shell`` key) are not knowable by static analysis, so
-            # this fails closed the same as a variable/expression shell= value.
-            # Deliberate, documented over-block: a harmless kwargs-unpack with no
-            # ``shell`` key also blocks, since the alternative (inspecting the
-            # unpacked mapping's contents) is not generally possible statically.
+            # ``**mapping`` / ``**kwargs`` 언패킹은 AST에서 ``arg is None``인 keyword로
+            # 표현된다. 그 mapping의 내용(그리고 ``shell`` 키가 있는지 여부)은 정적
+            # 분석으로 알 수 없으므로, 변수/표현식 shell= 값과 마찬가지로 fail closed한다.
+            # 의도적이고 문서화된 과차단이다. ``shell`` 키가 없는 무해한 kwargs 언패킹도
+            # 차단되는데, 대안(언패킹된 mapping의 내용을 들여다보는 것)이 정적으로는 일반적
+            # 으로 불가능하기 때문이다.
             return True
         if keyword.arg == "shell":
             return not (isinstance(keyword.value, ast.Constant) and keyword.value.value is False)
@@ -740,26 +734,26 @@ def _call_is_network_sink(call_name: str) -> bool:
     }
 
 
-# Instance clients split construction from egress: the constructor does no I/O and the
-# outbound call is an attribute call on a variable, so neither statement alone is a
-# call-name sink. The signal therefore follows only the minimum high-confidence chain:
-# known constructor -> simple name/alias -> constructor-supported direct method call in
-# the same lexical scope. Nested scopes inherit only stable import aliases and never client
-# handles. Comprehensions, walrus-bearing statements, annotations, and executable expressions
-# in complex binding targets deliberately produce no finding from this signal; any names those
-# skipped constructs may bind are invalidated so stale state cannot create a finding.
+# 인스턴스 client는 생성과 송신을 분리한다. 생성자는 I/O를 하지 않고 outbound 호출은 변수에
+# 대한 attribute 호출이라, 어느 한 문장만으로는 call-name sink가 되지 않는다. 그래서 이 신호는
+# 확신도가 높은 최소 연결고리만 따라간다: 알려진 생성자 -> 단순 이름/alias -> 같은 lexical
+# scope에서 그 생성자가 지원하는 직접 method 호출. 중첩 scope는 안정적인 import alias만
+# 물려받고 client handle은 절대 물려받지 않는다. comprehension, walrus를 포함한 문장, 주석
+# (annotation), 복잡한 binding target 안의 실행 표현식은 의도적으로 이 신호에서 아무 finding도
+# 만들지 않는다. 그렇게 건너뛴 구조가 바인딩할 수 있는 이름은 모두 무효화해서, 낡은 상태가
+# finding을 만들지 못하게 한다.
 #
-# Handles reached by a value rather than by a name -- an attribute, a container item, a factory
-# return, a locally aliased constructor, a dynamic `getattr` -- and sinks invoked as anything other
-# than `name.method(...)` are outside that chain by construction: following them is value tracking,
-# which RFC #2634 puts beyond Phase 5. These are scope decisions, not gaps; issue #4296 enumerates
-# them and `test_python_declared_false_negatives_stay_unreported` pins each one, so widening or
-# narrowing the model has to change that test rather than change behaviour silently.
+# 이름이 아니라 값으로 도달하는 handle — attribute, 컨테이너 항목, factory 반환값, 지역적으로
+# alias된 생성자, 동적 `getattr` — 과 `name.method(...)` 이외의 형태로 호출되는 sink는 구조상
+# 이 연결고리 밖이다. 이들을 따라가는 것은 값 추적이고, RFC #2634은 그것을 Phase 5 범위 밖으로
+# 둔다. 이는 누락이 아니라 범위 결정이다. issue #4296이 이들을 열거하고
+# `test_python_declared_false_negatives_stay_unreported`가 각각을 고정하므로, 모델을 넓히거나
+# 좁히려면 동작을 조용히 바꾸는 대신 그 테스트를 바꿔야 한다.
 #
-# Compound bodies are still walked from isolated entry-state copies so `if True:` is not a
-# universal bypass, but ambiguous bindings are dropped rather than joined. Every AST visit
-# and copied scope entry consumes a deterministic work budget, and the walk stops as soon
-# as it finds one sink. This bounds the branch-copy cost on untrusted source.
+# `if True:`가 만능 우회가 되지 않도록 compound body는 여전히 격리된 진입 상태 복사본에서
+# 순회하되, 모호한 binding은 병합하지 않고 버린다. 모든 AST 방문과 복사된 scope 진입은 결정적
+# 작업 예산을 소모하며, sink를 하나 찾는 즉시 순회를 멈춘다. 신뢰할 수 없는 소스에 대한
+# 분기 복사 비용을 이렇게 제한한다.
 
 
 @dataclass(frozen=True)
@@ -769,7 +763,7 @@ class _ClientSpec:
     async_context: bool = False
 
 
-# Keep response-only operations such as `getresponse()` out: this signal needs outbound I/O.
+# `getresponse()` 같은 응답 전용 연산은 제외한다. 이 신호는 outbound I/O를 필요로 한다.
 _PYTHON_CLIENT_SPECS = {
     "http.client.HTTPConnection": _ClientSpec(frozenset({"request", "connect", "send"})),
     "http.client.HTTPSConnection": _ClientSpec(frozenset({"request", "connect", "send"})),
@@ -783,8 +777,8 @@ _PYTHON_CLIENT_ANALYSIS_BUDGET = 100_000
 _PYTHON_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 _PYTHON_COMPREHENSION_NODES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 _PYTHON_MATCH_CAPTURE_NODES = (ast.MatchAs, ast.MatchStar, ast.MatchMapping)
-# Statements whose parts do not all run, or run an unknown number of times. Their bodies are
-# analyzed from a copy and every name they bind is dropped afterwards.
+# 모든 부분이 실행되지는 않거나, 실행 횟수를 알 수 없는 문장들. 이들의 body는 복사본에서
+# 분석하고, 이들이 바인딩한 이름은 이후 모두 버린다.
 _PYTHON_BRANCHING_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.TryStar, ast.Match)
 
 
@@ -841,7 +835,7 @@ def _find_client_handle_sink(tree: ast.AST, rel_path: str) -> ast.AST | None:
 
 
 def _walk_client_statements(body: list[ast.AST], scope: _ClientScope, inherited: _ClientScope, analysis: _ClientAnalysis) -> None:
-    """Walk ordinary statements; a walrus-bearing statement is an explicit false negative."""
+    """일반 statement를 순회한다. walrus를 포함한 statement는 명시적인 false negative다."""
     for statement in body:
         if analysis.found is not None:
             return
@@ -856,7 +850,7 @@ def _walk_client_statements(body: list[ast.AST], scope: _ClientScope, inherited:
 
 
 def _walk_client_scope(node: ast.AST, scope: _ClientScope, inherited: _ClientScope, analysis: _ClientAnalysis) -> None:
-    """Walk executable AST in statement order, carrying a one-level client-handle map."""
+    """실행 가능한 AST를 문장 순서대로 순회하면서 한 단계짜리 client-handle map을 들고 다닌다."""
     if analysis.found is not None:
         return
     analysis.charge()
@@ -872,11 +866,12 @@ def _walk_client_scope(node: ast.AST, scope: _ClientScope, inherited: _ClientSco
         _drop_client_bindings(scope, set(_client_assignment_target_names(node.target)))
         return
     if isinstance(node, ast.TypeAlias):
-        # PEP 695: the value of `type X = ...` is evaluated lazily -- never on import, only on a
-        # later access to `X.__value__`. Walking it for sinks reports egress that cannot happen and
-        # hard-blocks a benign file, the same reason annotations are not walked (see
-        # _client_scope_prelude). The name it binds is invalidated here rather than descended into,
-        # so skipping the value cannot leave a stale handle behind.
+        # PEP 695: `type X = ...`의 값은 lazy하게 평가된다 — import 시점에는 전혀 실행되지
+        # 않고, 나중에 `X.__value__`에 접근할 때만 실행된다. 이를 sink 탐색으로 순회하면
+        # 일어날 수 없는 egress를 보고하고 무해한 파일을 hard-block하게 되는데, 이는
+        # annotation을 순회하지 않는 이유와 같다(_client_scope_prelude 참고). 값 안으로
+        # 내려가는 대신 여기서 바인딩되는 이름을 무효화하므로, 값을 건너뛰어도 낡은 handle이
+        # 남지 않는다.
         _drop_client_bindings(scope, set(_client_assignment_target_names(node.name)))
         return
     if isinstance(node, _PYTHON_BRANCHING_NODES):
@@ -926,17 +921,17 @@ def _walk_client_scope(node: ast.AST, scope: _ClientScope, inherited: _ClientSco
 
 
 def _walk_client_branching(node: ast.AST, scope: _ClientScope, inherited: _ClientScope, analysis: _ClientAnalysis) -> None:
-    """Analyze a compound statement without deciding which of its parts run, or in what order.
+    """어느 부분이 어떤 순서로 실행되는지 판단하지 않고 compound 문장을 분석한다.
 
-    Every name the statement may bind is dropped *before* any body is walked, not after. Dropping
-    afterwards would be wrong for the parts that run after a sibling has already rebound the name --
-    a `finally` after a handler replaced the handle, a later `except*` clause, a second loop
-    iteration -- and each of those disagreements is a benign file hard-blocked as `CRITICAL`.
-    Ordering the parts instead of dropping is the control-flow interpreter this signal is not.
+    이 문장이 바인딩할 수 있는 모든 이름은 body를 순회하기 *전에* 버린다(뒤가 아니다). 뒤에
+    버리면, 형제 부분이 이미 이름을 재바인딩한 뒤에 실행되는 부분 — handler가 handle을 교체한
+    뒤의 `finally`, 나중의 `except*` 절, 두 번째 루프 반복 — 에서 잘못된 결과가 나오고, 그런
+    불일치는 각각 무해한 파일을 `CRITICAL`로 hard-block하는 결과가 된다. 버리는 대신 부분들의
+    순서를 따지는 것은 이 신호가 하지 않는 control-flow 인터프리터의 일이다.
 
-    Bodies are still walked, each from its own copy, so a construction inside one branch cannot leak
-    into a sibling and a sink inside a branch is still seen. What is lost is a name that the same
-    statement both calls and rebinds; that is the documented false negative.
+    body는 각각 자기 복사본에서 여전히 순회하므로, 한 분기 안의 생성이 형제 분기로 새지
+    않으면서도 분기 안의 sink는 여전히 발견된다. 잃는 것은 같은 문장이 호출하면서 동시에
+    재바인딩하는 이름이며, 이는 문서화된 false negative다.
     """
     _drop_client_bindings(scope, _branching_bound_names(node, analysis))
     for header in _branching_header_exprs(node):
@@ -963,12 +958,12 @@ def _branching_header_exprs(node: ast.AST) -> list[ast.AST]:
         return [node.test]
     if isinstance(node, ast.Match):
         return [node.subject]
-    return []  # `try` has no header; handler types run only when an exception was raised
+    return []  # `try`에는 header가 없다. handler의 타입은 예외가 발생했을 때만 실행된다
 
 
 def _branching_bodies(node: ast.AST) -> list[list[ast.AST]]:
     if isinstance(node, (ast.Try, ast.TryStar)):
-        # A handler's `type` expression and its body run on the same path, so they share one copy.
+        # handler의 `type` 표현식과 body는 같은 경로에서 실행되므로 복사본 하나를 공유한다.
         handlers = [[*([handler.type] if handler.type is not None else []), *handler.body] for handler in node.handlers]
         return [node.body, *handlers, node.orelse, node.finalbody]
     if isinstance(node, ast.Match):
@@ -983,7 +978,7 @@ def _branching_bodies(node: ast.AST) -> list[list[ast.AST]]:
 
 
 def _branching_bound_names(node: ast.AST, analysis: _ClientAnalysis) -> set[str]:
-    """Every name the statement may bind, including the loop/handler/capture targets themselves."""
+    """이 문장이 바인딩할 수 있는 모든 이름. loop/handler/capture 대상 자체도 포함한다."""
     names: set[str] = set()
     declared: set[str] = set()
     if isinstance(node, (ast.For, ast.AsyncFor)):
@@ -1000,7 +995,7 @@ def _branching_bound_names(node: ast.AST, analysis: _ClientAnalysis) -> set[str]
 
 
 def _walrus_target_names(node: ast.AST, analysis: _ClientAnalysis) -> set[str]:
-    """Return walrus targets in this scope so the entire ambiguous statement can be skipped."""
+    """모호한 문장 전체를 건너뛸 수 있도록 이 scope의 walrus 대상들을 반환한다."""
     if isinstance(node, _PYTHON_SCOPE_NODES):
         return set()
     found: set[str] = set()
@@ -1043,11 +1038,11 @@ def _match_capture_names(node: ast.AST) -> list[str]:
 
 
 def _client_scope_prelude(node: ast.AST) -> list[ast.AST]:
-    """Expressions a scope-defining statement evaluates in its *enclosing* scope, not the new one:
-    decorators, argument/keyword defaults, and class bases/keywords. Annotations are not walked for
-    sinks -- whether the runtime evaluates one depends on the scope, on `from __future__ import
-    annotations`, and on the Python version. Their possible binding effects are invalidated
-    separately so skipping an annotation cannot leave a stale handle behind.
+    """scope를 정의하는 문장이 새 scope가 아니라 *바깥* scope에서 평가하는 표현식들:
+    decorator, 인자/키워드 기본값, class base/keyword. annotation은 sink 탐색으로 순회하지
+    않는다 — runtime이 annotation을 평가하는지는 scope, `from __future__ import annotations`
+    여부, Python 버전에 따라 달라지기 때문이다. annotation이 만들 수 있는 binding 효과는 별도로
+    무효화하므로, annotation을 건너뛰어도 낡은 handle이 남지 않는다.
     """
     if isinstance(node, ast.ClassDef):
         return [*node.decorator_list, *node.bases, *(keyword.value for keyword in node.keywords)]
@@ -1071,11 +1066,11 @@ def _client_scope_annotations(node: ast.AST) -> list[ast.AST]:
 
 
 def _client_unstable_aliases(body: list[ast.AST], analysis: _ClientAnalysis) -> frozenset[str]:
-    """Names whose import-alias value is not stable for a nested scope.
+    """중첩 scope에 대해 import alias 값이 안정적이지 않은 이름들.
 
-    This is a binding-only prepass: it never interprets expression values or paths. Any ordinary
-    binding makes a same-named import alias non-inheritable, as does a repeated/star import. Scope
-    bodies are skipped, while walrus targets in their enclosing-scope preludes are invalidated.
+    binding만 보는 prepass다. 표현식의 값이나 경로를 해석하지 않는다. 평범한 binding 하나만
+    있어도 같은 이름의 import alias는 상속 불가가 되며, 중복/star import도 마찬가지다. scope의
+    body는 건너뛰고, 바깥 scope prelude에 있는 walrus 대상은 무효화한다.
     """
     imported: set[str] = set()
     unstable: set[str] = set()
@@ -1118,7 +1113,7 @@ def _client_unstable_aliases(body: list[ast.AST], analysis: _ClientAnalysis) -> 
 
 
 def _client_scope_bindings(node: ast.AST, analysis: _ClientAnalysis) -> set[str]:
-    """Names that shadow inherited constructor aliases throughout a function scope."""
+    """함수 scope 전체에서 상속된 생성자 alias를 가리는 이름들."""
     args = node.args
     names = {arg.arg for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]}
     for extra in (args.vararg, args.kwarg):
@@ -1133,7 +1128,7 @@ def _client_scope_bindings(node: ast.AST, analysis: _ClientAnalysis) -> set[str]
 def _collect_client_scope_bindings(node: ast.AST, names: set[str], declared: set[str], analysis: _ClientAnalysis) -> None:
     analysis.charge()
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        names.add(node.name)  # The statement binds its own name here; its body is a separate scope.
+        names.add(node.name)  # 이 문장은 여기서 자기 이름을 바인딩한다. body는 별도 scope다.
         return
     if isinstance(node, ast.Lambda):
         return
@@ -1150,10 +1145,10 @@ def _collect_client_scope_bindings(node: ast.AST, names: set[str], declared: set
     elif isinstance(node, _PYTHON_MATCH_CAPTURE_NODES):
         names.update(_match_capture_names(node))
     if isinstance(node, _PYTHON_COMPREHENSION_NODES):
-        # The expression is not analyzed for sinks, but a walrus target is local to the
-        # containing function. Removing a same-named inherited constructor alias prevents a
-        # definition-order false positive; whether the comprehension executes remains a false
-        # negative by design.
+        # 이 표현식은 sink 탐색 대상이 아니지만, walrus 대상은 그것을 포함한 함수의 지역
+        # 이름이다. 같은 이름의 상속된 생성자 alias를 제거하면 정의 순서에서 오는 false
+        # positive를 막을 수 있다. comprehension이 실제로 실행되는지 여부는 설계상 false
+        # negative로 남는다.
         names.update(_walrus_target_names(node, analysis))
         return
     for child in ast.iter_child_nodes(node):
@@ -1170,11 +1165,11 @@ def _client_constructor_from_value(value: ast.AST | None, scope: _ClientScope) -
 
 
 def _rebind_client_scope(targets: list[ast.AST], value: ast.AST | None, scope: _ClientScope) -> None:
-    """Apply one binding: drop the targets, then re-add them if the value is a client handle.
+    """binding 하나를 적용한다: 대상을 버린 뒤, 값이 client handle이면 다시 추가한다.
 
-    The value is resolved before the targets are dropped, so `session = session` and `s = session`
-    keep the handle. Name-to-name propagation is what stops a two-character rename from shedding it;
-    it stays one level, so a handle reached through an attribute or an item is not tracked.
+    값은 대상을 버리기 전에 해석하므로 `session = session`과 `s = session`은 handle을 유지한다.
+    이 이름-대-이름 전파가 있어야 두 글자짜리 rename만으로 handle이 사라지지 않는다. 전파는 한
+    단계에 머무르므로, attribute나 항목을 거쳐 도달하는 handle은 추적하지 않는다.
     """
     constructor = _client_constructor_from_value(value, scope)
     names = {name for target in targets for name in _client_assignment_target_names(target)}

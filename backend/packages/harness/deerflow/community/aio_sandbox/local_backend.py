@@ -1,7 +1,7 @@
-"""Local container backend for sandbox provisioning.
+"""sandbox provisioning용 로컬 컨테이너 backend.
 
-Manages sandbox containers using Docker or Apple Container on the local machine.
-Handles container lifecycle, port allocation, and cross-process container discovery.
+로컬 머신에서 Docker 또는 Apple Container로 sandbox 컨테이너를 관리한다. 컨테이너
+lifecycle, port 할당, cross-process 컨테이너 탐색을 담당한다.
 """
 
 from __future__ import annotations
@@ -22,13 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_docker_timestamp(raw: str) -> float:
-    """Parse Docker's ISO 8601 timestamp into a Unix epoch float.
+    """Docker의 ISO 8601 timestamp를 Unix epoch float로 파싱한다.
 
-    Docker returns timestamps with nanosecond precision and a trailing ``Z``
-    (e.g. ``2026-04-08T01:22:50.123456789Z``).  Python's ``fromisoformat``
-    accepts at most microseconds and (pre-3.11) does not accept ``Z``, so the
-    string is normalized before parsing.  Returns ``0.0`` on empty input or
-    parse failure so callers can use ``0.0`` as a sentinel for "unknown age".
+    Docker는 나노초 정밀도에 끝에 ``Z``가 붙은 timestamp를 준다
+    (예: ``2026-04-08T01:22:50.123456789Z``). Python의 ``fromisoformat``은 마이크로초까지만
+    받고 3.11 이전에는 ``Z``도 못 받으므로, 파싱 전에 문자열을 정규화한다. 입력이 비었거나
+    파싱에 실패하면 ``0.0``을 반환해 호출자가 "나이 불명" sentinel로 쓸 수 있게 한다.
     """
     if not raw:
         return 0.0
@@ -39,7 +38,7 @@ def _parse_docker_timestamp(raw: str) -> float:
             tz_start = dot_pos + 1
             while tz_start < len(s) and s[tz_start].isdigit():
                 tz_start += 1
-            frac = s[dot_pos + 1 : tz_start][:6]  # truncate to microseconds
+            frac = s[dot_pos + 1 : tz_start][:6]  # 마이크로초까지만 남긴다
             tz_suffix = s[tz_start:]
             s = s[: dot_pos + 1] + frac + tz_suffix
         if s.endswith("Z"):
@@ -51,9 +50,9 @@ def _parse_docker_timestamp(raw: str) -> float:
 
 
 def _extract_host_port(inspect_entry: dict, container_port: int) -> int | None:
-    """Extract the host port mapped to ``container_port/tcp`` from a docker inspect entry.
+    """docker inspect 항목에서 ``container_port/tcp``에 매핑된 host port를 뽑아낸다.
 
-    Returns None if the container has no port mapping for that port.
+    해당 port에 대한 매핑이 없으면 None을 반환한다.
     """
     try:
         ports = (inspect_entry.get("NetworkSettings") or {}).get("Ports") or {}
@@ -68,12 +67,11 @@ def _extract_host_port(inspect_entry: dict, container_port: int) -> int | None:
 
 
 def _format_container_mount(runtime: str, host_path: str, container_path: str, read_only: bool) -> list[str]:
-    """Format a bind-mount argument for the selected runtime.
+    """선택된 runtime에 맞는 bind-mount 인자를 만든다.
 
-    Docker's ``-v host:container`` syntax is ambiguous for Windows drive-letter
-    paths like ``D:/...`` because ``:`` is both the drive separator and the
-    volume separator. Use ``--mount type=bind,...`` for Docker to avoid that
-    parsing ambiguity. Apple Container keeps using ``-v``.
+    Docker의 ``-v host:container`` 문법은 ``D:/...`` 같은 Windows 드라이브 문자 경로에서
+    모호하다. ``:``가 드라이브 구분자이자 volume 구분자이기 때문이다. Docker에서는 이
+    파싱 모호성을 피하려고 ``--mount type=bind,...``를 쓴다. Apple Container는 계속 ``-v``를 쓴다.
     """
     if runtime == "docker":
         mount_spec = f"type=bind,src={host_path},dst={container_path}"
@@ -88,7 +86,7 @@ def _format_container_mount(runtime: str, host_path: str, container_path: str, r
 
 
 def _redact_container_command_for_log(cmd: list[str]) -> list[str]:
-    """Return a Docker/Container command with environment values redacted."""
+    """환경 변수 값을 가린 Docker/Container 명령을 반환한다."""
     redacted: list[str] = []
     redact_next_env = False
 
@@ -140,15 +138,14 @@ def _is_loopback_sandbox_host(host: str) -> bool:
 
 
 def _resolve_docker_bind_host(sandbox_host: str | None = None, bind_host: str | None = None) -> str:
-    """Choose the host interface for legacy Docker ``-p`` sandbox publishing.
+    """레거시 Docker ``-p`` sandbox 공개에 쓸 host 인터페이스를 고른다.
 
-    Bare-metal/local runs talk to sandboxes through localhost and should not
-    expose the sandbox HTTP API on every host interface.  Docker-outside-of-
-    Docker deployments commonly use ``host.docker.internal`` from another
-    container; keep their legacy broad bind unless operators opt into a
-    narrower bind with ``DEER_FLOW_SANDBOX_BIND_HOST``.  When operators choose
-    an IPv6 loopback sandbox host, bind Docker to IPv6 loopback as well so the
-    advertised sandbox URL and published socket use the same address family.
+    베어메탈/로컬 실행은 localhost로 sandbox와 통신하므로 sandbox HTTP API를 모든 host
+    인터페이스에 노출하면 안 된다. Docker-outside-of-Docker 배포는 보통 다른 컨테이너에서
+    ``host.docker.internal``을 쓰므로, 운영자가 ``DEER_FLOW_SANDBOX_BIND_HOST``로 더 좁은
+    bind를 선택하지 않는 한 기존의 넓은 bind를 유지한다. 운영자가 IPv6 loopback sandbox
+    host를 고르면 Docker도 IPv6 loopback에 bind해서, 광고되는 sandbox URL과 공개된 소켓이
+    같은 address family를 쓰게 한다.
     """
     explicit_bind = bind_host if bind_host is not None else os.environ.get("DEER_FLOW_SANDBOX_BIND_HOST")
     if explicit_bind is not None:
@@ -170,14 +167,13 @@ def _resolve_docker_bind_host(sandbox_host: str | None = None, bind_host: str | 
 
 
 def _is_no_such_container_error(stderr: str, container_name: str) -> bool:
-    """Return True only when stderr definitively says the container does not exist.
+    """stderr가 컨테이너 부재를 확정적으로 말할 때만 True를 반환한다.
 
-    Docker reports "No such object" / "No such container". Apple Container
-    reports a generic "not found", so that phrase is only trusted when the
-    message also names the inspected container (or refers to a
-    container/object); transient failures whose text happens to contain
-    "not found" (e.g. "command not found", "context not found") must stay on
-    the raise path instead of being misread as a dead container.
+    Docker는 "No such object" / "No such container"를 낸다. Apple Container는 뭉뚱그린
+    "not found"를 내므로, 메시지가 검사 대상 컨테이너 이름을 함께 언급하거나
+    container/object를 가리킬 때만 그 문구를 신뢰한다. 텍스트에 우연히 "not found"가 들어간
+    일시적 실패(예: "command not found", "context not found")는 죽은 컨테이너로 오독하지
+    말고 raise 경로에 남겨야 한다.
     """
     message = stderr.lower()
     if "no such object" in message or "no such container" in message:
@@ -188,21 +184,22 @@ def _is_no_such_container_error(stderr: str, container_name: str) -> bool:
 
 
 class LocalContainerBackend(SandboxBackend):
-    """Backend that manages sandbox containers locally using Docker or Apple Container.
+    """Docker 또는 Apple Container로 sandbox 컨테이너를 로컬에서 관리하는 backend.
 
-    On macOS, automatically prefers Apple Container if available, otherwise falls back to Docker.
-    On other platforms, uses Docker.
+    macOS에서는 Apple Container가 있으면 자동으로 우선 쓰고, 없으면 Docker로 폴백한다.
+    다른 플랫폼에서는 Docker를 쓴다.
 
-    Features:
-    - Deterministic container naming for cross-process discovery
-    - Port allocation with thread-safe utilities
-    - Container lifecycle management (start/stop with --rm)
-    - Support for volume mounts and environment variables
+    기능:
+
+    - cross-process 탐색을 위한 결정적 컨테이너 이름
+    - thread-safe 유틸리티를 통한 port 할당
+    - 컨테이너 lifecycle 관리(--rm으로 start/stop)
+    - volume mount와 환경 변수 지원
     """
 
-    # Wall clock for a single `stop`. Comfortably above the runtime's own default
-    # SIGKILL escalation (10s for docker/podman), so this only fires when the
-    # daemon itself is wedged rather than truncating a slow-but-progressing stop.
+    # `stop` 한 번에 대한 실제 시간 상한. runtime 자체의 기본 SIGKILL 승격(docker/podman은
+    # 10초)보다 충분히 크므로, 느리지만 진행 중인 stop을 자르지 않고 daemon 자체가 먹통일
+    # 때만 발동한다.
     _STOP_TIMEOUT_SECONDS = 120.0
 
     def __init__(
@@ -214,14 +211,14 @@ class LocalContainerBackend(SandboxBackend):
         config_mounts: list,
         environment: dict[str, str],
     ):
-        """Initialize the local container backend.
+        """로컬 컨테이너 backend를 초기화한다.
 
         Args:
-            image: Container image to use.
-            base_port: Base port number to start searching for free ports.
-            container_prefix: Prefix for container names (e.g., "deer-flow-sandbox").
-            config_mounts: Volume mount configurations from config (list of VolumeMountConfig).
-            environment: Environment variables to inject into containers.
+            image: 사용할 컨테이너 이미지.
+            base_port: 빈 port 탐색을 시작할 기준 port 번호.
+            container_prefix: 컨테이너 이름 prefix (예: "deer-flow-sandbox").
+            config_mounts: config에서 온 volume mount 설정(VolumeMountConfig 목록).
+            environment: 컨테이너에 주입할 환경 변수.
         """
         self._image = image
         self._base_port = base_port
@@ -232,17 +229,17 @@ class LocalContainerBackend(SandboxBackend):
 
     @property
     def runtime(self) -> str:
-        """The detected container runtime ("docker" or "container")."""
+        """감지된 컨테이너 runtime("docker" 또는 "container")."""
         return self._runtime
 
     def _detect_runtime(self) -> str:
-        """Detect which container runtime to use.
+        """어떤 컨테이너 runtime을 쓸지 감지한다.
 
-        On macOS, prefer Apple Container if available, otherwise fall back to Docker.
-        On other platforms, use Docker.
+        macOS에서는 Apple Container가 있으면 우선하고, 없으면 Docker로 폴백한다.
+        다른 플랫폼에서는 Docker를 쓴다.
 
         Returns:
-            "container" for Apple Container, "docker" for Docker.
+            Apple Container면 "container", Docker면 "docker".
         """
         import platform
 
@@ -262,7 +259,7 @@ class LocalContainerBackend(SandboxBackend):
 
         return "docker"
 
-    # ── SandboxBackend interface ──────────────────────────────────────────
+    # ── SandboxBackend 인터페이스 ──────────────────────────────────────────
 
     def create(
         self,
@@ -274,33 +271,32 @@ class LocalContainerBackend(SandboxBackend):
         provision_lark_cli_runtime: bool = False,
         provision_lark_cli_broker: bool = False,
     ) -> SandboxInfo:
-        """Start a new container and return its connection info.
+        """새 컨테이너를 띄우고 연결 정보를 반환한다.
 
         Args:
-            thread_id: Thread ID for which the sandbox is being created. Useful for backends that want to organize sandboxes by thread.
-            sandbox_id: Deterministic sandbox identifier (used in container name).
-            extra_mounts: Additional volume mounts as (host_path, container_path, read_only) tuples.
-            user_id: User bucket already reflected in extra_mounts. Accepted for
-                interface compatibility with remote backends.
-            provision_lark_cli_runtime: Ignored — the local backend provisions the
-                lark-cli runtime via the Gateway-download bind mount in extra_mounts.
-            provision_lark_cli_broker: Ignored — the local backend has no sandbox
-                boundary to protect, so it keeps the credential-mount overlay.
+            thread_id: sandbox를 생성할 대상 thread ID. sandbox를 thread 단위로 정리하려는 backend에 유용하다.
+            sandbox_id: 결정적 sandbox 식별자(컨테이너 이름에 쓰인다).
+            extra_mounts: 추가 volume mount. (host_path, container_path, read_only) 튜플 목록이다.
+            user_id: extra_mounts에 이미 반영된 사용자 bucket. remote backend와 인터페이스를
+                맞추기 위해 받기만 한다.
+            provision_lark_cli_runtime: 무시한다. 로컬 backend는 extra_mounts의
+                Gateway-download bind mount로 lark-cli runtime을 공급한다.
+            provision_lark_cli_broker: 무시한다. 로컬 backend에는 보호할 sandbox 경계가 없으므로
+                credential-mount overlay를 그대로 유지한다.
 
         Returns:
-            SandboxInfo with container details.
+            컨테이너 정보가 담긴 SandboxInfo.
 
         Raises:
-            RuntimeError: If the container fails to start.
+            RuntimeError: 컨테이너 기동에 실패한 경우.
         """
         del user_id, provision_lark_cli_runtime, provision_lark_cli_broker
         container_name = f"{self._container_prefix}-{sandbox_id}"
 
-        # Retry loop: if Docker rejects the port (e.g. a stale container still
-        # holds the binding after a process restart), skip that port and try the
-        # next one.  The socket-bind check in get_free_port mirrors Docker's
-        # 0.0.0.0 bind, but Docker's port-release can be slightly asynchronous,
-        # so a reactive fallback here ensures we always make progress.
+        # 재시도 루프: Docker가 port를 거부하면(예: 프로세스 재시작 후 낡은 컨테이너가 아직
+        # binding을 쥐고 있는 경우) 그 port를 건너뛰고 다음 port로 시도한다. get_free_port의
+        # 소켓 bind 검사는 Docker의 0.0.0.0 bind를 흉내 내지만 Docker의 port 해제는 약간
+        # 비동기일 수 있으므로, 여기 반응형 폴백이 항상 진행을 보장한다.
         _next_start = self._base_port
         container_id: str | None = None
         port: int = 0
@@ -313,14 +309,13 @@ class LocalContainerBackend(SandboxBackend):
                 release_port(port)
                 err = str(exc)
                 err_lower = err.lower()
-                # Port already bound: skip this port and retry with the next one.
+                # port가 이미 점유됨: 이 port를 건너뛰고 다음 port로 재시도한다.
                 if "port is already allocated" in err or "address already in use" in err_lower:
                     logger.warning(f"Port {port} rejected by Docker (already allocated), retrying with next port")
                     _next_start = port + 1
                     continue
-                # Container-name conflict: another process may have already started
-                # the deterministic sandbox container for this sandbox_id. Try to
-                # discover and adopt the existing container instead of failing.
+                # 컨테이너 이름 충돌: 다른 프로세스가 이미 이 sandbox_id의 결정적 sandbox
+                # 컨테이너를 띄웠을 수 있다. 실패하는 대신 기존 컨테이너를 찾아 흡수한다.
                 if "is already in use by container" in err_lower or "conflict. the container name" in err_lower:
                     logger.warning(f"Container name {container_name} already in use, attempting to discover existing sandbox instance")
                     existing = self.discover(sandbox_id)
@@ -330,8 +325,8 @@ class LocalContainerBackend(SandboxBackend):
         else:
             raise RuntimeError("Could not start sandbox container: all candidate ports are already allocated by Docker")
 
-        # When running inside Docker (DooD), sandbox containers are reachable via
-        # host.docker.internal rather than localhost (they run on the host daemon).
+        # Docker 안에서 실행할 때(DooD) sandbox 컨테이너는 host daemon에서 돌기 때문에
+        # localhost가 아니라 host.docker.internal로 접근한다.
         sandbox_host = os.environ.get("DEER_FLOW_SANDBOX_HOST", "localhost")
         return SandboxInfo(
             sandbox_id=sandbox_id,
@@ -341,14 +336,13 @@ class LocalContainerBackend(SandboxBackend):
         )
 
     def destroy(self, info: SandboxInfo) -> None:
-        """Stop the container and release its port."""
-        # Prefer container_id, fall back to container_name (both accepted by docker stop).
-        # This ensures containers discovered via list_running() (which only has the name)
-        # can also be stopped.
+        """컨테이너를 멈추고 port를 반환한다."""
+        # container_id를 우선하고 없으면 container_name으로 폴백한다(docker stop은 둘 다 받는다).
+        # 그래야 이름만 가진 list_running()으로 찾은 컨테이너도 멈출 수 있다.
         stop_target = info.container_id or info.container_name
         if stop_target:
             self._stop_container(stop_target)
-        # Extract port from sandbox_url for release
+        # 반환할 port를 sandbox_url에서 뽑아낸다
         try:
             from urllib.parse import urlparse
 
@@ -359,26 +353,24 @@ class LocalContainerBackend(SandboxBackend):
             pass
 
     def is_alive(self, info: SandboxInfo) -> bool:
-        """Check if the container is still running (lightweight, no HTTP)."""
+        """컨테이너가 아직 실행 중인지 확인한다(가볍고 HTTP를 쓰지 않는다)."""
         if info.container_name:
             return self._is_container_running(info.container_name)
         return False
 
     def discover(self, sandbox_id: str) -> SandboxInfo | None:
-        """Discover an existing container by its deterministic name.
+        """결정적 이름으로 기존 컨테이너를 찾는다.
 
-        Checks if a container with the expected name is running, retrieves its
-        port, and verifies it responds to health checks.
+        기대하는 이름의 컨테이너가 실행 중인지 확인하고, port를 얻고, health check에
+        응답하는지 검증한다.
 
         Args:
-            sandbox_id: The deterministic sandbox ID (determines container name).
+            sandbox_id: 결정적 sandbox ID(컨테이너 이름을 결정한다).
 
         Returns:
-            SandboxInfo if container found and healthy, None otherwise. A
-            failed runtime check (e.g. transient daemon error) also returns
-            None — discovery must not adopt a container it cannot verify, and
-            falling through to create keeps acquire recoverable instead of
-            hard-failing on a hiccup.
+            컨테이너를 찾았고 정상이면 SandboxInfo, 아니면 None. runtime 확인이 실패한
+            경우(예: 일시적 daemon 오류)도 None을 반환한다. 검증하지 못한 컨테이너를 흡수하면
+            안 되고, create로 흘려보내면 일시적 오류에서 하드 실패 대신 acquire가 복구된다.
         """
         container_name = f"{self._container_prefix}-{sandbox_id}"
 
@@ -407,22 +399,19 @@ class LocalContainerBackend(SandboxBackend):
         )
 
     def list_running(self) -> list[SandboxInfo]:
-        """Enumerate all running containers matching the configured prefix.
+        """설정된 prefix에 맞는 실행 중 컨테이너를 모두 열거한다.
 
-        Uses a single ``docker ps`` call to list container names, then a
-        single batched ``docker inspect`` call to retrieve creation timestamp
-        and port mapping for all containers at once.  Total subprocess calls:
-        2 (down from 2N+1 in the naive per-container approach).
+        ``docker ps`` 한 번으로 컨테이너 이름을 받고, 배치 ``docker inspect`` 한 번으로 모든
+        컨테이너의 생성 timestamp와 port 매핑을 한꺼번에 가져온다. 총 subprocess 호출은
+        2번이다(컨테이너마다 따로 부르는 순진한 방식의 2N+1에서 줄였다).
 
-        Note: Docker's ``--filter name=`` performs *substring* matching,
-        so a secondary ``startswith`` check is applied to ensure only
-        containers with the exact prefix are included.
+        주의: Docker의 ``--filter name=``은 *부분 문자열* 매칭이므로, prefix가 정확히 일치하는
+        컨테이너만 포함되도록 ``startswith`` 검사를 한 번 더 한다.
 
-        Containers without port mappings are still included (with empty
-        sandbox_url) so that startup reconciliation can adopt orphans
-        regardless of their port state.
+        port 매핑이 없는 컨테이너도 (빈 sandbox_url로) 포함한다. 그래야 startup reconciliation이
+        port 상태와 무관하게 orphan을 흡수할 수 있다.
         """
-        # Step 1: enumerate container names via docker ps
+        # 1단계: docker ps로 컨테이너 이름을 열거한다
         try:
             result = subprocess.run(
                 [
@@ -452,12 +441,12 @@ class LocalContainerBackend(SandboxBackend):
             logger.warning(f"Failed to list running containers: {e}")
             return []
 
-        # Filter to names matching our exact prefix (docker filter is substring-based)
+        # prefix가 정확히 일치하는 이름만 남긴다(docker filter는 부분 문자열 기반이다)
         container_names = [name.strip() for name in result.stdout.strip().splitlines() if name.strip().startswith(self._container_prefix + "-")]
         if not container_names:
             return []
 
-        # Step 2: batched docker inspect — single subprocess call for all containers
+        # 2단계: 배치 docker inspect — 모든 컨테이너를 subprocess 한 번으로 처리한다
         inspections = self._batch_inspect(container_names)
 
         infos: list[SandboxInfo] = []
@@ -465,7 +454,7 @@ class LocalContainerBackend(SandboxBackend):
         for container_name in container_names:
             data = inspections.get(container_name)
             if data is None:
-                # Container disappeared between ps and inspect, or inspect failed
+                # ps와 inspect 사이에 컨테이너가 사라졌거나 inspect가 실패했다
                 continue
             created_at, host_port = data
             sandbox_id = container_name[len(self._container_prefix) + 1 :]
@@ -484,10 +473,10 @@ class LocalContainerBackend(SandboxBackend):
         return infos
 
     def _batch_inspect(self, container_names: list[str]) -> dict[str, tuple[float, int | None]]:
-        """Batch-inspect containers in a single subprocess call.
+        """subprocess 한 번으로 여러 컨테이너를 배치 inspect 한다.
 
-        Returns a mapping of ``container_name -> (created_at, host_port)``.
-        Missing containers or parse failures are silently dropped from the result.
+        ``container_name -> (created_at, host_port)`` 매핑을 반환한다. 없는 컨테이너나 파싱
+        실패는 결과에서 조용히 빠진다.
         """
         if not container_names:
             return {}
@@ -520,7 +509,7 @@ class LocalContainerBackend(SandboxBackend):
 
         out: dict[str, tuple[float, int | None]] = {}
         for entry in payload:
-            # ``Name`` is prefixed with ``/`` in the docker inspect response
+            # docker inspect 응답에서 ``Name``은 앞에 ``/``가 붙어 온다
             name = (entry.get("Name") or "").lstrip("/")
             if not name:
                 continue
@@ -529,7 +518,7 @@ class LocalContainerBackend(SandboxBackend):
             out[name] = (created_at, host_port)
         return out
 
-    # ── Container operations ─────────────────────────────────────────────
+    # ── 컨테이너 연산 ─────────────────────────────────────────────────────
 
     def _start_container(
         self,
@@ -537,22 +526,22 @@ class LocalContainerBackend(SandboxBackend):
         port: int,
         extra_mounts: list[tuple[str, str, bool]] | None = None,
     ) -> str:
-        """Start a new container.
+        """새 컨테이너를 띄운다.
 
         Args:
-            container_name: Name for the container.
-            port: Host port to map to container port 8080.
-            extra_mounts: Additional volume mounts.
+            container_name: 컨테이너 이름.
+            port: 컨테이너 port 8080에 매핑할 host port.
+            extra_mounts: 추가 volume mount.
 
         Returns:
-            The container ID.
+            컨테이너 ID.
 
         Raises:
-            RuntimeError: If container fails to start.
+            RuntimeError: 컨테이너 기동에 실패한 경우.
         """
         cmd = [self._runtime, "run"]
 
-        # Docker-specific security options
+        # Docker 전용 보안 옵션
         if self._runtime == "docker":
             cmd.extend(["--security-opt", "seccomp=unconfined"])
 
@@ -572,11 +561,11 @@ class LocalContainerBackend(SandboxBackend):
             ]
         )
 
-        # Environment variables
+        # 환경 변수
         for key, value in self._environment.items():
             cmd.extend(["-e", f"{key}={value}"])
 
-        # Config-level volume mounts
+        # config 레벨 volume mount
         for mount in self._config_mounts:
             cmd.extend(
                 _format_container_mount(
@@ -587,7 +576,7 @@ class LocalContainerBackend(SandboxBackend):
                 )
             )
 
-        # Extra mounts (thread-specific, skills, etc.)
+        # 추가 mount(thread 전용, skills 등)
         if extra_mounts:
             for host_path, container_path, read_only in extra_mounts:
                 cmd.extend(
@@ -614,15 +603,13 @@ class LocalContainerBackend(SandboxBackend):
             raise RuntimeError(f"Failed to start sandbox container: {e.stderr}")
 
     def _stop_container(self, container_id: str) -> None:
-        """Stop a container (--rm ensures automatic removal).
+        """컨테이너를 멈춘다(--rm 덕분에 자동 제거된다).
 
-        The timeout bounds the worst case independently of the ownership layer.
-        The teardown lease keeps a peer from re-acquiring the container while
-        this runs, but that exclusion is a lease and can lapse (a store outage
-        longer than the TTL); an unbounded ``docker stop`` against a wedged
-        daemon could then outlive it and land on a peer's live container — #4206.
-        Bounding the stop caps how long that exposure can last even when the
-        store is perfectly healthy.
+        timeout은 ownership 레이어와 무관하게 최악의 경우를 제한한다. teardown lease가 이 작업
+        중에 peer의 재획득을 막지만, 그건 lease이므로 만료될 수 있다(TTL보다 긴 store 장애).
+        그러면 먹통 daemon에 대한 무제한 ``docker stop``이 lease보다 오래 살아남아 peer가 쓰는
+        컨테이너를 멈출 수 있다 — #4206. stop을 제한하면 store가 완전히 정상일 때조차 그 노출
+        시간이 얼마나 길어질 수 있는지 상한이 생긴다.
         """
         try:
             subprocess.run(
@@ -634,25 +621,23 @@ class LocalContainerBackend(SandboxBackend):
             )
             logger.info(f"Stopped container {container_id} using {self._runtime}")
         except subprocess.TimeoutExpired:
-            # Deliberately not swallowed like a CalledProcessError: the container
-            # may still be running, so the caller must not report a clean stop.
+            # CalledProcessError처럼 삼키지 않는다. 컨테이너가 아직 돌고 있을 수 있으므로
+            # 호출자가 정상 종료로 보고하면 안 된다.
             logger.error(f"Timed out after {self._STOP_TIMEOUT_SECONDS}s stopping container {container_id} using {self._runtime}")
             raise
         except subprocess.CalledProcessError as e:
             logger.warning(f"Failed to stop container {container_id}: {e.stderr}")
 
     def _is_container_running(self, container_name: str) -> bool:
-        """Check if a named container is currently running.
+        """이름으로 지정한 컨테이너가 지금 실행 중인지 확인한다.
 
-        This enables cross-process container discovery — any process can detect
-        containers started by another process via the deterministic container name.
+        결정적 컨테이너 이름 덕분에 어떤 프로세스든 다른 프로세스가 띄운 컨테이너를 찾을 수 있어
+        cross-process 탐색이 가능해진다.
 
         Raises:
-            RuntimeError: If the container runtime cannot answer the inspect
-                query. A failed check is intentionally distinct from a
-                definitive "container does not exist" result so callers do not
-                destroy healthy containers during transient Docker/Container
-                daemon failures.
+            RuntimeError: 컨테이너 runtime이 inspect 질의에 답하지 못한 경우. 확인 실패는
+                "컨테이너가 없다"는 확정적 결과와 의도적으로 구분한다. 그래야 일시적인
+                Docker/Container daemon 오류 중에 호출자가 멀쩡한 컨테이너를 부수지 않는다.
         """
         try:
             result = subprocess.run(
@@ -671,13 +656,13 @@ class LocalContainerBackend(SandboxBackend):
         raise RuntimeError(f"Failed to inspect container {container_name}: {result.stderr.strip()}")
 
     def _get_container_port(self, container_name: str) -> int | None:
-        """Get the host port of a running container.
+        """실행 중인 컨테이너의 host port를 얻는다.
 
         Args:
-            container_name: The container name to inspect.
+            container_name: inspect할 컨테이너 이름.
 
         Returns:
-            The host port mapped to container port 8080, or None if not found.
+            컨테이너 port 8080에 매핑된 host port. 찾지 못하면 None.
         """
         try:
             result = subprocess.run(
@@ -687,7 +672,7 @@ class LocalContainerBackend(SandboxBackend):
                 timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
-                # Output format: "0.0.0.0:PORT" or ":::PORT"
+                # 출력 형식: "0.0.0.0:PORT" 또는 ":::PORT"
                 port_str = result.stdout.strip().split(":")[-1]
                 return int(port_str)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):

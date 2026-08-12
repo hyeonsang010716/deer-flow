@@ -1,11 +1,11 @@
-"""Abstract interface for run metadata storage.
+"""run 메타데이터 저장소의 추상 인터페이스.
 
-RunManager depends on this interface. Implementations:
-- MemoryRunStore: in-memory dict (development, tests)
-- Future: RunRepository backed by SQLAlchemy ORM
+RunManager가 이 인터페이스에 의존한다. 구현체:
+- MemoryRunStore: in-memory dict (개발, 테스트)
+- 향후: SQLAlchemy ORM 기반 RunRepository
 
-All methods accept an optional user_id for user isolation.
-When user_id is None, no user filtering is applied (single-user mode).
+모든 메서드는 사용자 격리를 위해 선택적 user_id를 받는다. user_id가 None이면 사용자
+필터링을 적용하지 않는다(단일 사용자 모드).
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ class EditReplayVisibility:
 
 @dataclass(frozen=True)
 class LeaseRenewal:
-    """Result of renewing a run lease.
+    """run lease 갱신 결과.
 
-    ``cancel_action`` carries a durable cancellation request to the owning
-    worker without transferring lease ownership.
+    ``cancel_action``은 lease 소유권을 넘기지 않고 소유 worker에게 durable한 취소 요청을
+    전달한다.
     """
 
     renewed: bool
@@ -35,7 +35,7 @@ class LeaseRenewal:
 
 @dataclass(frozen=True)
 class StatusFinalization:
-    """Result of completing a run only if cancellation has not won."""
+    """취소가 이기지 않은 경우에만 run을 완료 처리한 결과."""
 
     finalized: bool
     cancel_action: str | None = None
@@ -89,10 +89,10 @@ class RunStore(abc.ABC):
         *,
         user_id: str | None = None,
     ) -> set[str]:
-        """Return source run IDs superseded by successful regenerations.
+        """성공한 regenerate로 대체된 원본 run ID들을 반환한다.
 
-        Implementations must inspect the complete thread and must not apply the
-        normal bounded run-list limit.
+        구현체는 thread 전체를 조사해야 하며 평소의 제한된 run 목록 limit을 적용해서는
+        안 된다.
         """
         raise NotImplementedError
 
@@ -102,7 +102,7 @@ class RunStore(abc.ABC):
         *,
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return all edit-regenerate attempt runs for one thread, oldest first."""
+        """thread 하나의 edit-regenerate 시도 run 전부를 오래된 순으로 반환한다."""
         raise NotImplementedError
 
     async def get_many_by_thread(
@@ -112,7 +112,7 @@ class RunStore(abc.ABC):
         *,
         user_id: str | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Batch-load selected runs belonging to one thread."""
+        """thread 하나에 속한 지정된 run들을 일괄 로드한다."""
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -124,18 +124,18 @@ class RunStore(abc.ABC):
         error: str | None = None,
         stop_reason: str | None = None,
     ) -> bool | None:
-        """Update a run status.
+        """run 상태를 갱신한다.
 
-        Returns ``False`` when the store can prove no row was updated. Older or
-        lightweight stores may return ``None`` when they cannot report rowcount.
+        갱신된 row가 없음을 store가 확인할 수 있으면 ``False``를 반환한다. 오래되거나
+        가벼운 store는 rowcount를 보고할 수 없을 때 ``None``을 반환할 수 있다.
         """
         pass
 
     @abc.abstractmethod
     async def start_run(self, run_id: str) -> bool:
-        """Atomically transition a pending run to running.
+        """pending 상태의 run을 원자적으로 running으로 전이시킨다.
 
-        Returns ``False`` when the row is missing or no longer pending.
+        row가 없거나 더 이상 pending이 아니면 ``False``를 반환한다.
         """
         pass
 
@@ -144,11 +144,11 @@ class RunStore(abc.ABC):
         pass
 
     async def delete_thread_operation(self, run_id: str, *, user_id: str | None) -> None:
-        """Release an admitted thread operation for its recorded owner.
+        """기록된 소유자를 기준으로, 승인된 thread operation을 해제한다.
 
-        The default keeps legacy stores compatible: older implementations only
-        accepted ``run_id``. User-aware stores should override this method so
-        cleanup never depends on ambient request context.
+        기본 구현은 레거시 store 호환을 위한 것이다: 예전 구현은 ``run_id``만 받았다.
+        사용자를 인지하는 store는 정리 작업이 주변 request context에 의존하지 않도록 이
+        메서드를 override해야 한다.
         """
         await self.delete(run_id)
 
@@ -158,7 +158,7 @@ class RunStore(abc.ABC):
         run_id: str,
         model_name: str | None,
     ) -> None:
-        """Update the model_name field for an existing run."""
+        """기존 run의 model_name 필드를 갱신한다."""
         pass
 
     @abc.abstractmethod
@@ -180,11 +180,10 @@ class RunStore(abc.ABC):
         first_human_message: str | None = None,
         error: str | None = None,
     ) -> bool | None:
-        """Persist final completion fields.
+        """최종 완료 필드를 저장한다.
 
-        Implementations must not replace a different terminal status. Returns
-        ``False`` when the row is missing or already has a conflicting terminal
-        outcome.
+        구현체는 다른 종료 상태를 덮어써서는 안 된다. row가 없거나 이미 충돌하는 종료
+        결과를 갖고 있으면 ``False``를 반환한다.
         """
         pass
 
@@ -204,7 +203,7 @@ class RunStore(abc.ABC):
         last_ai_message: str | None = None,
         first_human_message: str | None = None,
     ) -> None:
-        """Persist a best-effort running snapshot without changing run status."""
+        """run 상태를 바꾸지 않고 실행 중 snapshot을 best-effort로 저장한다."""
         return None
 
     @abc.abstractmethod
@@ -213,14 +212,14 @@ class RunStore(abc.ABC):
 
     @abc.abstractmethod
     async def list_inflight(self, *, before: str | None = None) -> list[dict[str, Any]]:
-        """Return persisted runs that are still ``pending`` or ``running``."""
+        """아직 ``pending`` 또는 ``running``인 저장된 run들을 반환한다."""
         pass
 
     @abc.abstractmethod
     async def aggregate_tokens_by_thread(self, thread_id: str, *, include_active: bool = False) -> dict[str, Any]:
-        """Aggregate token usage for completed runs in a thread.
+        """thread 안에서 완료된 run들의 token 사용량을 집계한다.
 
-        Returns a dict with keys: total_tokens, total_input_tokens,
+        다음 키를 가진 dict를 반환한다: total_tokens, total_input_tokens,
         total_output_tokens, total_runs, by_model (model_name → {tokens, runs}),
         by_caller ({lead_agent, subagent, middleware}).
         """
@@ -234,7 +233,7 @@ class RunStore(abc.ABC):
         owner_worker_id: str,
         lease_expires_at: str,
     ) -> bool:
-        """Renew the lease on an active run. Returns ``False`` when no row matched."""
+        """활성 run의 lease를 갱신한다. 일치하는 row가 없으면 ``False``를 반환한다."""
         pass
 
     async def renew_lease(
@@ -244,13 +243,12 @@ class RunStore(abc.ABC):
         owner_worker_id: str,
         lease_expires_at: str,
     ) -> LeaseRenewal:
-        """Renew ownership and return any durable cancellation request.
+        """소유권을 갱신하고 durable한 취소 요청이 있으면 함께 반환한다.
 
-        The default wraps the legacy ``update_lease`` method and returns no
-        cancellation action, so third-party stores remain source-compatible
-        without adding a background read. Stores that support multi-process
-        cancellation must override this method to renew and observe the
-        request atomically.
+        기본 구현은 레거시 ``update_lease`` 메서드를 감싸고 취소 action을 반환하지
+        않으므로, 서드파티 store가 백그라운드 읽기를 추가하지 않고도 소스 호환을
+        유지한다. 프로세스 간 취소를 지원하는 store는 갱신과 요청 관찰을 원자적으로
+        하도록 이 메서드를 override해야 한다.
         """
         renewed = await self.update_lease(
             run_id,
@@ -260,10 +258,10 @@ class RunStore(abc.ABC):
         return LeaseRenewal(renewed=renewed)
 
     async def request_cancel(self, run_id: str, *, action: str) -> str | None:
-        """Persist the first cancellation action for an active run.
+        """활성 run의 첫 취소 action을 저장한다.
 
-        Implementations must update only ``pending`` or ``running`` rows and
-        return the winning action, or ``None`` when no active row matched.
+        구현체는 ``pending``이나 ``running`` row만 갱신해야 하며, 이긴 action을
+        반환하거나 일치하는 활성 row가 없으면 ``None``을 반환한다.
         """
         raise NotImplementedError
 
@@ -275,10 +273,9 @@ class RunStore(abc.ABC):
         error: str | None = None,
         stop_reason: str | None = None,
     ) -> StatusFinalization:
-        """Atomically finalize an active run unless cancellation won.
+        """취소가 이기지 않은 한 활성 run을 원자적으로 종료 처리한다.
 
-        The compatibility default is safe for stores that do not implement
-        durable cancellation.
+        호환용 기본 구현은 durable한 취소를 구현하지 않은 store에서도 안전하다.
         """
         updated = await self.update_status(
             run_id,
@@ -297,18 +294,17 @@ class RunStore(abc.ABC):
         error: str,
         stop_reason: str | None = None,
     ) -> bool:
-        """Atomically mark an expired-lease active run as ``error``.
+        """lease가 만료된 활성 run을 원자적으로 ``error``로 표시한다.
 
-        Only rows whose lease has expired past *grace_seconds* (or whose
-        lease is NULL — pre-ownership data) are updated.  The conditional
-        WHERE closes the race between the caller's stale read of the lease
-        and a concurrent heartbeat renewal by the owning worker. When
-        provided, *stop_reason* is persisted in the same atomic update.
+        lease가 *grace_seconds*를 넘겨 만료된 row(또는 lease가 NULL인 소유권 도입 이전
+        데이터)만 갱신한다. 조건부 WHERE가 호출자의 오래된 lease 읽기와 소유 worker의
+        동시 heartbeat 갱신 사이의 경쟁을 막는다. *stop_reason*이 주어지면 같은 원자적
+        갱신에서 함께 저장한다.
 
-        Returns ``False`` when:
-          - the run is no longer ``pending`` / ``running``,
-          - the lease is still valid (owner heartbeat is alive), or
-          - the row doesn't exist.
+        다음 경우 ``False``를 반환한다:
+          - run이 더 이상 ``pending``/``running``이 아님,
+          - lease가 아직 유효함(소유자 heartbeat이 살아 있음),
+          - row가 존재하지 않음.
         """
         pass
 
@@ -319,7 +315,7 @@ class RunStore(abc.ABC):
         before: str | None = None,
         grace_seconds: int = 10,
     ) -> list[dict[str, Any]]:
-        """Return active runs whose lease has expired (or is NULL for pre-ownership rows)."""
+        """lease가 만료된(또는 소유권 도입 이전 row라 NULL인) 활성 run들을 반환한다."""
         pass
 
     async def create_thread_operation_atomic(
@@ -339,15 +335,14 @@ class RunStore(abc.ABC):
         created_at: str | None = None,
         grace_seconds: int = 10,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """Atomically create an active thread operation with cross-process uniqueness.
+        """프로세스 간 유일성을 보장하며 활성 thread operation을 원자적으로 생성한다.
 
-        The default implementation preserves compatibility with stores that
-        still implement the former ``create_run_atomic`` interface. Legacy
-        stores support only normal run rows; internal operation kinds require
-        an implementation of this method.
+        기본 구현은 예전 ``create_run_atomic`` 인터페이스만 구현한 store와의 호환을
+        유지한다. 레거시 store는 일반 run row만 지원하므로, 내부 operation 종류를 쓰려면
+        이 메서드를 구현해야 한다.
 
-        Returns ``(new_run_dict, claimed_run_dicts)``.
-        Raises ``IntegrityError`` on conflict for ``reject`` strategy.
+        ``(new_run_dict, claimed_run_dicts)``를 반환한다.
+        ``reject`` 전략에서 충돌하면 ``IntegrityError``를 던진다.
         """
         legacy_impl = type(self).create_run_atomic
         if legacy_impl is RunStore.create_run_atomic:
@@ -385,7 +380,7 @@ class RunStore(abc.ABC):
         created_at: str | None = None,
         grace_seconds: int = 10,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """Deprecated compatibility alias for normal-run admission."""
+        """일반 run 승인을 위한 deprecated 호환 alias."""
         operation_impl = type(self).create_thread_operation_atomic
         if operation_impl is RunStore.create_thread_operation_atomic:
             raise NotImplementedError("RunStore must implement create_thread_operation_atomic() or create_run_atomic()")

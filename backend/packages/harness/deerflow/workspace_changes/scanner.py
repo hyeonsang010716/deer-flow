@@ -23,17 +23,15 @@ EXCLUDED_DIR_NAMES = {
     ".cache",
     ".next",
     ".venv",
-    # Transient per-step browser screenshots: live progress feedback surfaced in
-    # the browser panel + inline thumbnails, not workspace deliverables. Shared
-    # constant with the browser tools so the name cannot drift out of sync.
+    # 단계별로 생기는 일시적인 browser 스크린샷. workspace 산출물이 아니라 browser 패널과
+    # 인라인 썸네일로 보여주는 진행 상황 피드백이다. browser 도구와 상수를 공유하므로
+    # 이름이 서로 어긋날 수 없다.
     BROWSER_FRAMES_DIRNAME,
-    # Externalized oversized tool outputs (the tool-output budget middleware's
-    # default storage_subdir): process feedback the model reads back via
-    # read_file, not workspace deliverables — same intent as the browser frames
-    # exclusion above. Without this, a run that externalizes any tool output
-    # would trip run delivery verification (produced output never presented)
-    # and fail as an error. Custom storage_subdir values are passed through
-    # ``extra_excluded_dir_names`` instead.
+    # 외부화된 대용량 tool 출력(tool-output budget middleware의 기본 storage_subdir).
+    # workspace 산출물이 아니라 모델이 read_file로 다시 읽는 process feedback이며, 위의
+    # browser frames 제외와 같은 취지다. 이게 없으면 tool 출력을 외부화한 run이 run delivery
+    # 검증(생산된 출력이 제시되지 않음)에 걸려 에러로 실패한다. 사용자 지정 storage_subdir
+    # 값은 대신 ``extra_excluded_dir_names``로 전달된다.
     TOOL_RESULTS_DIRNAME,
     "__pycache__",
     "build",
@@ -116,12 +114,11 @@ def scan_workspace_roots(
     cache_dir = Path(text_cache_dir) if text_cache_dir is not None else None
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    # Operator-customized tool_output.storage_subdir values arrive here; the
-    # default name is already part of EXCLUDED_DIR_NAMES, so merging is safe.
-    # Only single-segment directory names are meaningful: os.walk yields
-    # one-segment dirnames, so a nested value like "cache/tool-results" would
-    # never match. ToolOutputConfig enforces the single-segment contract, so a
-    # multi-segment value is a caller error, not a silent no-op.
+    # 운영자가 지정한 tool_output.storage_subdir 값이 여기로 온다. 기본 이름은 이미
+    # EXCLUDED_DIR_NAMES에 있으므로 병합해도 안전하다. 의미가 있는 것은 한 segment짜리
+    # 디렉터리 이름뿐이다. os.walk는 한 segment짜리 dirname을 내주므로 "cache/tool-results"
+    # 같은 중첩 값은 절대 매칭되지 않는다. ToolOutputConfig가 단일 segment 계약을 강제하므로,
+    # 여러 segment 값은 조용한 no-op이 아니라 호출자의 오류다.
     excluded_dir_names = EXCLUDED_DIR_NAMES | extra_excluded_dir_names if extra_excluded_dir_names else EXCLUDED_DIR_NAMES
     files: dict[str, FileSnapshot] = {}
     scanned = 0
@@ -144,11 +141,10 @@ def scan_workspace_roots(
 
                 host_file = Path(dirpath) / filename
                 if host_file.is_symlink():
-                    # A symlink must never be followed for stat/content purposes: its
-                    # target can point anywhere on the host (including outside the
-                    # scanned root), so it is recorded as a metadata-only stub -
-                    # mirroring how binary/large/sensitive-looking files are handled
-                    # below - instead of being silently omitted from the snapshot.
+                    # stat이나 내용 확인을 위해 symlink를 따라가서는 절대 안 된다. 대상은
+                    # 스캔 대상 root 바깥을 포함해 host의 어디든 가리킬 수 있다. 그래서
+                    # snapshot에서 조용히 빼는 대신, 아래에서 binary/대용량/민감해 보이는
+                    # 파일을 다루는 방식과 동일하게 metadata만 담은 stub으로 기록한다.
                     symlink_snapshot = _snapshot_symlink(root, host_file)
                     if symlink_snapshot is not None:
                         files[symlink_snapshot.path] = symlink_snapshot
@@ -256,10 +252,9 @@ def _snapshot_file(
 
 
 def _snapshot_symlink(root: WorkspaceRoot, host_file: Path) -> FileSnapshot | None:
-    # Deliberately never follows the link (no read_bytes()/open() on the target):
-    # the target may point anywhere on the host, including outside the scanned
-    # root, so stat'ing or reading through it here would risk exposing arbitrary
-    # host file content/metadata as if it belonged to the workspace.
+    # 의도적으로 링크를 따라가지 않는다(대상에 read_bytes()/open()을 하지 않는다).
+    # 대상은 스캔 대상 root 바깥을 포함해 host의 어디든 가리킬 수 있으므로, 여기서 그걸
+    # stat하거나 읽으면 임의의 host 파일 내용/metadata가 workspace의 것인 양 노출될 수 있다.
     try:
         stat = host_file.lstat()
         size = stat.st_size

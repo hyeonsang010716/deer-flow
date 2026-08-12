@@ -1,8 +1,8 @@
-"""SQLAlchemy-backed RunStore implementation.
+"""SQLAlchemy 기반 RunStore 구현.
 
-Each method acquires and releases its own short-lived session.
-Run status updates happen from background workers that may live
-minutes -- we don't hold connections across long execution.
+각 메서드는 짧게 살아 있는 자체 session을 획득하고 반납한다.
+run status 갱신은 수 분간 살아 있을 수 있는 background worker에서 일어나므로,
+긴 실행 구간에 걸쳐 connection을 붙잡고 있지 않는다.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from deerflow.utils.time import coerce_iso
 
 
 def _lease_expired_or_null(lease_col, cutoff: datetime):
-    """SQLAlchemy filter: True when the lease is NULL or has expired past *cutoff*."""
+    """SQLAlchemy filter: lease가 NULL이거나 *cutoff*를 지나 만료됐으면 True."""
     return or_(lease_col.is_(None), lease_col < cutoff)
 
 
@@ -35,7 +35,7 @@ class RunRepository(RunStore):
 
     @staticmethod
     def _normalize_model_name(model_name: str | None) -> str | None:
-        """Normalize model_name for storage: strip whitespace, truncate to 128 chars."""
+        """저장용으로 model_name을 정규화한다. 공백을 제거하고 128자로 자른다."""
         if model_name is None:
             return None
         if not isinstance(model_name, str):
@@ -47,7 +47,7 @@ class RunRepository(RunStore):
 
     @staticmethod
     def _safe_json(obj: Any) -> Any:
-        """Ensure obj is JSON-serializable. Falls back to model_dump() or str()."""
+        """obj가 JSON 직렬화 가능하도록 보장한다. 안 되면 model_dump()나 str()로 대체한다."""
         if obj is None:
             return None
         if isinstance(obj, (str, int, float, bool)):
@@ -75,12 +75,12 @@ class RunRepository(RunStore):
     @staticmethod
     def _row_to_dict(row: RunRow) -> dict[str, Any]:
         d = row.to_dict()
-        # Remap JSON columns to match RunStore interface
+        # RunStore 인터페이스에 맞게 JSON 컬럼 이름을 다시 매핑한다.
         d["metadata"] = d.pop("metadata_json", {})
         d["kwargs"] = d.pop("kwargs_json", {})
-        # Convert datetime to ISO string for consistency with MemoryRunStore.
-        # SQLite drops tzinfo on read despite ``DateTime(timezone=True)`` —
-        # ``coerce_iso`` normalizes naive datetimes as UTC.
+        # MemoryRunStore와 일관성을 맞추기 위해 datetime을 ISO 문자열로 변환한다.
+        # SQLite는 ``DateTime(timezone=True)``에도 불구하고 읽을 때 tzinfo를 버리므로,
+        # ``coerce_iso``가 naive datetime을 UTC로 정규화한다.
         for key in ("created_at", "updated_at", "lease_expires_at", "cancel_requested_at"):
             val = d.get(key)
             if isinstance(val, datetime):
@@ -107,11 +107,11 @@ class RunRepository(RunStore):
         owner_worker_id: str | None = None,
         lease_expires_at: str | None = None,
     ):
-        """Insert or update a run row.
+        """run row를 insert하거나 update한다.
 
-        ``RunManager`` retries ``put`` after transient SQLite failures.  Making
-        this operation idempotent prevents a successful-but-unacknowledged first
-        commit from turning the retry into a primary-key failure.
+        ``RunManager``는 일시적인 SQLite 실패 후 ``put``을 retry한다. 이 연산을 idempotent하게
+        만들어야, 성공했지만 응답을 받지 못한 첫 commit 때문에 retry가 primary-key 실패로
+        바뀌는 일을 막을 수 있다.
         """
         resolved_user_id = resolve_user_id(user_id, method_name="RunRepository.put")
         now = datetime.now(UTC)
@@ -240,18 +240,18 @@ class RunRepository(RunStore):
             values["error"] = error
         if stop_reason is not None:
             values["stop_reason"] = stop_reason
-        # Guard: only transition rows that are still active. ``interrupted`` is
-        # included because the rollback path goes ``running → interrupted``
-        # (cancel acknowledged) then ``interrupted → error`` (task finalize).
-        # ``error`` and ``success`` remain locked so a peer's takeover (or a
-        # completed run) cannot be overwritten by a late writer.
+        # Guard: 아직 active인 row만 전이시킨다. rollback 경로가 ``running → interrupted``
+        # (cancel 확인) 다음 ``interrupted → error`` (task finalize)로 진행하므로
+        # ``interrupted``도 포함한다.
+        # ``error``와 ``success``는 잠긴 상태로 두어, peer의 takeover(또는 완료된 run)가
+        # 뒤늦은 writer에 의해 덮어써지지 않게 한다.
         async with self._sf() as session:
             result = await session.execute(update(RunRow).where(RunRow.run_id == run_id, RunRow.status.in_(("pending", "running", "interrupted"))).values(**values))
             await session.commit()
             return result.rowcount != 0
 
     async def start_run(self, run_id: str) -> bool:
-        """Start only a still-pending run; cancelled rows must not be resurrected."""
+        """아직 pending인 run만 시작한다. cancel된 row가 되살아나서는 안 된다."""
         async with self._sf() as session:
             result = await session.execute(
                 update(RunRow)
@@ -286,7 +286,7 @@ class RunRepository(RunStore):
             await session.commit()
 
     async def delete_thread_operation(self, run_id: str, *, user_id: str | None) -> None:
-        """Release a reservation using its captured owner, not request context."""
+        """request context가 아니라 예약 시점에 캡처한 owner로 reservation을 해제한다."""
         await self.delete(run_id, user_id=user_id)
 
     async def list_pending(self, *, before=None):
@@ -302,7 +302,7 @@ class RunRepository(RunStore):
             return [self._row_to_dict(r) for r in result.scalars()]
 
     async def list_inflight(self, *, before=None):
-        """Return persisted active runs for startup recovery."""
+        """startup recovery용으로 저장된 active run들을 반환한다."""
         if before is None:
             before_dt = datetime.now(UTC)
         elif isinstance(before, datetime):
@@ -339,10 +339,9 @@ class RunRepository(RunStore):
         first_human_message: str | None = None,
         error: str | None = None,
     ) -> bool:
-        """Update status + token usage + convenience fields on run completion.
+        """run 완료 시 status + token usage + 편의 필드를 갱신한다.
 
-        Returns ``False`` when the row is missing or already has a conflicting
-        terminal outcome.
+        row가 없거나 이미 충돌하는 terminal 결과를 가지고 있으면 ``False``를 반환한다.
         """
         values: dict[str, Any] = {
             "status": status,
@@ -396,7 +395,7 @@ class RunRepository(RunStore):
         last_ai_message: str | None = None,
         first_human_message: str | None = None,
     ) -> None:
-        """Update token usage + convenience fields while a run is still active."""
+        """run이 아직 active인 동안 token usage + 편의 필드를 갱신한다."""
         values: dict[str, Any] = {"updated_at": datetime.now(UTC)}
         optional_counters = {
             "total_input_tokens": total_input_tokens,
@@ -422,18 +421,17 @@ class RunRepository(RunStore):
             await session.commit()
 
     async def aggregate_tokens_by_thread(self, thread_id: str, *, include_active: bool = False) -> dict[str, Any]:
-        """Aggregate token usage for a thread.
+        """thread의 token usage를 집계한다.
 
-        ``by_model`` is reduced in Python from each row's ``token_usage_by_model``
-        JSON column so subagent / middleware tokens land on the model that
-        actually produced them (issue #3645). Rows written before that column
-        existed fall back to ``RunRow.model_name`` + ``RunRow.total_tokens``,
-        preserving the legacy lead-only behavior instead of dropping the data.
+        ``by_model``은 각 row의 ``token_usage_by_model`` JSON 컬럼으로부터 Python에서
+        축약하므로, subagent / middleware token이 실제로 그것을 생성한 모델에 귀속된다
+        (issue #3645). 해당 컬럼이 생기기 전에 쓰인 row는 ``RunRow.model_name`` +
+        ``RunRow.total_tokens``로 대체해, 데이터를 버리는 대신 예전의 lead 전용 동작을
+        유지한다.
 
-        Headline totals (``total_tokens``, ``total_input_tokens``,
-        ``total_output_tokens``) and the ``by_caller`` bucket are summed from
-        their own columns and are therefore unaffected by the JSON column being
-        empty.
+        대표 합계(``total_tokens``, ``total_input_tokens``, ``total_output_tokens``)와
+        ``by_caller`` 버킷은 각자의 컬럼에서 합산하므로 JSON 컬럼이 비어 있어도 영향받지
+        않는다.
         """
         statuses = ("success", "error", "running") if include_active else ("success", "error")
         _completed = RunRow.status.in_(statuses)
@@ -466,9 +464,9 @@ class RunRepository(RunStore):
             subagent += r.subagent_tokens
             middleware += r.middleware_tokens
 
-            # ``or {}`` covers rows written before ``token_usage_by_model``
-            # existed (the column is NULL on a manual ALTER ADD COLUMN without
-            # backfill); fresh rows always carry the journal-produced dict.
+            # ``or {}``는 ``token_usage_by_model``이 생기기 전에 쓰인 row를 처리한다
+            # (backfill 없이 수동 ALTER ADD COLUMN을 하면 컬럼이 NULL이다). 새 row는
+            # 항상 journal이 만든 dict를 담고 있다.
             usage_by_model = r.token_usage_by_model or {}
             if usage_by_model:
                 for model, usage in usage_by_model.items():
@@ -495,7 +493,7 @@ class RunRepository(RunStore):
         }
 
     # ------------------------------------------------------------------
-    # Multi-worker run ownership methods
+    # 다중 worker run ownership 메서드
     # ------------------------------------------------------------------
 
     async def update_lease(
@@ -523,7 +521,7 @@ class RunRepository(RunStore):
         owner_worker_id: str,
         lease_expires_at: str,
     ) -> LeaseRenewal:
-        """Renew the owner lease and read cancellation intent atomically."""
+        """owner lease를 갱신하면서 cancellation 의도를 atomic하게 함께 읽는다."""
         lease_dt = datetime.fromisoformat(lease_expires_at)
         async with self._sf() as session:
             result = await session.execute(
@@ -546,7 +544,7 @@ class RunRepository(RunStore):
         return LeaseRenewal(renewed=True, cancel_action=row.cancel_action)
 
     async def request_cancel(self, run_id: str, *, action: str) -> str | None:
-        """Atomically persist the first cancellation action on an active run."""
+        """active run에 대한 첫 cancellation action을 atomic하게 저장한다."""
         if action not in ("interrupt", "rollback"):
             raise ValueError(f"Unsupported cancellation action: {action}")
         now = datetime.now(UTC)
@@ -582,7 +580,7 @@ class RunRepository(RunStore):
         error: str | None = None,
         stop_reason: str | None = None,
     ) -> StatusFinalization:
-        """Atomically let completion win only before cancellation."""
+        """cancellation보다 앞선 경우에만 완료가 이기도록 atomic하게 처리한다."""
         values: dict[str, Any] = {
             "status": status,
             "updated_at": datetime.now(UTC),
@@ -687,18 +685,18 @@ class RunRepository(RunStore):
         created_at: str | None = None,
         grace_seconds: int = 10,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """Atomically create a run with cross-process thread-uniqueness.
+        """프로세스 간 thread-uniqueness를 보장하며 run을 atomic하게 생성한다.
 
-        - For ``reject``: INSERT, let the partial unique index enforce
-          single-active-run. Returns ``(row_dict, [])`` on success, raises
-          ``IntegrityError`` on conflict.
-        - For ``interrupt`` / ``rollback``: SELECT FOR UPDATE inflight
-          rows for the thread, cancel them (unless their lease is still valid),
-          then INSERT the new row — all in one transaction. Returns
-          ``(row_dict, claimed_row_dicts)``.
+        - ``reject``: INSERT한 뒤 partial unique index가 single-active-run을 강제하게
+          한다. 성공하면 ``(row_dict, [])``를 반환하고, 충돌하면 ``IntegrityError``를
+          raise한다.
+        - ``interrupt`` / ``rollback``: 해당 thread의 inflight row를 SELECT FOR UPDATE로
+          잠그고 (lease가 아직 유효하지 않은 한) 취소한 다음, 새 row를 INSERT한다.
+          이 전부가 한 transaction 안에서 일어난다. ``(row_dict, claimed_row_dicts)``를
+          반환한다.
 
         Returns:
-            Tuple of ``(new_run_dict, claimed_run_dicts)``.
+            ``(new_run_dict, claimed_run_dicts)`` 튜플.
         """
         from deerflow.runtime.runs.manager import ConflictError
 
@@ -740,24 +738,21 @@ class RunRepository(RunStore):
                 for row in result.scalars():
                     lease_expired = False
                     if row.lease_expires_at is not None:
-                        # SQLite drops tzinfo on read despite
-                        # ``DateTime(timezone=True)`` (see ``_row_to_dict``).
-                        # Treat naive values as UTC — same convention as
-                        # ``coerce_iso`` — so the Python-side comparison
-                        # against the aware ``cutoff`` does not raise
+                        # SQLite는 ``DateTime(timezone=True)``에도 불구하고 읽을 때
+                        # tzinfo를 버린다(``_row_to_dict`` 참고). ``coerce_iso``와 같은
+                        # 관례로 naive 값을 UTC로 취급해, SQLite에서 heartbeat가
+                        # 켜졌을 때 aware한 ``cutoff``와의 Python 쪽 비교가
                         # ``TypeError: can't compare offset-naive and
-                        # offset-aware datetimes`` when heartbeat is enabled
-                        # on SQLite.
+                        # offset-aware datetimes``를 raise하지 않게 한다.
                         row_lease = row.lease_expires_at
                         if row_lease.tzinfo is None:
                             row_lease = row_lease.replace(tzinfo=UTC)
                         lease_expired = row_lease < cutoff
                         if row_lease >= cutoff and row.owner_worker_id != owner_worker_id:
-                            # Live run owned by another worker — we cannot
-                            # interrupt it and the partial unique index would
-                            # reject our INSERT anyway. Surface as
-                            # ConflictError so the caller gets a clean signal
-                            # instead of a retry loop on IntegrityError.
+                            # 다른 worker가 소유한 살아 있는 run이다. interrupt할 수
+                            # 없고 어차피 partial unique index가 우리 INSERT를 거부한다.
+                            # IntegrityError로 retry 루프를 도는 대신 caller가 깔끔한
+                            # 신호를 받도록 ConflictError로 드러낸다.
                             raise ConflictError(f"Thread {thread_id} already has an active run owned by another worker")
                     if row.operation_kind != "run" and not lease_expired:
                         raise ConflictError(f"Thread {thread_id} has an active checkpoint write")

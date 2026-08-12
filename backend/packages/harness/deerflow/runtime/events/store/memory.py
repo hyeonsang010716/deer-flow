@@ -1,7 +1,7 @@
-"""In-memory RunEventStore. Used when run_events.backend=memory (default) and in tests.
+"""메모리 기반 RunEventStore. run_events.backend=memory(기본값)일 때와 테스트에서 쓴다.
 
-Thread-safe for single-process async usage (no threading locks needed
-since all mutations happen within the same event loop).
+단일 프로세스 async 사용에 대해 thread-safe하다(모든 변경이 같은 event loop 안에서
+일어나므로 threading lock이 필요 없다).
 """
 
 from __future__ import annotations
@@ -15,20 +15,19 @@ from deerflow.runtime.user_context import AUTO, _AutoSentinel
 
 class MemoryRunEventStore(RunEventStore):
     def __init__(self) -> None:
-        self._events: dict[str, list[dict]] = {}  # thread_id -> seq-sorted event list
-        # Messages-only projection of ``_events`` (same dict objects, no copies),
-        # kept in seq order so message pagination is O(log m + page) via bisect
-        # instead of re-scanning every event on each request.
-        self._messages: dict[str, list[dict]] = {}  # thread_id -> seq-sorted message list
-        # Run-keyed projections of the two lists above (same dict objects, no
-        # copies), kept in seq order. Per-run reads then cost O(events-in-run)
-        # instead of O(events-in-thread): without these, ``list_events`` and
-        # ``list_messages_by_run`` re-scan the whole thread's event log on every
-        # request even though one run holds only a handful of events. This is
-        # the per-run analogue of the thread-wide ``_messages`` projection.
-        self._events_by_run: dict[str, dict[str, list[dict]]] = {}  # thread_id -> run_id -> seq-sorted events
-        self._messages_by_run: dict[str, dict[str, list[dict]]] = {}  # thread_id -> run_id -> seq-sorted messages
-        self._seq_counters: dict[str, int] = {}  # thread_id -> last assigned seq
+        self._events: dict[str, list[dict]] = {}  # thread_id -> seq 정렬된 event 목록
+        # ``_events``의 message 전용 projection(복사 없이 같은 dict 객체를 공유한다). seq 순서를
+        # 유지해서, 요청마다 모든 event를 다시 스캔하는 대신 bisect로 O(log m + page)에
+        # message pagination이 끝나게 한다.
+        self._messages: dict[str, list[dict]] = {}  # thread_id -> seq 정렬된 message 목록
+        # 위 두 목록의 run 단위 projection(복사 없이 같은 dict 객체). 역시 seq 순서를 유지한다.
+        # 덕분에 run 단위 읽기 비용이 O(thread의 event 수)가 아니라 O(run의 event 수)가 된다.
+        # 이것이 없으면 ``list_events``와 ``list_messages_by_run``은 run 하나에 event가 몇 개
+        # 없어도 요청마다 thread 전체 event log를 다시 스캔한다. thread 전역 ``_messages``
+        # projection의 run 단위 대응물이다.
+        self._events_by_run: dict[str, dict[str, list[dict]]] = {}  # thread_id -> run_id -> seq 정렬된 event
+        self._messages_by_run: dict[str, dict[str, list[dict]]] = {}  # thread_id -> run_id -> seq 정렬된 message
+        self._seq_counters: dict[str, int] = {}  # thread_id -> 마지막으로 할당한 seq
 
     def _next_seq(self, thread_id: str) -> int:
         current = self._seq_counters.get(thread_id, 0)
@@ -104,8 +103,8 @@ class MemoryRunEventStore(RunEventStore):
         metadata=None,
         created_at=None,
     ):
-        # No await occurs between the lookup and append, so this is atomic for
-        # the backend's documented single-event-loop concurrency model.
+        # 조회와 append 사이에 await이 없으므로, 이 backend가 명시한 단일 event loop
+        # 동시성 모델에서는 원자적이다.
         for event in self._events_by_run.get(thread_id, {}).get(run_id, []):
             if event["event_type"] == event_type:
                 return event, False
@@ -123,25 +122,25 @@ class MemoryRunEventStore(RunEventStore):
         )
 
     async def list_messages(self, thread_id, *, limit=50, before_seq=None, after_seq=None, user_id: str | None | _AutoSentinel = AUTO):
-        # ``messages`` is messages-only and seq-sorted, so the seq window is a
-        # contiguous slice located with bisect (O(log m)) rather than a full scan.
+        # ``messages``는 message만 담고 seq로 정렬되어 있으므로, seq 구간은 전체 스캔이 아니라
+        # bisect로 찾는 연속 slice다(O(log m)).
         messages = self._messages.get(thread_id, [])
 
         if before_seq is not None:
-            # Records with seq < before_seq, then the last `limit` of them.
+            # seq < before_seq인 record 중 마지막 `limit`개.
             hi = bisect.bisect_left(messages, before_seq, key=lambda e: e["seq"])
             return messages[max(0, hi - limit) : hi]
         elif after_seq is not None:
-            # Records with seq > after_seq, then the first `limit` of them.
+            # seq > after_seq인 record 중 처음 `limit`개.
             lo = bisect.bisect_right(messages, after_seq, key=lambda e: e["seq"])
             return messages[lo : lo + limit]
         else:
-            # Return the latest `limit` records, ascending.
+            # 최신 `limit`개를 오름차순으로 반환한다.
             return messages[-limit:]
 
     async def list_events(self, thread_id, run_id, *, event_types=None, task_id=None, limit=500, after_seq=None):
-        # ``_events_by_run`` is already scoped to this run and seq-ordered, so we
-        # touch only this run's events instead of scanning the whole thread.
+        # ``_events_by_run``은 이미 이 run 범위로 좁혀져 있고 seq 순서라서, thread 전체를
+        # 스캔하지 않고 이 run의 event만 건드린다.
         run_events = self._events_by_run.get(thread_id, {}).get(run_id, [])
         if event_types is not None:
             run_events = [e for e in run_events if e["event_type"] in event_types]
@@ -152,16 +151,15 @@ class MemoryRunEventStore(RunEventStore):
         return run_events[:limit]
 
     async def list_messages_by_run(self, thread_id, run_id, *, limit=50, before_seq=None, after_seq=None):
-        # Per-run, messages-only, seq-sorted: the seq window is a contiguous
-        # slice located with bisect (O(log m_run)) over only this run's
-        # messages, instead of re-scanning the whole thread's event log.
+        # run 단위, message 전용, seq 정렬. thread 전체 event log를 다시 스캔하는 대신 이 run의
+        # message에 대해서만 bisect로 연속 slice를 찾는다(O(log m_run)).
         messages = self._messages_by_run.get(thread_id, {}).get(run_id, [])
         lo = 0 if after_seq is None else bisect.bisect_right(messages, after_seq, key=lambda e: e["seq"])
         hi = len(messages) if before_seq is None else bisect.bisect_left(messages, before_seq, key=lambda e: e["seq"])
         window = messages[lo:hi]
-        # An ``after_seq`` cursor pages forward (first ``limit``); otherwise
-        # return the last ``limit`` (the latest page, or the page ending just
-        # before ``before_seq``). Matches the prior filter-based semantics.
+        # ``after_seq`` cursor는 앞으로 페이징한다(처음 ``limit``개). 그 외에는 마지막
+        # ``limit``개를 반환한다(최신 페이지, 또는 ``before_seq`` 직전에서 끝나는 페이지).
+        # 기존 filter 기반 동작과 동일하다.
         if after_seq is not None:
             return window[:limit]
         return window[-limit:]
@@ -195,9 +193,9 @@ class MemoryRunEventStore(RunEventStore):
         remaining = [e for e in all_events if e["run_id"] != run_id]
         removed = len(all_events) - len(remaining)
         self._events[thread_id] = remaining
-        # Keep the message projection in lockstep (same surviving dict objects).
+        # message projection을 같은 상태로 맞춘다(살아남은 동일 dict 객체를 그대로 쓴다).
         self._messages[thread_id] = [e for e in remaining if e["category"] == "message"]
-        # Drop the deleted run from the run-keyed projections.
+        # 삭제된 run을 run 단위 projection에서 제거한다.
         self._events_by_run.get(thread_id, {}).pop(run_id, None)
         self._messages_by_run.get(thread_id, {}).pop(run_id, None)
         return removed

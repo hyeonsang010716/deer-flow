@@ -1,13 +1,12 @@
-"""Abstract interface for run event storage.
+"""run event 저장을 위한 추상 인터페이스.
 
-RunEventStore is the unified storage interface for run event streams.
-Messages (frontend display) and execution traces (debugging/audit) go
-through the same interface, distinguished by the ``category`` field.
+RunEventStore는 run event stream의 통합 저장 인터페이스다. message(frontend 표시용)와 실행
+trace(디버깅/감사용)가 같은 인터페이스를 거치며, ``category`` 필드로 구분된다.
 
-Implementations:
-- MemoryRunEventStore: in-memory dict (development, tests)
-- DbRunEventStore: SQLAlchemy ORM-backed persistence
-- JsonlRunEventStore: JSONL file persistence for local/debug use
+구현체:
+- MemoryRunEventStore: 메모리 dict(개발, 테스트용)
+- DbRunEventStore: SQLAlchemy ORM 기반 영속화
+- JsonlRunEventStore: 로컬/디버그용 JSONL 파일 영속화
 """
 
 from __future__ import annotations
@@ -18,15 +17,15 @@ from deerflow.runtime.user_context import AUTO, _AutoSentinel
 
 
 class RunEventStore(abc.ABC):
-    """Run event stream storage interface.
+    """run event stream 저장 인터페이스.
 
-    All implementations must guarantee:
-    1. put() events are retrievable in subsequent queries
-    2. seq is strictly increasing within the same thread
-    3. list_messages() only returns category="message" events
-    4. list_events() returns all events for the specified run
-    5. Returned dicts contain the required RunEvent envelope fields; backends
-       may add documented fields such as DbRunEventStore.user_id
+    모든 구현체는 다음을 보장해야 한다:
+    1. put()한 event는 이후 조회에서 다시 읽을 수 있다
+    2. seq는 같은 thread 안에서 순증가한다
+    3. list_messages()는 category="message" event만 반환한다
+    4. list_events()는 지정한 run의 모든 event를 반환한다
+    5. 반환 dict는 필수 RunEvent envelope 필드를 담는다. backend는
+       DbRunEventStore.user_id처럼 문서화된 필드를 추가할 수 있다
     """
 
     @abc.abstractmethod
@@ -41,14 +40,14 @@ class RunEventStore(abc.ABC):
         metadata: dict | None = None,
         created_at: str | None = None,
     ) -> dict:
-        """Write an event, auto-assign seq, return the complete record."""
+        """event를 쓰고 seq를 자동 부여한 뒤 완성된 레코드를 반환한다."""
 
     @abc.abstractmethod
     async def put_batch(self, events: list[dict]) -> list[dict]:
-        """Batch-write events. Used by RunJournal flush buffer.
+        """event를 배치로 쓴다. RunJournal의 flush buffer가 쓴다.
 
-        Each dict's keys match put()'s keyword arguments.
-        Returns complete records with seq assigned.
+        각 dict의 키는 put()의 키워드 인자와 같다.
+        seq가 부여된 완성 레코드를 반환한다.
         """
 
     @abc.abstractmethod
@@ -63,12 +62,11 @@ class RunEventStore(abc.ABC):
         metadata: dict | None = None,
         created_at: str | None = None,
     ) -> tuple[dict, bool]:
-        """Write one event unless this run already has the same event type.
+        """해당 run에 같은 event type이 아직 없을 때만 event 하나를 쓴다.
 
-        The check and write must be serialized with ordinary writers for the
-        thread. Returns ``(record, created)``. This is the durability primitive
-        used by terminal run receipts, whose recovery path may safely retry
-        after a worker crash.
+        검사와 쓰기는 그 thread의 일반 writer와 직렬화되어야 한다. ``(record, created)``를
+        반환한다. terminal run receipt가 쓰는 durability primitive이며, 그 복구 경로는 worker가
+        죽은 뒤에도 안전하게 재시도할 수 있다.
         """
 
     @abc.abstractmethod
@@ -81,15 +79,15 @@ class RunEventStore(abc.ABC):
         after_seq: int | None = None,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> list[dict]:
-        """Return displayable messages (category=message) for a thread, ordered by seq ascending.
+        """thread의 표시 가능한 message(category=message)를 seq 오름차순으로 반환한다.
 
-        Supports bidirectional cursor pagination:
-        - before_seq: return the last ``limit`` records with seq < before_seq (ascending)
-        - after_seq: return the first ``limit`` records with seq > after_seq (ascending)
-        - neither: return the latest ``limit`` records (ascending)
+        양방향 cursor 페이지네이션을 지원한다:
+        - before_seq: seq < before_seq인 마지막 ``limit``개(오름차순)
+        - after_seq: seq > after_seq인 처음 ``limit``개(오름차순)
+        - 둘 다 없으면: 최신 ``limit``개(오름차순)
 
-        ``user_id`` may be passed explicitly by request-independent callers;
-        user-scoped backends must apply it according to their isolation model.
+        요청과 무관한 호출자는 ``user_id``를 명시적으로 넘길 수 있다. user 범위를 두는 backend는
+        자신의 격리 모델에 맞게 이를 적용해야 한다.
         """
 
     @abc.abstractmethod
@@ -103,13 +101,12 @@ class RunEventStore(abc.ABC):
         limit: int = 500,
         after_seq: int | None = None,
     ) -> list[dict]:
-        """Return the full event stream for a run, ordered by seq ascending.
+        """run의 전체 event stream을 seq 오름차순으로 반환한다.
 
-        Optionally filter by ``event_types`` and/or ``task_id`` (matched against
-        ``metadata["task_id"]``). ``after_seq`` is a forward cursor returning the
-        first ``limit`` records with seq > after_seq, so callers can page through
-        a single subagent task's events without the run-wide ``limit`` truncating
-        the tail (#3779).
+        ``event_types``와 ``task_id``(``metadata["task_id"]``에 매칭)로 선택적으로 필터링한다.
+        ``after_seq``는 seq > after_seq인 처음 ``limit``개를 반환하는 전진 cursor다. 덕분에
+        run 전체에 걸린 ``limit``이 꼬리를 잘라내지 않고도 subagent task 하나의 event를 페이지
+        단위로 훑을 수 있다(#3779).
         """
 
     @abc.abstractmethod
@@ -122,12 +119,12 @@ class RunEventStore(abc.ABC):
         before_seq: int | None = None,
         after_seq: int | None = None,
     ) -> list[dict]:
-        """Return displayable messages (category=message) for a specific run, ordered by seq ascending.
+        """특정 run의 표시 가능한 message(category=message)를 seq 오름차순으로 반환한다.
 
-        Supports bidirectional cursor pagination:
-        - after_seq: return the first ``limit`` records with seq > after_seq (ascending)
-        - before_seq: return the last ``limit`` records with seq < before_seq (ascending)
-        - neither: return the latest ``limit`` records (ascending)
+        양방향 cursor 페이지네이션을 지원한다:
+        - after_seq: seq > after_seq인 처음 ``limit``개(오름차순)
+        - before_seq: seq < before_seq인 마지막 ``limit``개(오름차순)
+        - 둘 다 없으면: 최신 ``limit``개(오름차순)
         """
 
     @abc.abstractmethod
@@ -138,20 +135,19 @@ class RunEventStore(abc.ABC):
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> dict[str, int]:
-        """Return each run's last non-middleware AI message sequence.
+        """각 run의 마지막 non-middleware AI message의 seq를 반환한다.
 
-        ``user_id`` follows the same explicit-caller semantics as
-        :meth:`list_messages`.
+        ``user_id``는 :meth:`list_messages`와 같은 명시적 호출자 의미를 따른다.
         """
 
     @abc.abstractmethod
     async def count_messages(self, thread_id: str) -> int:
-        """Count displayable messages (category=message) in a thread."""
+        """thread 안의 표시 가능한 message(category=message) 수를 센다."""
 
     @abc.abstractmethod
     async def delete_by_thread(self, thread_id: str) -> int:
-        """Delete all events for a thread. Return the number of deleted events."""
+        """thread의 모든 event를 삭제하고 삭제된 event 수를 반환한다."""
 
     @abc.abstractmethod
     async def delete_by_run(self, thread_id: str, run_id: str) -> int:
-        """Delete all events for a specific run. Return the number of deleted events."""
+        """특정 run의 모든 event를 삭제하고 삭제된 event 수를 반환한다."""

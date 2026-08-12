@@ -1,4 +1,4 @@
-"""Run ownership configuration for multi-worker deployments."""
+"""multi-worker 배포용 run ownership 설정."""
 
 from __future__ import annotations
 
@@ -6,27 +6,23 @@ from pydantic import BaseModel, Field
 
 
 class RunOwnershipConfig(BaseModel):
-    """Per-run ownership and lease configuration.
+    """run 단위 ownership과 lease 설정.
 
-    When ``heartbeat_enabled`` is True, each worker periodically renews
-    the lease on its active runs. This is required for multi-worker
-    deployments to detect orphaned runs from crashed workers.
+    ``heartbeat_enabled``가 True면 각 worker가 자신이 실행 중인 run의 lease를 주기적으로
+    갱신한다. multi-worker 배포에서 죽은 worker의 고아 run을 감지하려면 필요하다.
 
-    Clock-sync assumption
+    시계 동기화 가정
     ---------------------
-    Reconciliation compares another worker's UTC ``lease_expires_at`` against
-    this worker's ``datetime.now(UTC)``. The only skew budget between two
-    workers' clocks is ``grace_seconds`` (plus whatever heartbeat slop is
-    left in the current cycle — at most ``lease_seconds / 3``). Worst case,
-    if the owning worker's heartbeat is just about to fire, a peer whose
-    clock is more than ``grace_seconds`` ahead can mis-reclaim a still-live
-    run as an orphan.
+    reconciliation은 다른 worker의 UTC ``lease_expires_at``을 이 worker의
+    ``datetime.now(UTC)``와 비교한다. 두 worker 시계 사이에 허용되는 오차는
+    ``grace_seconds``뿐이다(여기에 현재 주기에 남은 heartbeat 여유, 최대
+    ``lease_seconds / 3``이 더해진다). 최악의 경우 소유 worker의 heartbeat가 막 발동하려는
+    시점에, 시계가 ``grace_seconds``보다 앞선 peer가 살아 있는 run을 고아로 잘못 회수할 수 있다.
 
-    Operators should ensure worker clocks are synchronised (NTP / chrony /
-    systemd-timesyncd in K8s nodes) within a few seconds. If the
-    environment cannot guarantee that, raise ``grace_seconds``; the cost is
-    longer recovery latency for genuinely dead workers
-    (``lease_seconds + grace_seconds`` from last heartbeat to reclaim).
+    운영자는 worker 시계를 몇 초 이내로 동기화해야 한다(K8s 노드의 NTP/chrony/
+    systemd-timesyncd). 환경상 보장할 수 없으면 ``grace_seconds``를 올린다. 대가는 실제로
+    죽은 worker의 복구 지연이 길어지는 것이다(마지막 heartbeat부터 회수까지
+    ``lease_seconds + grace_seconds``).
     """
 
     lease_seconds: int = Field(

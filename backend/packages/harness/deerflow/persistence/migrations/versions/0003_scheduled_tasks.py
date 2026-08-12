@@ -1,4 +1,4 @@
-"""scheduled tasks.
+"""scheduled task 테이블을 추가한다.
 
 Revision ID: 0003_scheduled_tasks
 Revises: 0002_runs_token_usage
@@ -22,9 +22,8 @@ def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     if inspector.has_table("scheduled_tasks"):
-        # Idempotent: a DB whose full-metadata create_all already provisioned
-        # both scheduled-task tables (e.g. legacy test seeds) must not have them
-        # re-created here.
+        # 멱등성 보장: full-metadata create_all로 scheduled-task 테이블 둘 다 이미 만들어진
+        # DB(예: legacy test seed)에서는 여기서 다시 만들지 않는다.
         return
     op.create_table(
         "scheduled_tasks",

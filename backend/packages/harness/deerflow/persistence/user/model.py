@@ -1,12 +1,11 @@
-"""ORM model for the users table.
+"""users 테이블의 ORM model.
 
-Lives in the harness persistence package so it is picked up by
-``Base.metadata.create_all()`` alongside ``threads_meta``, ``runs``,
-``run_events``, and ``feedback``. Using the shared engine means:
+harness persistence 패키지에 두어 ``threads_meta``, ``runs``, ``run_events``, ``feedback``과
+함께 ``Base.metadata.create_all()``에 잡히게 한다. 공유 engine을 쓰면 다음이 보장된다.
 
-- One SQLite/Postgres database, one connection pool
-- One schema initialisation codepath
-- Consistent async sessions across auth and persistence reads
+- SQLite/Postgres 데이터베이스 하나, connection pool 하나
+- schema 초기화 경로 하나
+- auth와 persistence 읽기 전반에서 일관된 async session
 """
 
 from __future__ import annotations
@@ -22,14 +21,14 @@ from deerflow.persistence.base import Base
 class UserRow(Base):
     __tablename__ = "users"
 
-    # UUIDs are stored as 36-char strings for cross-backend portability.
+    # backend 간 이식성을 위해 UUID는 36자 문자열로 저장한다.
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
 
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    # "admin" | "user" — kept as plain string to avoid ALTER TABLE pain
-    # when new roles are introduced.
+    # "admin" | "user" — 새 role이 추가될 때 ALTER TABLE로 고생하지 않도록 평범한 문자열로
+    # 둔다.
     system_role: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
 
     created_at: Mapped[datetime] = mapped_column(
@@ -38,13 +37,12 @@ class UserRow(Base):
         default=lambda: datetime.now(UTC),
     )
 
-    # OAuth linkage (optional). A partial unique index enforces one
-    # account per (provider, oauth_id) pair, leaving NULL/NULL rows
-    # unconstrained so plain password accounts can coexist.
+    # OAuth 연결(선택). partial unique index가 (provider, oauth_id) 쌍당 계정 하나를 강제하며,
+    # NULL/NULL 행은 제약 없이 남겨 일반 비밀번호 계정이 함께 존재할 수 있게 한다.
     oauth_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     oauth_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    # Auth lifecycle flags
+    # auth lifecycle 플래그
     needs_setup: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     token_version: Mapped[int] = mapped_column(nullable=False, default=0)
 

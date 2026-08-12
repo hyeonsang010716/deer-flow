@@ -3,7 +3,7 @@ from deerflow.runtime.events.store.memory import MemoryRunEventStore
 
 
 def make_run_event_store(config=None) -> RunEventStore:
-    """Create a RunEventStore based on run_events.backend configuration."""
+    """run_events.backend 설정에 맞는 RunEventStore를 만든다."""
     if config is None or config.backend == "memory":
         return MemoryRunEventStore()
     if config.backend == "db":
@@ -11,7 +11,7 @@ def make_run_event_store(config=None) -> RunEventStore:
 
         sf = get_session_factory()
         if sf is None:
-            # database.backend=memory but run_events.backend=db -> fallback
+            # database.backend=memory인데 run_events.backend=db인 경우 -> fallback
             return MemoryRunEventStore()
         from deerflow.runtime.events.store.db import DbRunEventStore
 

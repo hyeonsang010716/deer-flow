@@ -1,17 +1,16 @@
-"""ORM model registration entry point.
+"""ORM model 등록 진입점.
 
-Importing this module ensures all ORM models are registered with
-``Base.metadata`` so Alembic autogenerate detects every table.
+이 모듈을 import하면 모든 ORM model이 ``Base.metadata``에 등록되어 Alembic autogenerate가 모든
+테이블을 감지한다.
 
-The actual ORM classes have moved to entity-specific subpackages:
+실제 ORM 클래스들은 엔티티별 하위 패키지로 옮겨졌다.
 - ``deerflow.persistence.thread_meta``
 - ``deerflow.persistence.run``
 - ``deerflow.persistence.feedback``
 - ``deerflow.persistence.user``
 
-``RunEventRow`` remains in ``deerflow.persistence.models.run_event`` because
-its storage implementation lives in ``deerflow.runtime.events.store.db`` and
-there is no matching entity directory.
+``RunEventRow``는 ``deerflow.persistence.models.run_event``에 남아 있다. 저장 구현이
+``deerflow.runtime.events.store.db``에 있고 대응하는 엔티티 디렉터리가 없기 때문이다.
 """
 
 from deerflow.persistence.agents.model import AgentRow

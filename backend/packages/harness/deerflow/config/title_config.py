@@ -1,10 +1,10 @@
-"""Configuration for automatic thread title generation."""
+"""thread 제목 자동 생성 설정."""
 
 from pydantic import BaseModel, Field
 
 
 class TitleConfig(BaseModel):
-    """Configuration for automatic thread title generation."""
+    """thread 제목 자동 생성 설정."""
 
     enabled: bool = Field(
         default=True,
@@ -32,35 +32,33 @@ class TitleConfig(BaseModel):
     )
 
 
-# Global configuration instance
+# 전역 설정 인스턴스
 _title_config: TitleConfig = TitleConfig()
 
 
 def get_title_config() -> TitleConfig:
-    """Get the current title configuration."""
+    """현재 title 설정을 반환한다."""
     return _title_config
 
 
 def set_title_config(config: TitleConfig) -> None:
-    """Set the title configuration."""
+    """title 설정을 지정한다."""
     global _title_config
     _title_config = config
 
 
 def load_title_config_from_dict(config_dict: dict) -> None:
-    """Load title configuration from a dictionary."""
+    """dict에서 title 설정을 읽어 들인다."""
     global _title_config
     _title_config = TitleConfig(**config_dict)
 
 
 def reset_title_config() -> None:
-    """Restore the title configuration to its pristine ``TitleConfig()`` default.
+    """title 설정을 원래의 ``TitleConfig()`` 기본값으로 되돌린다.
 
-    Public API so that tests do not have to reach into the private
-    ``_title_config`` module attribute. ``AppConfig.from_file()`` calls
-    :func:`load_title_config_from_dict`, which permanently mutates the
-    singleton; tests that need a clean slate between cases should call
-    this between tests.
+    테스트가 private한 ``_title_config`` 모듈 속성을 직접 건드리지 않도록 공개 API로 둔다.
+    ``AppConfig.from_file()``이 :func:`load_title_config_from_dict`를 호출해 싱글턴을 영구히
+    변경하므로, 케이스 사이에 깨끗한 상태가 필요한 테스트는 이 함수를 호출해야 한다.
     """
     global _title_config
     _title_config = TitleConfig()

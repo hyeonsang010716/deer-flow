@@ -1,4 +1,4 @@
-"""Stable OpenViking session identity and transcript-cursor helpers."""
+"""안정적인 OpenViking session 식별자와 transcript cursor 헬퍼."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def _canonical_peer_id(
     agent_name: str | None,
     default_peer_id: str,
 ) -> str:
-    """Map DeerFlow's case-insensitive agent names to disjoint peer IDs."""
+    """대소문자를 구분하지 않는 DeerFlow agent 이름을 서로 겹치지 않는 peer ID로 매핑한다."""
 
     if agent_name is None:
         return default_peer_id
@@ -29,9 +29,9 @@ def _canonical_peer_id(
     if is_safe_peer_id(value) and value != default_peer_id and not value.startswith(GENERATED_PEER_PREFIX):
         return value
 
-    # The generated namespace is reserved, so compatible names, the default
-    # peer, and hashed fallbacks cannot alias one another. The 128-bit digest
-    # also avoids collisions caused by sanitizing or truncating agent names.
+    # 생성된 네임스페이스는 예약되어 있어 호환 가능한 이름, 기본 peer, 해시 fallback이
+    # 서로 같은 값이 될 수 없다. 128비트 digest는 agent 이름을 정규화하거나 잘라내면서
+    # 생기는 충돌도 막는다.
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
     return f"{GENERATED_PEER_PREFIX}{digest}"
 
@@ -41,14 +41,14 @@ def _session_id(
     peer_id: str,
     thread_id: str,
 ) -> str:
-    """Derive one stable OpenViking session for one DeerFlow thread."""
+    """DeerFlow thread 하나에 대응하는 안정적인 OpenViking session을 유도한다."""
 
     digest = hashlib.sha256(f"{_SESSION_NAMESPACE}\0{owner_user_id}\0{peer_id}\0{thread_id}".encode()).hexdigest()
     return f"df_{digest[:48]}"
 
 
 def _memory_target_uris(peer_id: str) -> list[str]:
-    """Return the self and current-peer memory roots for a request."""
+    """요청에 쓸 self 및 현재 peer의 memory 루트를 반환한다."""
 
     return [
         "viking://user/memories",
@@ -60,7 +60,7 @@ def _captureable_messages(
     messages: list[Any],
     should_keep_hidden_message: Any,
 ) -> list[Any]:
-    """Drop DeerFlow-only injected context before handing messages to OpenViking."""
+    """메시지를 OpenViking에 넘기기 전에 DeerFlow가 주입한 context를 제거한다."""
 
     selected: list[Any] = []
     for message in messages:
@@ -78,7 +78,7 @@ def _captureable_messages(
 
 
 def _message_signature(message: Any) -> str:
-    """Hash stable message semantics without retaining transcript content."""
+    """transcript 내용을 보관하지 않고 메시지의 안정적인 의미만 해싱한다."""
 
     additional_kwargs = _message_value(message, "additional_kwargs", {})
     if not isinstance(additional_kwargs, Mapping):
@@ -110,7 +110,7 @@ def _matching_prefix_count(
     state: dict[str, Any],
     signatures: list[str],
 ) -> int | None:
-    """Return the already submitted prefix, including after compaction."""
+    """이미 제출된 prefix 길이를 반환한다. compaction 이후에도 동작한다."""
 
     count = state.get("submitted_prefix_count")
     digest = state.get("submitted_prefix_digest")
@@ -136,7 +136,7 @@ def _advanced_cursor(
     max_seen: int,
     commit_pending: bool,
 ) -> dict[str, Any]:
-    """Advance confirmed capture progress without persisting message content."""
+    """메시지 내용을 저장하지 않고 확정된 capture 진행 상황만 전진시킨다."""
 
     recent = [
         *_string_list(previous.get("submitted_signatures")),

@@ -1,8 +1,8 @@
-"""Provider factory — resolves and constructs the configured AuthorizationProvider.
+"""Provider factory — 설정된 AuthorizationProvider를 해석하고 생성한다.
 
-This is the single entry point for creating an authorization provider from
-``AuthorizationConfig``. It does not cache instances (Phase 1B resolves once
-per agent build and passes the same instance to Layer 1 and Layer 2).
+``AuthorizationConfig``로부터 authorization provider를 만드는 단일 진입점이다.
+인스턴스를 캐싱하지 않는다. Phase 1B는 agent 빌드마다 한 번 해석해서 같은 인스턴스를
+Layer 1과 Layer 2에 넘긴다.
 """
 
 from __future__ import annotations
@@ -15,16 +15,15 @@ from deerflow.reflection import resolve_variable
 def resolve_authorization_provider(
     config: AuthorizationConfig,
 ) -> AuthorizationProvider | None:
-    """Resolve the authorization provider from config.
+    """config에서 authorization provider를 해석한다.
 
     Returns:
-        A constructed ``AuthorizationProvider`` instance, or ``None`` if
-        authorization is disabled.
+        생성된 ``AuthorizationProvider`` 인스턴스. authorization이 비활성이면 ``None``.
 
     Raises:
-        ValueError: If ``enabled`` is True but no provider is configured,
-            or if the class path is invalid / construction fails / the
-            instance does not satisfy the ``AuthorizationProvider`` Protocol.
+        ValueError: ``enabled``가 True인데 provider가 설정되지 않았거나,
+            class path가 잘못됐거나, 생성에 실패했거나, 인스턴스가
+            ``AuthorizationProvider`` Protocol을 만족하지 않을 때.
     """
     if not config.enabled:
         return None

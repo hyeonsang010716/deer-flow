@@ -16,7 +16,7 @@ VALID_FILTERS = ("fit", "raw", "bm25", "llm")
 
 
 def _get_tool_config(tool_name: str) -> dict | None:
-    """Return the tool's config extras (model_extra) dict, or None if unconfigured."""
+    """도구 설정의 extra(model_extra) dict를 반환한다. 설정이 없으면 None을 반환한다."""
     config = get_app_config().get_tool_config(tool_name)
     if config is None:
         return None
@@ -25,11 +25,11 @@ def _get_tool_config(tool_name: str) -> dict | None:
 
 
 def _coerce_timeout(value: object, default: int) -> float:
-    """Coerce a config timeout into seconds, falling back to ``default`` on bad input.
+    """설정의 timeout을 초 단위로 변환한다. 잘못된 입력이면 ``default``로 되돌린다.
 
-    Mirrors ``jina_ai._coerce_timeout``: booleans and non-numeric strings fall
-    back to the default so e.g. ``timeout: off`` (YAML ``False``) does not become
-    ``0.0`` and time out every request against a healthy server.
+    ``jina_ai._coerce_timeout``과 같은 방식이다. bool과 숫자가 아닌 문자열은 기본값으로
+    떨어뜨려, ``timeout: off``(YAML의 ``False``) 같은 값이 ``0.0``이 되어 정상 서버에 대한
+    모든 요청을 timeout시키지 않게 한다.
     """
     if isinstance(value, bool):
         return float(default)
@@ -56,10 +56,10 @@ def _coerce_bool(value: object, default: bool) -> bool:
 
 
 def _coerce_filter(value: object) -> str:
-    """Normalize and validate the markdown filter, falling back to the default.
+    """markdown 필터를 정규화하고 검증하며, 잘못되면 기본값으로 되돌린다.
 
-    Catches typos / stale values (e.g. ``FIt``, ``fit_content``) at config-read
-    time instead of letting them reach the server as an opaque HTTP 400.
+    오타나 오래된 값(예: ``FIt``, ``fit_content``)을 설정 읽기 시점에 잡아, 정체를 알기 어려운
+    HTTP 400으로 서버까지 흘러가지 않게 한다.
     """
     if isinstance(value, str):
         normalized = value.strip().lower()
@@ -70,11 +70,10 @@ def _coerce_filter(value: object) -> str:
 
 
 def _build_client(cfg: dict | None) -> Crawl4AiClient:
-    """Build a ``Crawl4AiClient`` from an already-read ``web_fetch`` config dict.
+    """이미 읽어 둔 ``web_fetch`` 설정 dict로 ``Crawl4AiClient``를 만든다.
 
-    Takes the config as an argument (rather than reading it again) so a single
-    invocation reads ``get_app_config()`` exactly once and cannot split across a
-    concurrent hot-reload.
+    설정을 다시 읽지 않고 인자로 받는다. 그래야 한 번의 호출이 ``get_app_config()``를 정확히
+    한 번만 읽고, 동시에 일어나는 hot-reload를 걸치지 않는다.
     """
     base_url = DEFAULT_BASE_URL
     token = ""
@@ -88,17 +87,17 @@ def _build_client(cfg: dict | None) -> Crawl4AiClient:
 
 @tool("web_fetch", parse_docstring=True)
 async def web_fetch_tool(url: str) -> str:
-    """Fetch the contents of a web page at a given URL.
-    Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
-    This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
-    Do NOT add www. to URLs that do NOT have them.
-    URLs must include the schema: https://example.com is a valid URL while example.com is an invalid URL.
+    """지정된 URL의 웹 페이지 내용을 가져온다.
+    사용자가 직접 제공했거나 web_search, web_fetch 도구의 결과로 반환된 URL만 정확히 그대로 가져와라.
+    이 도구는 비공개 Google Docs나 로그인 뒤에 있는 페이지처럼 인증이 필요한 콘텐츠에는 접근할 수 없다.
+    www.가 없는 URL에 www.를 붙이지 마라.
+    URL에는 반드시 schema가 포함되어야 한다: https://example.com은 유효한 URL이지만 example.com은 유효하지 않다.
 
     Args:
-        url: The URL to fetch the contents of.
+        url: 내용을 가져올 URL.
     """
     try:
-        cfg = _get_tool_config("web_fetch")  # read config once; pass the values down
+        cfg = _get_tool_config("web_fetch")  # 설정은 한 번만 읽고 값을 아래로 전달한다
         allow_private_addresses = _coerce_bool(cfg.get("allow_private_addresses") if cfg is not None else None, False)
         url_error = validate_public_http_url(url, allow_private_addresses=allow_private_addresses)
         if url_error:

@@ -1,19 +1,16 @@
-"""Read-through delta-history cache wrapper for any BaseCheckpointSaver.
+"""임의의 BaseCheckpointSaver를 감싸는 read-through delta-history cache wrapper.
 
-Correctness argument (spec §3): a checkpoint's delta history is a pure
-function of its sealed ancestor chain — the LangGraph contract excludes the
-target's own pending writes, parent links are fixed at creation, and an
-ancestor's writes are sealed once its child exists. Entries keyed by
-(thread, ns, checkpoint_id, channel) are therefore immutable: no
-invalidation, and shared backends are coherent across processes.
+정확성 논거(spec §3): checkpoint의 delta history는 봉인된 ancestor chain의 순수 함수다.
+LangGraph 계약상 target 자신의 pending write는 제외되고, parent link는 생성 시점에 고정되며,
+ancestor의 write는 자식이 생기는 순간 봉인된다. 따라서 (thread, ns, checkpoint_id, channel)로
+키가 잡힌 항목은 불변이다. invalidation이 필요 없고, 공유 backend는 프로세스 간에도 일관된다.
 
-The wrapper never caches the "latest checkpoint" resolution; only histories
-keyed by resolved immutable checkpoint_ids.
+wrapper는 "최신 checkpoint" 해석 결과는 절대 캐시하지 않는다. 이미 해석된 불변 checkpoint_id로
+키가 잡힌 history만 캐시한다.
 
-Data lifecycle: thread deletion and prune purge the thread's cached entries
-(source-of-truth removal must not leave residual history payloads in the
-cache); run-scoped deletes cannot be mapped to threads cheaply and rely on
-LRU/TTL bounds.
+데이터 lifecycle: thread 삭제와 prune은 해당 thread의 캐시 항목을 비운다(원본이 지워졌는데
+cache에 history payload가 남으면 안 된다). run 단위 삭제는 thread로 싸게 매핑할 수 없으므로
+LRU/TTL 한도에 맡긴다.
 """
 
 from __future__ import annotations
@@ -29,10 +26,9 @@ from deerflow.runtime.checkpoint_cache.base import make_history_key
 
 logger = logging.getLogger(__name__)
 
-# Depth budget for recursive compose before falling back to a chain-warming
-# walk. Steady-state runs need ~2 (one intermediate checkpoint per step);
-# deeper cold chains are handled faster by one warming walk than by many
-# recursive single-tuple fetches.
+# chain을 데우는 walk로 폴백하기 전까지 재귀 compose에 허용하는 depth 예산. 정상 상태의 run은
+# ~2면 충분하다(step당 중간 checkpoint 하나). 더 깊은 cold chain은 단일 tuple을 여러 번 재귀
+# fetch 하는 것보다 warming walk 한 번이 빠르다.
 _COMPOSE_MAX_DEPTH = 8
 
 
@@ -46,13 +42,13 @@ def _checkpoint_ref(tup: CheckpointTuple) -> tuple[str, str, str]:
 
 
 def _channel_writes(tup: CheckpointTuple, channel: str) -> list[PendingWrite]:
-    """Writes for one channel, oldest→newest (tuple storage order)."""
+    """한 channel의 write를 오래된 것→최신 순(tuple 저장 순서)으로 반환한다."""
     return [w for w in (tup.pending_writes or []) if w[1] == channel]
 
 
 class CachedHistorySaver(BaseCheckpointSaver):
     def __init__(self, inner: BaseCheckpointSaver, cache: Any, *, key_prefix: str) -> None:
-        # Instance attr shadows the base class JsonPlusSerializer default.
+        # 인스턴스 속성이 base class의 JsonPlusSerializer 기본값을 가린다.
         self.serde = inner.serde
         self._inner = inner
         self._cache = cache
@@ -61,16 +57,15 @@ class CachedHistorySaver(BaseCheckpointSaver):
         self._full_walks = 0
 
     def __getattr__(self, name: str) -> Any:
-        # Safety net for saver-specific extras (e.g. AsyncSqliteSaver.setup).
-        # Base-class methods are explicitly delegated below, so this only
-        # fires for attributes BaseCheckpointSaver does not define.
+        # saver 고유 확장(예: AsyncSqliteSaver.setup)을 위한 안전망. base class 메서드는 아래에서
+        # 명시적으로 위임하므로, 여기는 BaseCheckpointSaver가 정의하지 않은 속성에만 걸린다.
         inner = self.__dict__.get("_inner")
         if inner is None:
             raise AttributeError(name)
         return getattr(inner, name)
 
     # ------------------------------------------------------------------
-    # Key building
+    # 키 구성
     # ------------------------------------------------------------------
 
     def _key(self, tup: CheckpointTuple, channel: str) -> str:
@@ -86,15 +81,15 @@ class CachedHistorySaver(BaseCheckpointSaver):
         return {**backend, "compose_hits": self._compose_hits, "full_walks": self._full_walks}
 
     # ------------------------------------------------------------------
-    # Delta history: the only overridden behavior
+    # delta history: 유일하게 재정의하는 동작
     # ------------------------------------------------------------------
 
     async def aget_delta_channel_history(self, *, config: RunnableConfig, channels: Sequence[str]) -> dict[str, Any]:
         if not channels:
             return {}
         if not getattr(self._cache, "enabled", True):
-            # Disabled cache: pass straight through; composing over all-miss
-            # entries is strictly more work than the raw saver's walk.
+            # cache가 꺼져 있으면 그대로 통과시킨다. 전부 miss인 항목을 compose 하는 것은
+            # raw saver의 walk보다 무조건 더 많은 일이다.
             return await self._walk_inner(config, channels)
         target = await self._inner.aget_tuple(config)
         if target is None:
@@ -125,16 +120,14 @@ class CachedHistorySaver(BaseCheckpointSaver):
         return {ch: await self._aresolve(target, ch, _COMPOSE_MAX_DEPTH) for ch in missing}
 
     async def _aresolve(self, tup: CheckpointTuple, channel: str, depth: int) -> dict[str, Any]:
-        """Recursively compose history(tup) from the nearest warm ancestor.
+        """가장 가까운 warm ancestor에서 history(tup)를 재귀적으로 합성한다.
 
-        Real runs create several checkpoints per super-step and only some are
-        ever materialized as targets, so the parent is usually an unwarmed
-        intermediate checkpoint (measured: 0 cache hits with single-level
-        compose on a 500-step sqlite run). Recursing one level per
-        intermediate lands on a warmed ancestor within ~2 levels in steady
-        state; each composed level is cached, so the warm frontier follows
-        the run. At depth 0 on a cold chain it delegates one inner fast-path
-        walk (2 SQL) rather than crawling ancestors tuple-by-tuple.
+        실제 run은 super-step마다 checkpoint를 여러 개 만들지만 그중 일부만 target으로
+        materialize 되므로, parent는 보통 데워지지 않은 중간 checkpoint다(측정: 500-step sqlite
+        run에서 단일 레벨 compose는 cache hit이 0이었다). 중간 checkpoint마다 한 레벨씩 재귀하면
+        정상 상태에서는 ~2레벨 안에 warm ancestor에 닿는다. 합성한 레벨은 매번 캐시되므로 warm
+        경계가 run을 따라 이동한다. cold chain에서 depth가 0이 되면 ancestor tuple을 하나씩 훑는
+        대신 내부 fast-path walk 한 번(SQL 2회)에 위임한다.
         """
         parent_config = tup.parent_config
         if parent_config is None:
@@ -156,11 +149,10 @@ class CachedHistorySaver(BaseCheckpointSaver):
             if depth > 0:
                 parent_history = await self._aresolve(parent, channel, depth - 1)
             else:
-                # Depth budget exhausted on a cold chain: delegate ONE inner
-                # fast-path walk (2 SQL total) for this level instead of
-                # fetching every ancestor tuple individually. Ancestors below
-                # stay cold; resolving them later recurses up to the nearest
-                # warm level, so the frontier still follows the run.
+                # cold chain에서 depth 예산이 바닥났다. ancestor tuple을 하나씩 가져오는 대신
+                # 이 레벨에 대해 내부 fast-path walk를 딱 한 번(총 SQL 2회) 위임한다. 아래쪽
+                # ancestor는 cold로 남지만, 나중에 그것을 해석할 때 가장 가까운 warm 레벨까지
+                # 재귀하므로 warm 경계는 여전히 run을 따라간다.
                 self._full_walks += 1
                 walked = await self._inner.aget_delta_channel_history(config=parent.config, channels=[channel])
                 parent_history = walked.get(channel) or {"writes": []}
@@ -211,7 +203,7 @@ class CachedHistorySaver(BaseCheckpointSaver):
         return {ch: found.get(ch) or computed.get(ch) or {"writes": []} for ch in channels}
 
     def _resolve_sync(self, tup: CheckpointTuple, channel: str, depth: int) -> dict[str, Any]:
-        """Sync twin of _aresolve (recursive compose, see its docstring)."""
+        """_aresolve의 동기 버전(재귀 compose, 자세한 내용은 그쪽 docstring 참고)."""
         parent_config = tup.parent_config
         if parent_config is None:
             return {"writes": []}
@@ -231,7 +223,7 @@ class CachedHistorySaver(BaseCheckpointSaver):
             if depth > 0:
                 parent_history = self._resolve_sync(parent, channel, depth - 1)
             else:
-                # See _aresolve: one inner fast-path walk, no per-tuple crawl.
+                # _aresolve 참고: tuple 단위로 훑지 않고 내부 fast-path walk를 한 번만 쓴다.
                 self._full_walks += 1
                 parent_history = self._inner.get_delta_channel_history(config=parent.config, channels=[channel]).get(channel) or {"writes": []}
             if parent_history is not None:
@@ -248,8 +240,8 @@ class CachedHistorySaver(BaseCheckpointSaver):
         return dict(self._inner.get_delta_channel_history(config=config, channels=channels))
 
     # ------------------------------------------------------------------
-    # Explicit delegation (BaseCheckpointSaver defines these concretely,
-    # so __getattr__ never fires for them)
+    # 명시적 위임(BaseCheckpointSaver가 이들을 구체적으로 정의하므로
+    # __getattr__은 절대 걸리지 않는다)
     # ------------------------------------------------------------------
 
     def get_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
@@ -269,10 +261,9 @@ class CachedHistorySaver(BaseCheckpointSaver):
         self._purge_thread_sync(thread_id)
 
     def delete_for_runs(self, run_ids: Sequence[str]) -> None:
-        # Run-scoped deletes cannot be mapped back to threads without an extra
-        # query, so cached entries are left in place: they stay *correct* (the
-        # sealed-chain argument is unaffected by other chains) and residual
-        # retention is bounded by LRU/TTL. No in-tree callers today.
+        # run 단위 삭제는 추가 질의 없이 thread로 되돌려 매핑할 수 없으므로 캐시 항목을 그대로
+        # 둔다. 다른 chain은 봉인 논거에 영향을 주지 않으므로 항목은 여전히 *정확*하고, 남는
+        # 데이터는 LRU/TTL로 제한된다. 현재 트리 안에는 호출자가 없다.
         self._inner.delete_for_runs(run_ids)
 
     def _purge_thread_sync(self, thread_id: str) -> None:
@@ -285,8 +276,8 @@ class CachedHistorySaver(BaseCheckpointSaver):
 
     def prune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
         self._inner.prune(thread_ids, strategy=strategy)
-        # Pruning rewrites these threads' chains: purge so no cached history
-        # references a deleted ancestor (retention) or its pre-prune chain.
+        # prune은 해당 thread의 chain을 다시 쓰므로, 캐시된 history가 삭제된 ancestor나
+        # prune 이전 chain을 참조하지 않도록 비운다.
         for thread_id in thread_ids:
             self._purge_thread_sync(thread_id)
 
@@ -307,7 +298,7 @@ class CachedHistorySaver(BaseCheckpointSaver):
         await self._apurge_thread(thread_id)
 
     async def adelete_for_runs(self, run_ids: Sequence[str]) -> None:
-        # See delete_for_runs: unscoped residual retention bounded by LRU/TTL.
+        # delete_for_runs 참고: 범위를 좁히지 못한 잔여 데이터는 LRU/TTL로 제한된다.
         await self._inner.adelete_for_runs(run_ids)
 
     async def _apurge_thread(self, thread_id: str) -> None:
@@ -320,7 +311,7 @@ class CachedHistorySaver(BaseCheckpointSaver):
 
     async def aprune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
         await self._inner.aprune(thread_ids, strategy=strategy)
-        # See prune: rewritten chains must not keep pre-prune cached histories.
+        # prune 참고: 다시 쓰인 chain이 prune 이전 캐시 history를 들고 있으면 안 된다.
         for thread_id in thread_ids:
             await self._apurge_thread(thread_id)
 

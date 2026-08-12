@@ -1,21 +1,20 @@
-"""Redis-backed ownership store for multi-instance gateways (#4206).
+"""multi-instance gateway용 Redis 기반 ownership store (#4206).
 
-Ownership is a single key per sandbox whose value encodes both the owner and the
-lease state — ``own:<owner_id>`` (responsible for this container) or
-``del:<owner_id>`` (tearing it down) — with a TTL the owning instance refreshes.
+ownership은 sandbox마다 키 하나이며, 값이 소유자와 lease 상태를 함께 인코딩한다.
+``own:<owner_id>``(이 컨테이너를 책임짐) 또는 ``del:<owner_id>``(내리는 중)이고, TTL은
+소유 instance가 갱신한다.
 
-The state prefix is what makes the destroy window safe without a lock: a
-takeover is refused against a ``del:`` lease, so a container cannot be
-re-acquired between a destroy path's claim and its container stop.
+lock 없이도 destroy 구간을 안전하게 만드는 것이 이 상태 prefix다. ``del:`` lease에
+대해서는 인수가 거절되므로, destroy 경로의 claim과 실제 컨테이너 stop 사이에 컨테이너가
+재획득되지 않는다.
 
-The sync client is deliberate: this store is driven from provider construction
-and from background threads, never from the event loop (see ``base`` for the
-contract). ``redis.asyncio`` would be the wrong client here.
+동기 클라이언트를 쓰는 것은 의도된 선택이다. 이 store는 provider 생성 시점과 백그라운드
+스레드에서 구동되고 event loop에서는 절대 구동되지 않는다(계약은 ``base`` 참고).
+여기서 ``redis.asyncio``는 잘못된 선택이다.
 
-Every mutation goes through a Lua script so the read and the write cannot be
-interleaved by a peer. ``SET NX`` alone is not enough: it fails on a key we
-already own, and a GET-then-SET fallback in Python reopens the race the script
-closes.
+모든 변경은 Lua 스크립트를 거치므로 읽기와 쓰기 사이에 peer가 끼어들 수 없다. ``SET NX``만으로는
+부족하다. 이미 우리가 소유한 키에서 실패하고, Python에서 GET 후 SET으로 대체하면 스크립트가
+막아 주는 race가 다시 열린다.
 """
 
 from __future__ import annotations
@@ -27,11 +26,11 @@ from .base import OwnershipBackendError, RenewOutcome, SandboxOwnershipStore
 try:
     from redis import Redis
     from redis.exceptions import RedisError
-except ImportError:  # pragma: no cover - only hit when the optional extra is missing
-    # ``redis`` is an optional extra (mirrors the stream_bridge redis path). This
-    # module is imported lazily from ``make_sandbox_ownership_store`` only when
-    # ``sandbox.ownership.type == "redis"``, so this hint surfaces exactly when a
-    # redis ownership store is requested without the package.
+except ImportError:  # pragma: no cover - optional extra가 없을 때만 도달한다
+    # ``redis``는 optional extra다(stream_bridge redis 경로와 동일). 이 모듈은
+    # ``sandbox.ownership.type == "redis"``일 때만 ``make_sandbox_ownership_store``에서
+    # lazy import되므로, 이 안내는 패키지 없이 redis ownership store를 요청한 경우에만
+    # 정확히 노출된다.
     raise ImportError(
         "sandbox.ownership.type is set to 'redis' but the redis package is not installed.\n"
         "Install it with:\n"
@@ -46,16 +45,15 @@ logger = logging.getLogger(__name__)
 _OWN = "own:"
 _DEL = "del:"
 
-# Bound every store round-trip so a stalled Redis cannot wedge a caller. This
-# matters most for the teardown heartbeat: its exit — and the final lease
-# release that exit performs — must stay finite, otherwise a refresh blocked on
-# a black-holed connection could hold a destroy path (and its deferred release)
-# open indefinitely. Without a socket timeout redis-py blocks forever.
+# 멈춘 Redis가 호출자를 붙잡지 못하도록 모든 store round-trip에 상한을 둔다. teardown
+# heartbeat에서 가장 중요하다. heartbeat의 종료와 그 종료가 수행하는 마지막 lease release는
+# 유한해야 하며, 그렇지 않으면 블랙홀 연결에 막힌 refresh가 destroy 경로(및 지연된 release)를
+# 무한정 붙잡는다. socket timeout이 없으면 redis-py는 영원히 블로킹한다.
 _STORE_SOCKET_TIMEOUT_SECONDS = 5.0
 
-# Acquire-path takeover. Overwrites a live peer's normal lease on purpose — a
-# thread's turn has routed here — but refuses a teardown in progress, which is
-# what stops us handing out a container a peer is about to stop.
+# acquire 경로의 인수. thread의 turn이 여기로 라우팅됐으므로 살아 있는 peer의 일반 lease는
+# 일부러 덮어쓴다. 다만 진행 중인 teardown은 거절하는데, 그래야 peer가 곧 멈출 컨테이너를
+# 넘겨주지 않는다.
 _TAKE_SCRIPT = """
 local current = redis.call('GET', KEYS[1])
 if current ~= false and string.sub(current, 1, 4) == 'del:' then
@@ -65,14 +63,13 @@ redis.call('SET', KEYS[1], 'own:' .. ARGV[1], 'PX', ARGV[2])
 return 1
 """
 
-# Adopt/reap gate: only if unowned or already ours (in either state).
-# ARGV[3] selects the state written: '1' marks a teardown in progress.
+# adopt/reap 관문: 주인이 없거나 (어느 상태로든) 이미 우리 것일 때만 통과한다.
+# ARGV[3]이 기록할 상태를 고른다. '1'은 진행 중인 teardown을 표시한다.
 #
-# A non-destroy claim never unwinds our *own* teardown: a stop is already in
-# flight and cannot be recalled, so downgrading the marker to `own:` would let a
-# `take()` hand out a container that is about to die. No caller does this today
-# (the `for_destroy=false` callers run against an absent or unowned key), but the
-# contract has to forbid it rather than rely on that staying true.
+# 비-destroy claim은 *우리 자신의* teardown을 되감지 않는다. stop이 이미 진행 중이라
+# 취소할 수 없으므로, 마커를 `own:`으로 낮추면 `take()`가 곧 죽을 컨테이너를 넘겨주게 된다.
+# 지금은 그렇게 호출하는 곳이 없지만(`for_destroy=false` 호출자는 키가 없거나 주인 없는
+# 상태에서 돈다), 그 전제가 계속 참이길 기대하는 대신 계약으로 금지한다.
 _CLAIM_SCRIPT = """
 local current = redis.call('GET', KEYS[1])
 local mine_own = 'own:' .. ARGV[1]
@@ -91,10 +88,9 @@ end
 return 0
 """
 
-# Three-way so the caller can tell an absent lease (safe to re-establish) from a
-# peer's (re-taking it is the #4206 kill). Collapsing them is what let a Redis
-# restart drop every live sandbox fleet-wide.
-#    1 = renewed, -1 = lapsed/absent, 0 = held by a peer or being torn down
+# 호출자가 없는 lease(재확립해도 안전)와 peer의 lease(다시 가져오면 #4206 kill)를 구분할 수
+# 있도록 3분기다. 둘을 합쳤던 탓에 Redis 재시작이 fleet 전체의 살아 있는 sandbox를 날렸다.
+#    1 = renewed, -1 = lapsed/absent, 0 = peer가 보유 중이거나 teardown 중
 _RENEW_SCRIPT = """
 local current = redis.call('GET', KEYS[1])
 if current == false then
@@ -107,7 +103,7 @@ end
 return 0
 """
 
-# Drop only our own lease, in either state, so a peer's is never cleared.
+# 어느 상태든 우리 lease만 지운다. peer의 lease는 절대 지우지 않는다.
 _RELEASE_SCRIPT = """
 local current = redis.call('GET', KEYS[1])
 if current == 'own:' .. ARGV[1] or current == 'del:' .. ARGV[1] then
@@ -118,7 +114,7 @@ return 0
 
 
 class RedisOwnershipStore(SandboxOwnershipStore):
-    """Ownership leases shared across gateway instances via Redis."""
+    """Redis를 통해 gateway instance 간에 공유되는 ownership lease."""
 
     supports_cross_process = True
 
@@ -134,10 +130,10 @@ class RedisOwnershipStore(SandboxOwnershipStore):
         self._owner_id = owner_id
         self._ttl_ms = max(1, int(float(ttl_seconds) * 1000))
         self._key_prefix = key_prefix.rstrip(":")
-        # Redis.from_url is lazy, so an unreachable Redis does not block provider
-        # construction; the first claim raises instead. socket_timeout bounds
-        # every round-trip (see _STORE_SOCKET_TIMEOUT_SECONDS) so no store call —
-        # in particular a teardown-heartbeat refresh — can block unbounded.
+        # Redis.from_url은 lazy라서 Redis에 닿지 않아도 provider 생성이 막히지 않고,
+        # 대신 첫 claim에서 예외가 난다. socket_timeout이 모든 round-trip에 상한을 두므로
+        # (_STORE_SOCKET_TIMEOUT_SECONDS 참고) 어떤 store 호출도, 특히 teardown heartbeat의
+        # refresh도 무한정 블로킹하지 않는다.
         self._redis = (
             client
             if client is not None
@@ -199,7 +195,7 @@ class RedisOwnershipStore(SandboxOwnershipStore):
             raise OwnershipBackendError(f"failed to read sandbox ownership for {sandbox_id}: {e}") from e
         if value is None:
             return None
-        # An injected client may not set decode_responses.
+        # 주입된 클라이언트는 decode_responses를 설정하지 않았을 수 있다.
         text = value.decode("utf-8") if isinstance(value, bytes) else value
         if text.startswith(_OWN) or text.startswith(_DEL):
             return text[4:]
@@ -210,5 +206,5 @@ class RedisOwnershipStore(SandboxOwnershipStore):
             return
         try:
             self._redis.close()
-        except Exception as e:  # pragma: no cover - teardown best effort
+        except Exception as e:  # pragma: no cover - teardown은 best effort다
             logger.warning("Error closing sandbox ownership redis client: %s", e)

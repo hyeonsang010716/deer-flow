@@ -1,4 +1,4 @@
-"""SQLAlchemy-backed thread metadata repository."""
+"""SQLAlchemy 기반 thread metadata repository."""
 
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ class ThreadMetaRepository(ThreadMetaStore):
         for key in ("created_at", "updated_at"):
             val = d.get(key)
             if isinstance(val, datetime):
-                # SQLite drops tzinfo despite ``DateTime(timezone=True)``;
-                # ``coerce_iso`` normalizes naive values as UTC so the wire format always carries tz.
+                # SQLite는 ``DateTime(timezone=True)``에도 불구하고 tzinfo를 버린다.
+                # ``coerce_iso``가 naive 값을 UTC로 정규화해서 wire 포맷이 항상 tz를 갖게 한다.
                 d[key] = coerce_iso(val)
         return d
 
@@ -44,8 +44,8 @@ class ThreadMetaRepository(ThreadMetaStore):
         display_name: str | None = None,
         metadata: dict | None = None,
     ) -> dict:
-        # Auto-resolve user_id from contextvar when AUTO; explicit None
-        # creates an orphan row (used by migration scripts).
+        # AUTO면 contextvar에서 user_id를 자동으로 해석한다. 명시적 None은 orphan row를
+        # 만든다(migration script가 쓴다).
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.create")
         now = datetime.now(UTC)
         row = ThreadMetaRow(
@@ -74,32 +74,27 @@ class ThreadMetaRepository(ThreadMetaStore):
             row = await session.get(ThreadMetaRow, thread_id)
             if row is None:
                 return None
-            # Enforce owner filter unless explicitly bypassed (user_id=None).
+            # 명시적으로 우회(user_id=None)하지 않는 한 owner 필터를 적용한다.
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return None
             return self._row_to_dict(row)
 
     async def check_access(self, thread_id: str, user_id: str, *, require_existing: bool = False) -> bool:
-        """Check if ``user_id`` has access to ``thread_id``.
+        """``user_id``가 ``thread_id``에 접근할 수 있는지 확인한다.
 
-        Two modes — one row, two distinct semantics depending on what
-        the caller is about to do:
+        같은 row에 대해, 호출자가 하려는 일에 따라 두 가지 다른 의미의 모드가 있다:
 
-        - ``require_existing=False`` (default, permissive):
-          Returns True for: row missing (untracked legacy thread),
-          ``row.user_id`` is None (shared / pre-auth data),
-          or ``row.user_id == user_id``. Use for **read-style**
-          decorators where treating an untracked thread as accessible
-          preserves backward-compat.
+        - ``require_existing=False``(기본, 허용적):
+          row가 없거나(추적되지 않는 레거시 thread), ``row.user_id``가 None이거나(공유 /
+          인증 이전 데이터), ``row.user_id == user_id``면 True를 반환한다. 추적되지 않는
+          thread를 접근 가능으로 봐야 하위 호환이 유지되는 **읽기 계열** decorator에 쓴다.
 
-        - ``require_existing=True`` (strict):
-          Returns True **only** when the row exists AND
-          (``row.user_id == user_id`` OR ``row.user_id is None``).
-          Use for **destructive / mutating** decorators (DELETE, PATCH,
-          state-update) so a thread that has *already been deleted*
-          cannot be re-targeted by any caller — closing the
-          delete-idempotence cross-user gap where the row vanishing
-          made every other user appear to "own" it.
+        - ``require_existing=True``(엄격):
+          row가 존재하고 (``row.user_id == user_id`` 또는 ``row.user_id is None``)일 때만
+          True를 반환한다. **파괴적/변경** decorator(DELETE, PATCH, state 갱신)에 쓴다.
+          그래야 *이미 삭제된* thread를 아무 호출자나 다시 대상으로 삼을 수 없다. row가
+          사라지면 다른 모든 사용자가 그것을 "소유"한 것처럼 보이던 delete 멱등성의
+          cross-user 구멍을 막는다.
         """
         async with self._sf() as session:
             row = await session.get(ThreadMetaRow, thread_id)
@@ -118,10 +113,10 @@ class ThreadMetaRepository(ThreadMetaStore):
         offset: int = 0,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> list[dict[str, Any]]:
-        """Search threads with optional metadata and status filters.
+        """metadata와 status 필터를 선택적으로 적용해 thread를 검색한다.
 
-        Owner filter is enforced by default: caller must be in a user
-        context. Pass ``user_id=None`` to bypass (migration/CLI).
+        owner 필터는 기본으로 적용되므로 호출자는 user context 안에 있어야 한다.
+        우회하려면 ``user_id=None``을 넘긴다(migration/CLI).
         """
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.search")
         pinned_order = case(
@@ -147,9 +142,8 @@ class ThreadMetaRepository(ThreadMetaStore):
                 except (ValueError, TypeError) as exc:
                     logger.warning("Skipping metadata filter key %s: %s", ascii(key), exc)
             if applied == 0:
-                # Comma-separated plain string (no list repr / nested
-                # quoting) so the 400 detail surfaced by the Gateway is
-                # easy for clients to read. Sorted for determinism.
+                # Gateway가 노출하는 400 detail을 클라이언트가 읽기 쉽도록 list repr이나
+                # 중첩 따옴표 없이 쉼표로 구분한 평문으로 만든다. 결정성을 위해 정렬한다.
                 rejected_keys = ", ".join(sorted(str(k) for k in metadata))
                 raise InvalidMetadataFilterError(f"All metadata filter keys were rejected as unsafe: {rejected_keys}")
 
@@ -159,9 +153,9 @@ class ThreadMetaRepository(ThreadMetaStore):
             return [self._row_to_dict(r) for r in result.scalars()]
 
     async def _check_ownership(self, session: AsyncSession, thread_id: str, resolved_user_id: str | None) -> bool:
-        """Return True if the row exists and is owned (or filter bypassed)."""
+        """row가 존재하고 소유자가 맞으면(또는 필터를 우회했으면) True를 반환한다."""
         if resolved_user_id is None:
-            return True  # explicit bypass
+            return True  # 명시적 우회
         row = await session.get(ThreadMetaRow, thread_id)
         return row is not None and row.user_id == resolved_user_id
 
@@ -172,7 +166,7 @@ class ThreadMetaRepository(ThreadMetaStore):
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> None:
-        """Update the display_name (title) for a thread."""
+        """thread의 display_name(제목)을 갱신한다."""
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.update_display_name")
         async with self._sf() as session:
             if not await self._check_ownership(session, thread_id, resolved_user_id):
@@ -202,24 +196,22 @@ class ThreadMetaRepository(ThreadMetaStore):
         touch: bool = True,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> None:
-        """Merge ``metadata`` into ``metadata_json``.
+        """``metadata``를 ``metadata_json``에 병합한다.
 
-        The row is locked before the read-modify-write merge so concurrent
-        callers cannot replace each other's keys. SQLite acquires its write
-        transaction before reading; databases with row-level locking use
-        ``SELECT ... FOR UPDATE``. No-op if the row does not exist or the
-        user_id check fails.
+        read-modify-write 병합 전에 row를 잠그므로 동시 호출자가 서로의 키를 덮어쓸 수 없다.
+        SQLite는 읽기 전에 write transaction을 잡고, row 단위 잠금이 있는 DB는
+        ``SELECT ... FOR UPDATE``를 쓴다. row가 없거나 user_id 검사에 실패하면 아무것도 하지
+        않는다.
 
-        ``touch`` refreshes ``updated_at`` (default); pass ``touch=False`` to
-        preserve recency ordering for metadata-only changes such as pin/unpin.
+        ``touch``는 ``updated_at``을 갱신한다(기본). pin/unpin처럼 metadata만 바뀌는 경우
+        최신순 정렬을 유지하려면 ``touch=False``를 넘긴다.
         """
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.update_metadata")
         async with self._sf() as session:
             if session.get_bind().dialect.name == "sqlite":
-                # A deferred SQLite transaction does not reserve the writer
-                # until the UPDATE, which is too late for a read-modify-write
-                # merge. BEGIN IMMEDIATE serializes writers before the read,
-                # including writers in other processes using the same file.
+                # SQLite의 deferred transaction은 UPDATE 시점까지 writer를 예약하지 않는데,
+                # read-modify-write 병합에는 너무 늦다. BEGIN IMMEDIATE는 읽기 전에 writer를
+                # 직렬화하며, 같은 파일을 쓰는 다른 프로세스의 writer도 포함한다.
                 await session.execute(text("BEGIN IMMEDIATE"))
                 row = await session.get(ThreadMetaRow, thread_id)
             else:
@@ -235,10 +227,9 @@ class ThreadMetaRepository(ThreadMetaStore):
             if touch:
                 row.updated_at = datetime.now(UTC)
             else:
-                # ``updated_at`` has an ``onupdate`` hook that fires on any row
-                # UPDATE unless the column has an explicit SET value. Mark the
-                # current value dirty so SQLAlchemy emits it in SET, skips the
-                # hook, and preserves recency ordering.
+                # ``updated_at``에는 ``onupdate`` hook이 있어서, 컬럼에 명시적 SET 값이 없으면
+                # 어떤 row UPDATE에서든 발동한다. 현재 값을 dirty로 표시해 SQLAlchemy가 SET에
+                # 포함시키고 hook을 건너뛰게 해서 최신순 정렬을 보존한다.
                 flag_modified(row, "updated_at")
             await session.commit()
 
@@ -249,7 +240,7 @@ class ThreadMetaRepository(ThreadMetaStore):
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> None:
-        """Move a thread metadata row to ``owner_user_id``."""
+        """thread metadata row의 소유자를 ``owner_user_id``로 옮긴다."""
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.update_owner")
         async with self._sf() as session:
             if not await self._check_ownership(session, thread_id, resolved_user_id):

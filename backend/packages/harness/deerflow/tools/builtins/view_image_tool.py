@@ -54,19 +54,19 @@ def view_image_tool(
     image_path: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Read an image file.
+    """이미지 파일을 읽는다.
 
-    Use this tool to read an image file and make it available for display.
+    이미지 파일을 읽어 표시할 수 있게 만들 때 이 tool을 사용하라.
 
-    When to use the view_image tool:
-    - When you need to view an image file.
+    view_image tool을 사용해야 할 때:
+    - 이미지 파일을 직접 봐야 할 때.
 
-    When NOT to use the view_image tool:
-    - For non-image files (use present_files instead)
-    - For multiple files at once (use present_files instead)
+    view_image tool을 사용하면 안 되는 때:
+    - 이미지가 아닌 파일(대신 present_files를 사용하라)
+    - 여러 파일을 한 번에 다룰 때(대신 present_files를 사용하라)
 
     Args:
-        image_path: Absolute /mnt/user-data virtual path to the image file. Common formats supported: jpg, jpeg, png, webp, gif.
+        image_path: 이미지 파일의 /mnt/user-data 절대 virtual path. 지원하는 주요 형식: jpg, jpeg, png, webp, gif.
     """
     from deerflow.sandbox.exceptions import SandboxRuntimeError
     from deerflow.sandbox.tools import (
@@ -99,26 +99,26 @@ def view_image_tool(
 
     path = Path(actual_path)
 
-    # Validate that the file exists
+    # 파일이 존재하는지 검증한다
     if not path.exists():
         return Command(
             update={"messages": [ToolMessage(f"Error: Image file not found: {image_path}", tool_call_id=tool_call_id)]},
         )
 
-    # Validate that it's a file (not a directory)
+    # 디렉터리가 아니라 파일인지 검증한다
     if not path.is_file():
         return Command(
             update={"messages": [ToolMessage(f"Error: Path is not a file: {image_path}", tool_call_id=tool_call_id)]},
         )
 
-    # Validate image extension
+    # 이미지 확장자를 검증한다
     expected_mime_type = _EXTENSION_TO_MIME.get(path.suffix.lower())
     if expected_mime_type is None:
         return Command(
             update={"messages": [ToolMessage(f"Error: Unsupported image format: {path.suffix}. Supported formats: {', '.join(_EXTENSION_TO_MIME)}", tool_call_id=tool_call_id)]},
         )
 
-    # Detect MIME type from file extension
+    # 파일 확장자로 MIME 타입을 판별한다
     mime_type, _ = mimetypes.guess_type(actual_path)
     if mime_type is None:
         mime_type = expected_mime_type
@@ -134,7 +134,7 @@ def view_image_tool(
             update={"messages": [ToolMessage(f"Error: Image file is too large: {image_size} bytes. Maximum supported size is {_MAX_IMAGE_BYTES} bytes", tool_call_id=tool_call_id)]},
         )
 
-    # Read image file to validate contents (magic bytes + size)
+    # 내용을 검증하기 위해 이미지 파일을 읽는다(magic byte + 크기)
     try:
         with open(actual_path, "rb") as f:
             image_data = f.read()
@@ -144,7 +144,7 @@ def view_image_tool(
         )
 
     if len(image_data) != image_size:
-        # File changed between stat() and read() - reject for safety.
+        # stat()과 read() 사이에 파일이 바뀌었다. 안전을 위해 거부한다.
         return Command(
             update={"messages": [ToolMessage("Error: Image file changed during read", tool_call_id=tool_call_id)]},
         )
@@ -160,9 +160,8 @@ def view_image_tool(
         )
     mime_type = detected_mime_type
 
-    # Store only lightweight metadata in state (not base64) to avoid
-    # duplicating large payloads across every checkpoint (see #4138).
-    # The middleware reads the file on-demand when the model needs it.
+    # 큰 payload가 checkpoint마다 중복되지 않도록 state에는 base64가 아니라 가벼운 metadata만
+    # 저장한다(#4138 참고). 모델이 필요로 할 때 middleware가 파일을 그때그때 읽는다.
     new_viewed_images = {
         image_path: {
             "mime_type": mime_type,

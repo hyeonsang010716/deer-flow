@@ -1,25 +1,21 @@
-"""Lead agent factory.
+"""Lead agent를 만드는 factory.
 
-INVARIANT — tracing callback placement
-======================================
+불변식 — tracing callback 위치
+==============================
 
-Tracing callbacks (Langfuse, LangSmith) are attached at the **graph
-invocation root** in :func:`_make_lead_agent` (see the
-``build_tracing_callbacks()`` block that appends to ``config["callbacks"]``).
-Every ``create_chat_model(...)`` call inside this module — and inside any
-middleware reachable from this graph (e.g. ``TitleMiddleware``) — MUST pass
-``attach_tracing=False``.
+tracing callback(Langfuse, LangSmith)은 :func:`_make_lead_agent`의 **graph 호출 루트**에
+붙인다(``config["callbacks"]``에 덧붙이는 ``build_tracing_callbacks()`` 블록 참고).
+이 모듈 안의 모든 ``create_chat_model(...)`` 호출, 그리고 이 graph에서 도달 가능한 모든
+middleware(예: ``TitleMiddleware``)의 호출은 반드시 ``attach_tracing=False``를 넘겨야 한다.
 
-Forgetting that flag emits duplicate spans (one rooted at the graph, one at
-the model) AND prevents the Langfuse handler's ``propagate_attributes``
-path from firing, so ``session_id`` / ``user_id`` never reach the trace.
-The five current sites are: bootstrap agent, default agent, summarization
-middleware, the async path inside ``TitleMiddleware``, and the skill security
-scanner reached from the ``skill_manage`` tool (``skills/security_scanner.py``'s
-``scan_skill_content``, which is dual-use: ``_scan_or_raise`` in
-``tools/skill_manage_tool.py`` is the in-graph choke point and passes the flag,
-while its standalone callers keep the default). Any new in-graph
-``create_chat_model`` call must add to this list and pass the flag.
+이 플래그를 빠뜨리면 span이 중복 생성되고(하나는 graph 루트, 하나는 model 루트), Langfuse
+handler의 ``propagate_attributes`` 경로가 동작하지 않아 ``session_id``/``user_id``가 trace에
+도달하지 못한다. 현재 해당하는 곳은 다섯 군데다. bootstrap agent, 기본 agent, summarization
+middleware, ``TitleMiddleware`` 내부의 async 경로, 그리고 ``skill_manage`` tool에서 도달하는
+skill 보안 scanner(``skills/security_scanner.py``의 ``scan_skill_content``). 마지막 것은
+용도가 둘이다. ``tools/skill_manage_tool.py``의 ``_scan_or_raise``가 graph 안의 choke point로
+플래그를 넘기고, 독립 호출자는 기본값을 유지한다. graph 안에서 ``create_chat_model``을
+새로 호출하면 이 목록에 추가하고 플래그를 넘겨야 한다.
 """
 
 from __future__ import annotations
@@ -73,12 +69,10 @@ logger = logging.getLogger(__name__)
 _BOOTSTRAP_SKILL_NAMES = {"bootstrap"}
 _NON_INTERACTIVE_DISABLED_TOOL_NAMES = frozenset({"ask_clarification"})
 
-# Channels whose inbound messages originate from untrusted external
-# commenters (anyone on a GitHub repo, etc.) and whose run context is
-# therefore unsafe for admin-shaped tools like ``update_agent``. The
-# corresponding gate lives in :func:`_make_lead_agent`; the channel name
-# itself is plumbed into ``run_context`` by
-# ``ChannelManager._resolve_run_params``.
+# inbound 메시지가 신뢰할 수 없는 외부 작성자(GitHub 저장소의 아무나 등)에게서 오는 channel
+# 목록. 이런 run context는 ``update_agent`` 같은 관리자급 tool에 안전하지 않다.
+# 해당 gate는 :func:`_make_lead_agent`에 있고, channel 이름 자체는
+# ``ChannelManager._resolve_run_params``가 ``run_context``에 넣어 준다.
 _WEBHOOK_CHANNELS: frozenset[str] = frozenset({"github"})
 
 
@@ -88,13 +82,13 @@ def _default_max_total_subagents(app_config: object) -> int:
 
 
 def _resolve_runtime_option(cfg: dict, key: str, agent_value, default):
-    """Resolve a runtime option with ``request > agent config > default`` precedence.
+    """``request > agent config > 기본값`` 우선순위로 runtime 옵션을 결정한다.
 
-    ``key in cfg`` (not ``cfg.get(key)``) distinguishes "request omitted the
-    field" from "request set it to a falsy value", so a request-supplied
-    ``thinking_enabled: false`` is honored instead of falling through to the
-    agent default. ``agent_value`` is used only when it is not ``None`` (a
-    custom agent's unset field means "do not override" — issue #4336).
+    ``cfg.get(key)``가 아니라 ``key in cfg``를 쓰는 이유는 "request가 필드를 생략했다"와
+    "request가 falsy 값을 넣었다"를 구분하기 위해서다. 덕분에 request가 준
+    ``thinking_enabled: false``가 agent 기본값으로 넘어가지 않고 그대로 존중된다.
+    ``agent_value``는 ``None``이 아닐 때만 쓴다. custom agent가 설정하지 않은 필드는
+    "덮어쓰지 말라"는 뜻이다(issue #4336).
     """
     if key in cfg:
         return cfg[key]
@@ -104,7 +98,7 @@ def _resolve_runtime_option(cfg: dict, key: str, agent_value, default):
 
 
 def _append_memory_tools_without_name_conflicts(tools: list) -> None:
-    """Append memory tools without dropping unrelated duplicate-named tools."""
+    """이름이 겹치는 무관한 tool을 버리지 않으면서 memory tool을 덧붙인다."""
     from deerflow.agents.memory.tools import get_memory_tools
 
     existing_names = {getattr(tool, "name", None) for tool in tools}
@@ -117,7 +111,7 @@ def _append_memory_tools_without_name_conflicts(tools: list) -> None:
 
 
 def _get_runtime_config(config: RunnableConfig) -> dict:
-    """Merge legacy configurable options with LangGraph runtime context."""
+    """레거시 configurable 옵션과 LangGraph runtime context를 병합한다."""
     cfg = dict(config.get("configurable", {}) or {})
     context = config.get("context", {}) or {}
     if isinstance(context, dict):
@@ -126,7 +120,7 @@ def _get_runtime_config(config: RunnableConfig) -> dict:
 
 
 def _resolve_model_name(requested_model_name: str | None = None, *, app_config: AppConfig | None = None) -> str:
-    """Resolve a runtime model name safely, falling back to default if invalid. Returns None if no models are configured."""
+    """runtime model 이름을 안전하게 결정한다. 유효하지 않으면 기본값으로 넘어간다. 설정된 model이 없으면 None을 반환한다."""
     app_config = app_config or get_app_config()
     default_model_name = app_config.models[0].name if app_config.models else None
     if default_model_name is None:
@@ -146,22 +140,19 @@ def _authorize_model_name(
     context: Mapping[str, Any],
     app_config: AppConfig,
 ) -> str:
-    """Enforce ``model:use`` authorization on the resolved model name.
+    """결정된 model 이름에 ``model:use`` 인가를 적용한다.
 
-    When ``authorization.enabled`` is false this is a no-op (returns
-    *model_name* unchanged). When enabled, the resolved model is checked
-    against the provider's policy via ``authorize("model", "use")`` so the
-    runtime path and the Gateway ``get_model`` route enforce the same
-    action-scoped contract (matters for custom providers that distinguish
-    ``list`` from ``use``). On deny, a graceful fallback to the first
-    ``filter_resources``-allowed model is attempted (RFC §9: "fall back to an
-    allowed default, not error, to avoid breaking runs"). If no model is
-    allowed and ``fail_closed`` is true, ``ValueError`` is raised (matching
-    the existing "no models configured" contract); fail-open returns the
-    original name.
+    ``authorization.enabled``가 false면 아무것도 하지 않고 *model_name*을 그대로 반환한다.
+    활성화된 경우 ``authorize("model", "use")``로 provider 정책을 확인해, runtime 경로와
+    Gateway ``get_model`` 라우트가 같은 action 단위 contract를 강제하도록 한다
+    (``list``와 ``use``를 구분하는 custom provider에서 중요하다). 거부되면
+    ``filter_resources``가 허용한 첫 model로 부드럽게 fallback한다
+    (RFC §9: "run을 깨뜨리지 않도록 에러 대신 허용된 기본값으로 넘어간다").
+    허용된 model이 하나도 없고 ``fail_closed``가 true면 ``ValueError``를 던진다
+    (기존 "설정된 model 없음" contract와 동일). fail-open이면 원래 이름을 반환한다.
 
-    Mirrors the Principal/provider pattern of ``apply_tool_authorization`` so
-    the tool path and the model path share one identity source.
+    ``apply_tool_authorization``의 Principal/provider 패턴을 그대로 따라, tool 경로와
+    model 경로가 하나의 identity 소스를 공유하게 한다.
     """
     authz_config = app_config.authorization
     if authz_config.enabled is not True:
@@ -174,13 +165,11 @@ def _authorize_model_name(
     principal = build_principal_from_context(context, default_role=authz_config.default_role)
     all_names = [m.name for m in app_config.models]
 
-    # Check the resolved model against the action-scoped ``model:use`` policy.
-    # This aligns with the Gateway ``get_model`` route, which also checks
-    # ``authorize("model", "use")``. For the built-in RBAC provider (which
-    # ignores ``action``) this is equivalent to a membership check; for a
-    # custom provider that distinguishes ``list`` from ``use``, it prevents
-    # a model visible via ``filter_resources`` but denied for ``use`` from
-    # being silently selected at runtime.
+    # 결정된 model을 action 단위 ``model:use`` 정책으로 확인한다. Gateway ``get_model``
+    # 라우트도 ``authorize("model", "use")``를 확인하므로 동작이 일치한다. ``action``을
+    # 무시하는 내장 RBAC provider에서는 소속 확인과 같다. ``list``와 ``use``를 구분하는
+    # custom provider에서는 ``filter_resources``로는 보이지만 ``use``는 거부된 model이
+    # runtime에서 조용히 선택되는 일을 막는다.
     try:
         decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=model_name))
         if not isinstance(decision, AuthzDecision):
@@ -193,11 +182,10 @@ def _authorize_model_name(
             raise ValueError("No models are authorized for the current role (authorization provider error).")
         return model_name
 
-    # Denied — graceful fallback: pick the first model that ``filter_resources``
-    # says is visible AND that also passes ``authorize("model", "use")``. For the
-    # built-in RBAC provider (which ignores ``action``) this is equivalent to
-    # picking the first visible name; for a custom provider that distinguishes
-    # ``list`` from ``use``, it ensures the fallback is actually usable.
+    # 거부된 경우의 부드러운 fallback. ``filter_resources``가 보인다고 한 것 중
+    # ``authorize("model", "use")``도 통과하는 첫 model을 고른다. ``action``을 무시하는
+    # 내장 RBAC provider에서는 보이는 첫 이름을 고르는 것과 같다. ``list``와 ``use``를
+    # 구분하는 custom provider에서는 fallback이 실제로 사용 가능함을 보장한다.
     try:
         allowed_names = provider.filter_resources(principal, "model", all_names)
         if not isinstance(allowed_names, list) or any(not isinstance(n, str) for n in allowed_names):
@@ -210,7 +198,7 @@ def _authorize_model_name(
 
     for candidate in allowed_names:
         if candidate == model_name:
-            continue  # already denied above
+            continue  # 위에서 이미 거부됐다
         try:
             cb_decision = provider.authorize(AuthzRequest(principal=principal, resource="model", action="use", target=candidate))
             if isinstance(cb_decision, AuthzDecision) and cb_decision.allow:
@@ -236,28 +224,28 @@ def _authorize_model_name(
 
 
 def _create_summarization_middleware(*, app_config: AppConfig | None = None, run_model_name: str | None = None) -> DeerFlowSummarizationMiddleware | None:
-    """Create and configure the summarization middleware from config.
+    """config로부터 summarization middleware를 만들어 설정한다.
 
-    ``run_model_name`` is the resolved run model; it is the source of truth for
-    ``model_name: null`` summarization and the explicit-summary-model fallback, so a
-    custom agent's model is used instead of ``config.models[0]``.
+    ``run_model_name``은 결정된 run model이며, ``model_name: null`` summarization과 명시적
+    summary model fallback의 기준이 된다. 덕분에 ``config.models[0]`` 대신 custom agent의
+    model이 쓰인다.
     """
     return create_summarization_middleware(app_config=app_config, run_model_name=run_model_name)
 
 
 def _create_todo_list_middleware(is_plan_mode: bool) -> TodoMiddleware | None:
-    """Create and configure the TodoList middleware.
+    """TodoList middleware를 만들어 설정한다.
 
     Args:
-        is_plan_mode: Whether to enable plan mode with TodoList middleware.
+        is_plan_mode: TodoList middleware가 붙는 plan mode를 켤지 여부.
 
     Returns:
-        TodoMiddleware instance if plan mode is enabled, None otherwise.
+        plan mode가 켜져 있으면 TodoMiddleware 인스턴스, 아니면 None.
     """
     if not is_plan_mode:
         return None
 
-    # Custom prompts matching DeerFlow's style
+    # DeerFlow 스타일에 맞춘 커스텀 프롬프트
     system_prompt = """
 <todo_list_system>
 You have access to the `write_todos` tool to help you manage and track complex multi-step objectives.
@@ -360,16 +348,16 @@ Being proactive with task management demonstrates thoroughness and ensures all r
     return TodoMiddleware(system_prompt=system_prompt, tool_description=tool_description)
 
 
-# ThreadDataMiddleware must be before SandboxMiddleware to ensure thread_id is available
-# UploadsMiddleware should be after ThreadDataMiddleware to access thread_id
-# DanglingToolCallMiddleware patches missing ToolMessages before model sees the history
-# SummarizationMiddleware should be early to reduce context before other processing
-# TodoListMiddleware should be before ClarificationMiddleware to allow todo management
-# TitleMiddleware generates title after first exchange
-# MemoryMiddleware queues conversation for memory update (after TitleMiddleware)
-# ViewImageMiddleware should be before ClarificationMiddleware to inject image details before LLM
-# ToolErrorHandlingMiddleware should be before ClarificationMiddleware to convert tool exceptions to ToolMessages
-# ClarificationMiddleware should be last to intercept clarification requests after model calls
+# ThreadDataMiddleware는 thread_id를 확보하기 위해 SandboxMiddleware보다 앞에 와야 한다.
+# UploadsMiddleware는 thread_id를 쓰므로 ThreadDataMiddleware 뒤에 와야 한다.
+# DanglingToolCallMiddleware는 model이 히스토리를 보기 전에 누락된 ToolMessage를 채운다.
+# SummarizationMiddleware는 다른 처리 전에 context를 줄이도록 앞쪽에 둔다.
+# TodoListMiddleware는 todo 관리를 위해 ClarificationMiddleware보다 앞에 둔다.
+# TitleMiddleware는 첫 대화가 끝난 뒤 제목을 생성한다.
+# MemoryMiddleware는 대화를 memory 업데이트 큐에 넣는다(TitleMiddleware 뒤).
+# ViewImageMiddleware는 LLM 호출 전에 이미지 정보를 주입하도록 ClarificationMiddleware 앞에 둔다.
+# ToolErrorHandlingMiddleware는 tool 예외를 ToolMessage로 바꾸도록 ClarificationMiddleware 앞에 둔다.
+# ClarificationMiddleware는 model 호출 뒤 clarification 요청을 가로채야 하므로 마지막에 둔다.
 def build_middlewares(
     config: RunnableConfig,
     model_name: str | None,
@@ -384,32 +372,31 @@ def build_middlewares(
     authorization_provider=None,
     extensions=None,
 ):
-    """Build the lead-agent middleware chain based on runtime configuration.
+    """runtime 설정에 따라 lead agent의 middleware chain을 구성한다.
 
-    Public entry point for the lead agent's full middleware composition. Used by
-    ``make_lead_agent`` and by the embedded ``DeerFlowClient`` (a lead-agent variant
-    that needs the identical chain). Keep this name stable: it is imported across a
-    module boundary, so renames/signature changes ripple into ``client.py``.
+    lead agent middleware 전체 구성의 공개 진입점이다. ``make_lead_agent``와 embedded
+    ``DeerFlowClient``(같은 chain이 필요한 lead agent 변형)가 사용한다. 이름은 그대로 둔다.
+    모듈 경계를 넘어 import되므로 이름이나 시그니처를 바꾸면 ``client.py``까지 영향이 간다.
 
     Args:
-        config: Runtime configuration containing configurable options like is_plan_mode.
-        model_name: Resolved runtime model name; gates vision-only middleware.
-        agent_name: If provided, MemoryMiddleware will use per-agent memory storage.
-        custom_middlewares: Optional list of custom middlewares to inject into the chain.
-        app_config: Explicit AppConfig; falls back to ``get_app_config()`` when omitted.
-        deferred_setup: Optional deferred-MCP-tool setup that attaches
-            ``DeferredToolFilterMiddleware`` when ``tool_search`` is enabled.
-        mcp_routing_middleware: Optional PR2 middleware that auto-promotes
-            deferred MCP schemas before the deferred filter runs.
-        user_id: Effective user ID for user-scoped skill loading. Passed through
-            to ``SkillActivationMiddleware`` so it can resolve per-user custom skills.
-        authorization_provider: Provider already resolved for assembly-time
-            filtering. Reused by the execution-time authorization middleware.
-        extensions: Loaded extensions whose middleware contributions are merged
-            into the final stack. Defaults to the process-wide set.
+        config: is_plan_mode 같은 configurable 옵션이 담긴 runtime 설정.
+        model_name: 결정된 runtime model 이름. vision 전용 middleware를 켤지 결정한다.
+        agent_name: 주어지면 MemoryMiddleware가 agent별 memory 저장소를 쓴다.
+        custom_middlewares: chain에 주입할 커스텀 middleware 목록(선택).
+        app_config: 명시적 AppConfig. 생략하면 ``get_app_config()``로 넘어간다.
+        deferred_setup: ``tool_search``가 켜져 있을 때 ``DeferredToolFilterMiddleware``를
+            붙이는 deferred MCP tool setup(선택).
+        mcp_routing_middleware: deferred filter가 돌기 전에 deferred MCP schema를
+            자동 promote하는 PR2 middleware(선택).
+        user_id: 사용자 범위 skill 로딩에 쓰는 실효 user ID. ``SkillActivationMiddleware``로
+            전달되어 사용자별 custom skill을 해석하게 한다.
+        authorization_provider: 조립 시점 필터링에서 이미 해석된 provider. 실행 시점
+            authorization middleware가 재사용한다.
+        extensions: middleware 기여를 최종 stack에 병합할 로드된 extension. 기본값은
+            프로세스 전역 집합이다.
 
     Returns:
-        List of middleware instances.
+        middleware 인스턴스 목록.
     """
     resolved_app_config = app_config or get_app_config()
     runtime_middleware_kwargs = {
@@ -422,15 +409,15 @@ def build_middlewares(
         runtime_middleware_kwargs["deferred_setup"] = deferred_setup
     middlewares = build_lead_runtime_middlewares(**runtime_middleware_kwargs)
 
-    # Always inject current date (and optionally memory) as <system-reminder> into the
-    # first HumanMessage to keep the system prompt fully static for prefix-cache reuse.
+    # prefix-cache 재사용을 위해 system prompt를 완전히 정적으로 유지하도록, 현재 날짜(및
+    # 선택적으로 memory)를 항상 첫 HumanMessage에 <system-reminder>로 주입한다.
     from deerflow.agents.middlewares.dynamic_context_middleware import DynamicContextMiddleware
 
     middlewares.append(DynamicContextMiddleware(agent_name=agent_name, app_config=resolved_app_config))
 
-    # Deterministically load a full SKILL.md when the user starts the turn with
-    # /skill-name. This keeps the base system prompt metadata-only while giving
-    # explicit user activation priority over model-side relevance guessing.
+    # 사용자가 /skill-name으로 턴을 시작하면 SKILL.md 전체를 결정론적으로 로드한다. 기본
+    # system prompt는 메타데이터만 담은 채로 두면서, model의 관련성 추측보다 사용자의 명시적
+    # 활성화를 우선한다.
     from deerflow.agents.middlewares.skill_activation_middleware import SkillActivationMiddleware
 
     slash_source_owner_token = secrets.token_urlsafe(24)
@@ -443,8 +430,8 @@ def build_middlewares(
         )
     )
 
-    # Enabled skills are only discoverable metadata. Apply allowed-tools at
-    # runtime after explicit slash activation or an actual skill-file load.
+    # 활성화된 skill은 발견 가능한 메타데이터일 뿐이다. allowed-tools는 명시적 slash 활성화
+    # 또는 실제 skill 파일 로드 이후 runtime에 적용한다.
     from deerflow.agents.middlewares.skill_tool_policy_middleware import SkillToolPolicyMiddleware
 
     middlewares.append(
@@ -456,9 +443,8 @@ def build_middlewares(
         )
     )
 
-    # Capture completed task delegations and loaded skill files before
-    # summarization can compact them, then inject durable context channels
-    # (summary + ledger + skills) into model calls.
+    # summarization이 압축하기 전에 완료된 task 위임과 로드된 skill 파일을 붙잡아 두고,
+    # durable context channel(summary + ledger + skills)을 model 호출에 주입한다.
     from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
 
     middlewares.append(
@@ -468,27 +454,27 @@ def build_middlewares(
         )
     )
 
-    # Add summarization middleware if enabled
+    # 활성화돼 있으면 summarization middleware를 추가한다
     summarization_middleware = _create_summarization_middleware(app_config=resolved_app_config, run_model_name=model_name)
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
-    # Add TodoList middleware if plan mode is enabled
+    # plan mode가 켜져 있으면 TodoList middleware를 추가한다
     cfg = _get_runtime_config(config)
     is_plan_mode = cfg.get("is_plan_mode", False)
     todo_list_middleware = _create_todo_list_middleware(is_plan_mode)
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
 
-    # Add TokenUsageMiddleware when token_usage tracking is enabled
+    # token_usage 추적이 켜져 있으면 TokenUsageMiddleware를 추가한다
     if resolved_app_config.token_usage.enabled:
         middlewares.append(TokenUsageMiddleware())
 
-    # Add TitleMiddleware
+    # TitleMiddleware를 추가한다
     middlewares.append(TitleMiddleware(app_config=resolved_app_config))
 
-    # Add MemoryMiddleware after TitleMiddleware. Tool mode normally skips it;
-    # conversation-extraction backends may explicitly retain passive writes.
+    # TitleMiddleware 뒤에 MemoryMiddleware를 추가한다. tool mode는 보통 건너뛰지만,
+    # 대화 추출 방식 backend는 수동 쓰기를 명시적으로 유지할 수 있다.
     if should_use_memory_tools(resolved_app_config.memory):
         from deerflow.agents.memory.manager import backend_requires_passive_writes_in_tool_mode
 
@@ -499,21 +485,21 @@ def build_middlewares(
             logger.warning("memory.mode is 'tool' but memory.enabled is false; memory tools will not be registered.")
         middlewares.append(MemoryMiddleware(agent_name=agent_name, memory_config=resolved_app_config.memory))
 
-    # Add ViewImageMiddleware only if the current model supports vision.
-    # Use the resolved runtime model_name from make_lead_agent to avoid stale config values.
+    # 현재 model이 vision을 지원할 때만 ViewImageMiddleware를 추가한다.
+    # 오래된 config 값을 피하려고 make_lead_agent가 결정한 runtime model_name을 쓴다.
     model_config = resolved_app_config.get_model_config(model_name) if model_name else None
     if model_config is not None and model_config.supports_vision:
         middlewares.append(ViewImageMiddleware())
 
-    # Auto-promote deferred MCP schemas from PR1 routing metadata before the
-    # deferred filter decides which schemas to hide for this model call.
+    # deferred filter가 이번 model 호출에서 숨길 schema를 정하기 전에, PR1 routing
+    # 메타데이터로 deferred MCP schema를 자동 promote한다.
     if mcp_routing_middleware is not None:
         middlewares.append(mcp_routing_middleware)
 
-    # Hide deferred tool schemas from model binding until tool_search promotes them.
-    # The lead deferred set + catalog hash come from the full build-time MCP
-    # catalog; SkillToolPolicyMiddleware separately filters model visibility,
-    # tool_search results, and execution for the active skill at runtime.
+    # tool_search가 promote하기 전까지 deferred tool schema를 model 바인딩에서 숨긴다.
+    # lead의 deferred 집합과 catalog hash는 빌드 시점 MCP catalog 전체에서 온다.
+    # SkillToolPolicyMiddleware는 별도로 runtime에 활성 skill 기준으로 model 가시성,
+    # tool_search 결과, 실행을 필터링한다.
     if deferred_setup is not None and deferred_setup.deferred_names:
         from deerflow.agents.middlewares.deferred_tool_filter_middleware import DeferredToolFilterMiddleware
 
@@ -522,14 +508,14 @@ def build_middlewares(
 
         assert_mcp_routing_before_deferred_filter(middlewares)
 
-    # Coalesce every SystemMessage into a single leading one before the request
-    # reaches the provider. Strict backends (vLLM, SGLang, Qwen, Anthropic)
-    # reject non-leading SystemMessages. See system_message_coalescing_middleware.py.
+    # request가 provider에 닿기 전에 모든 SystemMessage를 맨 앞의 하나로 합친다. 엄격한
+    # backend(vLLM, SGLang, Qwen, Anthropic)는 맨 앞이 아닌 SystemMessage를 거부한다.
+    # system_message_coalescing_middleware.py 참고.
     from deerflow.agents.middlewares.system_message_coalescing_middleware import SystemMessageCoalescingMiddleware
 
     middlewares.append(SystemMessageCoalescingMiddleware())
 
-    # Add SubagentLimitMiddleware to truncate excess parallel task calls
+    # 병렬 task 호출이 넘칠 때 잘라내도록 SubagentLimitMiddleware를 추가한다
     subagent_enabled = cfg.get("subagent_enabled", False)
     effective_max_subagents_per_run: int | None = None
     if subagent_enabled:
@@ -538,19 +524,19 @@ def build_middlewares(
         effective_max_subagents_per_run = max_total_subagents
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents, max_total=max_total_subagents))
 
-    # LoopDetectionMiddleware — detect and break repetitive tool call loops
+    # LoopDetectionMiddleware — 반복되는 tool 호출 loop를 감지하고 끊는다
     loop_detection_config = resolved_app_config.loop_detection
     if loop_detection_config.enabled:
         middlewares.append(LoopDetectionMiddleware.from_config(loop_detection_config))
 
-    # TokenBudgetMiddleware - enforce per-run token limits
+    # TokenBudgetMiddleware - run 단위 token 한도를 강제한다
     token_budget_config = resolved_app_config.token_budget
     if token_budget_config.enabled:
         from deerflow.agents.middlewares.token_budget_middleware import TokenBudgetMiddleware
 
         middlewares.append(TokenBudgetMiddleware.from_config(token_budget_config))
 
-    # Inject custom middlewares before ClarificationMiddleware
+    # ClarificationMiddleware 앞에 커스텀 middleware를 주입한다
     if custom_middlewares:
         middlewares.extend(custom_middlewares)
 
@@ -558,33 +544,30 @@ def build_middlewares(
     if configured_middlewares:
         middlewares.extend(configured_middlewares)
 
-    # A provider may return an empty AIMessage after tool execution. Retry the
-    # final response once, then persist a visible error fallback rather than
-    # allowing LangChain's no-tool-call router to end a silent successful run.
+    # provider는 tool 실행 뒤 빈 AIMessage를 반환할 수 있다. 최종 응답을 한 번 재시도하고,
+    # 그래도 비어 있으면 보이는 error fallback을 남긴다. LangChain의 no-tool-call 라우터가
+    # 조용히 성공으로 run을 끝내게 두지 않는다.
     middlewares.append(TerminalResponseMiddleware())
 
-    # A provider may also cap the final assistant response at the model output
-    # limit. Preserve the assistant content unchanged, but stamp a run-level
-    # stop_reason so Gateway consumers can tell a length-capped completion from
-    # a clean one.
+    # provider가 최종 assistant 응답을 model 출력 한도에서 잘라낼 수도 있다. assistant
+    # 내용은 그대로 두되 run 수준 stop_reason을 남겨, Gateway 소비자가 길이 제한으로 잘린
+    # 완료와 정상 완료를 구분할 수 있게 한다.
     middlewares.append(ModelLengthFinishReasonMiddleware())
 
-    # SafetyFinishReasonMiddleware — suppress tool execution when the provider
-    # safety-terminated the response. Registered after the terminal-response
-    # and custom/configured middlewares so LangChain's reverse-order after_model
-    # dispatch runs Safety first; cleared tool_calls then flow through the
-    # remaining accounting/terminal guards without firing extra alarms.
+    # SafetyFinishReasonMiddleware — provider가 안전 사유로 응답을 종료했을 때 tool 실행을
+    # 막는다. LangChain의 after_model이 역순으로 실행되므로, terminal-response 및
+    # custom/configured middleware 뒤에 등록해야 Safety가 가장 먼저 돈다. 비워진 tool_calls는
+    # 남은 accounting/terminal guard를 지나가되 불필요한 경보를 울리지 않는다.
     safety_config = resolved_app_config.safety_finish_reason
     if safety_config.enabled:
         middlewares.append(SafetyFinishReasonMiddleware.from_config(safety_config))
 
-    # ClarificationMiddleware should always be last
+    # ClarificationMiddleware는 항상 마지막이어야 한다
     middlewares.append(ClarificationMiddleware())
 
-    # Extension contributions are merged only here, once the full stack exists.
-    # Doing it inside build_lead_runtime_middlewares() would place
-    # MODEL_PHYSICAL contributions above the lead-specific middlewares appended
-    # above, changing what "the final request" means for observers.
+    # extension 기여는 전체 stack이 완성된 이 시점에서만 병합한다.
+    # build_lead_runtime_middlewares() 안에서 하면 MODEL_PHYSICAL 기여가 위에서 덧붙인
+    # lead 전용 middleware보다 위에 놓여, observer가 보는 "최종 request"의 의미가 달라진다.
     from deerflow_extension_api import AgentScope
 
     from deerflow.extensions import get_agent_build_extensions
@@ -638,19 +621,17 @@ def _load_enabled_available_skills(available_skills: set[str] | None, *, app_con
 
 
 def make_lead_agent(config: RunnableConfig):
-    """LangGraph graph factory; keep the signature compatible with LangGraph Server."""
+    """LangGraph graph factory. 시그니처는 LangGraph Server와 호환되게 유지한다."""
     runtime_config = _get_runtime_config(config)
     runtime_app_config = runtime_config.get("app_config")
     if not isinstance(runtime_app_config, AppConfig):
         runtime_app_config = get_app_config()
-    # Mode selection precedence, pinned by test_checkpoint_mode.py:
-    # - First freeze: the app config owns the process mode; a client-supplied
-    #   configurable key is ignored so a direct LangGraph request cannot
-    #   reconfigure (or crash) a fresh process.
-    # - Once frozen: an internally injected key (run worker / gateway) or the
-    #   app config must match the frozen mode; ``freeze_checkpoint_channel_mode``
-    #   fails closed on any mismatch, so neither a forged key nor a config.yaml
-    #   change can silently reconfigure the process.
+    # mode 선택 우선순위. test_checkpoint_mode.py가 이를 고정한다.
+    # - 첫 freeze: 프로세스 mode는 app config가 소유한다. client가 준 configurable key는
+    #   무시하므로, LangGraph에 직접 보낸 request가 갓 뜬 프로세스를 재설정하거나 죽일 수 없다.
+    # - freeze된 뒤: 내부에서 주입한 key(run worker/gateway)나 app config가 freeze된 mode와
+    #   일치해야 한다. ``freeze_checkpoint_channel_mode``는 불일치 시 fail-closed로 막으므로
+    #   위조된 key도 config.yaml 변경도 프로세스를 조용히 재설정할 수 없다.
     frozen_mode = frozen_checkpoint_channel_mode()
     if frozen_mode is None:
         requested_mode = runtime_app_config.database.checkpoint_channel_mode
@@ -660,16 +641,16 @@ def make_lead_agent(config: RunnableConfig):
             runtime_app_config.database.checkpoint_channel_mode,
         )
     mode = freeze_checkpoint_channel_mode(requested_mode)
-    # The snapshot cadence travels with the mode: restart-required, frozen
-    # from the app config, and deliberately not client-injectable (a forged
-    # configurable key must not recompile the channel table either).
+    # snapshot 주기는 mode와 함께 움직인다. 재시작이 필요하고, app config에서 freeze되며,
+    # 의도적으로 client가 주입할 수 없다. 위조된 configurable key가 channel table을 다시
+    # 컴파일하게 두어서도 안 된다.
     freeze_checkpoint_snapshot_frequency(runtime_app_config.database.checkpoint_delta.snapshot_frequency)
     inject_checkpoint_mode(config, mode)
     return _make_lead_agent(config, app_config=runtime_app_config)
 
 
 def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
-    # Lazy import to avoid circular dependency
+    # 순환 의존을 피하려는 lazy import
     from deerflow.tools import get_available_tools
     from deerflow.tools.builtins import setup_agent, update_agent
     from deerflow.tools.builtins.tool_search import assemble_deferred_tools, build_mcp_routing_middleware, get_mcp_routing_hints_prompt_section
@@ -681,9 +662,9 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         resolved_app_config.database.checkpoint_channel_mode,
     )
 
-    # Resolve one authoritative identity for every user-scoped factory input.
-    # Agent Server's reserved auth fields win over ordinary client-supplied
-    # context/configurable values; the embedded Gateway path uses context.user_id.
+    # 사용자 범위 factory 입력 전부에 대해 권위 있는 identity 하나를 결정한다.
+    # Agent Server의 예약된 auth 필드가 client가 준 일반 context/configurable 값보다 우선한다.
+    # embedded Gateway 경로는 context.user_id를 쓴다.
     from deerflow.runtime.user_context import resolve_config_user_id
 
     resolved_user_id = resolve_config_user_id(config)
@@ -699,27 +680,26 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     agent_config = load_agent_config(agent_name, user_id=resolved_user_id) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)
-    # Custom agent model from agent config (if any), or None to let _resolve_model_name pick the default
+    # agent config의 custom agent model. 없으면 None이라 _resolve_model_name이 기본값을 고른다
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
 
-    # thinking / reasoning precedence: request > custom agent default > runtime
-    # default (issue #4336). See ``_resolve_runtime_option`` for the falsy-vs-unset
-    # handling.
+    # thinking/reasoning 우선순위: request > custom agent 기본값 > runtime 기본값
+    # (issue #4336). falsy와 미설정을 구분하는 방식은 ``_resolve_runtime_option`` 참고.
     agent_thinking = getattr(agent_config, "thinking_enabled", None) if agent_config else None
     agent_reasoning = getattr(agent_config, "reasoning_effort", None) if agent_config else None
     thinking_enabled = bool(_resolve_runtime_option(cfg, "thinking_enabled", agent_thinking, True))
     reasoning_effort = _resolve_runtime_option(cfg, "reasoning_effort", agent_reasoning, None)
 
-    # Per-agent sampling overrides (temperature / max_tokens) layered on top of
-    # the resolved model profile (issue #4336). None when the agent set none.
+    # 결정된 model 프로파일 위에 얹는 agent별 sampling override(temperature/max_tokens,
+    # issue #4336). agent가 아무것도 설정하지 않았으면 None이다.
     agent_model_settings = getattr(agent_config, "model_settings", None) if agent_config else None
     agent_model_overrides = agent_model_settings.model_dump(exclude_none=True) if agent_model_settings else None
 
-    # Final model name resolution: request → agent config → global default, with fallback for unknown names
+    # 최종 model 이름 결정: request → agent config → 전역 기본값. 알 수 없는 이름은 fallback한다
     model_name = _resolve_model_name(requested_model_name or agent_model_name, app_config=resolved_app_config)
 
-    # Phase 3: enforce model:use authorization. On deny, fall back to the first
-    # allowed model (graceful) rather than crashing the run (RFC §9).
+    # Phase 3: model:use 인가를 강제한다. 거부되면 run을 죽이는 대신 허용된 첫 model로
+    # 부드럽게 fallback한다(RFC §9).
     model_name = _authorize_model_name(model_name, context=cfg, app_config=resolved_app_config)
 
     model_config = resolved_app_config.get_model_config(model_name)
@@ -742,7 +722,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         max_total_subagents,
     )
 
-    # Inject run metadata for LangSmith trace tagging
+    # LangSmith trace 태깅용 run 메타데이터를 주입한다
     if "metadata" not in config:
         config["metadata"] = {}
 
@@ -759,12 +739,11 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         }
     )
 
-    # Inject tracing callbacks at the graph invocation root so a single LangGraph
-    # run produces one trace with all node / LLM / tool calls as child spans,
-    # AND so the Langfuse handler sees ``on_chain_start(parent_run_id=None)`` and
-    # actually propagates ``langfuse_session_id`` / ``langfuse_user_id`` from
-    # ``config["metadata"]`` onto the trace. Without root-level attachment the
-    # model is a nested observation and the handler strips ``langfuse_*`` keys.
+    # tracing callback을 graph 호출 루트에 주입한다. 그래야 LangGraph run 하나가 모든
+    # node/LLM/tool 호출을 자식 span으로 갖는 trace 하나를 만들고, Langfuse handler가
+    # ``on_chain_start(parent_run_id=None)``을 보고 ``config["metadata"]``의
+    # ``langfuse_session_id``/``langfuse_user_id``를 trace로 전파한다. 루트에 붙이지 않으면
+    # model이 중첩 observation이 되고 handler가 ``langfuse_*`` key를 떼어낸다.
     tracing_callbacks = build_tracing_callbacks()
     if tracing_callbacks:
         existing = config.get("callbacks") or []
@@ -774,17 +753,17 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     enabled_skills = _load_enabled_available_skills(available_skills, app_config=resolved_app_config, user_id=resolved_user_id)
 
-    # Build skill search setup (deferred skill discovery).
-    # Controlled by skills.deferred_discovery — independent from tool_search.enabled.
+    # skill search setup(deferred skill discovery)을 만든다.
+    # skills.deferred_discovery가 제어하며 tool_search.enabled와는 무관하다.
     from deerflow.skills.describe import build_skill_search_setup
 
     skill_search_enabled = resolved_app_config.skills.deferred_discovery
     container_base_path = resolved_app_config.skills.container_path
 
     if is_bootstrap:
-        # Special bootstrap agent with minimal prompt for initial custom agent creation flow
-        # Keep the bootstrap skill set intentionally narrow so agent creation
-        # remains deterministic before the custom agent's own config exists.
+        # custom agent 최초 생성 흐름을 위한 최소 프롬프트의 전용 bootstrap agent.
+        # custom agent 자신의 config가 생기기 전에도 생성이 결정론적으로 남도록 bootstrap
+        # skill 집합은 의도적으로 좁게 유지한다.
         bootstrap_skills = [s for s in enabled_skills if s.name in _BOOTSTRAP_SKILL_NAMES]
         skill_setup = build_skill_search_setup(
             bootstrap_skills,
@@ -844,33 +823,30 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             state_schema=get_thread_state_schema(mode),
         )
 
-    # Custom agents can update their own SOUL.md / config via update_agent.
-    # The default agent (no agent_name) does not see this tool.
-    # Build skill search setup from the agent-available skills. The same
-    # allowlist is enforced by the runtime policy resolver, so describe_skill
-    # cannot expose a skill this custom agent is not allowed to activate.
+    # custom agent는 update_agent로 자신의 SOUL.md/config를 갱신할 수 있다.
+    # 기본 agent(agent_name 없음)에게는 이 tool이 보이지 않는다.
+    # agent가 쓸 수 있는 skill로 skill search setup을 만든다. 같은 allowlist를 runtime 정책
+    # resolver가 강제하므로, describe_skill이 이 custom agent가 활성화할 수 없는 skill을
+    # 노출할 수 없다.
     skill_setup = build_skill_search_setup(
         enabled_skills,
         enabled=skill_search_enabled,
         container_base_path=container_base_path,
     )
     #
-    # Withhold ``update_agent`` from runs triggered by webhook channels
-    # (currently only ``github``). Webhook prompts come from arbitrary
-    # external commenters — anyone who can post on a configured repo and
-    # types ``@<bot>`` clears the trigger gate. Exposing the tool there
-    # gives that commenter a path to mutate the agent's ``tool_groups``
-    # / ``SOUL.md`` / ``model``, and the change persists for every
-    # subsequent run. Self-mutation belongs in operator-trusted surfaces
-    # (the chat UI, the HTTP API), not in webhook fan-out.
+    # webhook channel(현재는 ``github``뿐)이 촉발한 run에서는 ``update_agent``를 뺀다.
+    # webhook 프롬프트는 임의의 외부 작성자에게서 온다. 설정된 저장소에 글을 쓸 수 있고
+    # ``@<bot>``만 적으면 누구나 trigger gate를 통과한다. 여기서 이 tool을 노출하면 그
+    # 작성자가 agent의 ``tool_groups``/``SOUL.md``/``model``을 바꿀 수 있고, 그 변경은 이후
+    # 모든 run에 남는다. 자기 변경은 운영자가 신뢰하는 표면(채팅 UI, HTTP API)의 몫이지
+    # webhook fan-out의 몫이 아니다.
     #
-    # The channel name is plumbed into ``run_context`` by
-    # ``ChannelManager._resolve_run_params``; bootstrap and direct invocations
-    # leave it unset, so ``update_agent`` remains available there.
+    # channel 이름은 ``ChannelManager._resolve_run_params``가 ``run_context``에 넣는다.
+    # bootstrap과 직접 호출은 이를 설정하지 않으므로 그쪽에서는 ``update_agent``가 남는다.
     channel_name = cfg.get("channel_name")
     is_webhook_channel = channel_name in _WEBHOOK_CHANNELS
     extra_tools = [update_agent] if agent_name and not is_webhook_channel else []
-    # Default lead agent (unchanged behavior)
+    # 기본 lead agent (동작 변경 없음)
     raw_tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, app_config=resolved_app_config)
     configured_tools = raw_tools + extra_tools
     if non_interactive:

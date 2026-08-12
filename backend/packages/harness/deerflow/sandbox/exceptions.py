@@ -1,8 +1,8 @@
-"""Sandbox-related exceptions with structured error information."""
+"""구조화된 오류 정보를 담는 sandbox 관련 예외."""
 
 
 class SandboxError(Exception):
-    """Base exception for all sandbox-related errors."""
+    """모든 sandbox 관련 오류의 기본 예외."""
 
     def __init__(self, message: str, details: dict | None = None):
         super().__init__(message)
@@ -17,7 +17,7 @@ class SandboxError(Exception):
 
 
 class SandboxNotFoundError(SandboxError):
-    """Raised when a sandbox cannot be found or is not available."""
+    """sandbox를 찾을 수 없거나 사용할 수 없을 때 발생한다."""
 
     def __init__(self, message: str = "Sandbox not found", sandbox_id: str | None = None):
         details = {"sandbox_id": sandbox_id} if sandbox_id else None
@@ -26,13 +26,13 @@ class SandboxNotFoundError(SandboxError):
 
 
 class SandboxRuntimeError(SandboxError):
-    """Raised when sandbox runtime is not available or misconfigured."""
+    """sandbox runtime을 사용할 수 없거나 설정이 잘못되었을 때 발생한다."""
 
     pass
 
 
 class SandboxCommandError(SandboxError):
-    """Raised when a command execution fails in the sandbox."""
+    """sandbox에서 명령 실행이 실패했을 때 발생한다."""
 
     def __init__(self, message: str, command: str | None = None, exit_code: int | None = None):
         details = {}
@@ -46,7 +46,7 @@ class SandboxCommandError(SandboxError):
 
 
 class SandboxFileError(SandboxError):
-    """Raised when a file operation fails in the sandbox."""
+    """sandbox에서 파일 작업이 실패했을 때 발생한다."""
 
     def __init__(self, message: str, path: str | None = None, operation: str | None = None):
         details = {}
@@ -60,22 +60,22 @@ class SandboxFileError(SandboxError):
 
 
 class SandboxPermissionError(SandboxFileError):
-    """Raised when a permission error occurs during file operations."""
+    """파일 작업 중 권한 오류가 발생했을 때 발생한다."""
 
     pass
 
 
 class SandboxFileNotFoundError(SandboxFileError):
-    """Raised when a file or directory is not found."""
+    """파일이나 디렉터리를 찾을 수 없을 때 발생한다."""
 
     pass
 
 
 class SandboxCapacityExceededError(SandboxError):
-    """Raised when the sandbox provider has no available capacity.
+    """sandbox provider에 남은 용량이 없을 때 발생한다.
 
-    The reason distinguishes occupied capacity from provider shutdown.
-    The caller controls retry scheduling. DeerFlow does not retry automatically.
+    reason은 용량이 찬 경우와 provider 종료를 구분한다. retry 일정은 호출자가 정하며,
+    DeerFlow는 자동으로 재시도하지 않는다.
     """
 
     CODE = "SANDBOX_CAPACITY_EXCEEDED"

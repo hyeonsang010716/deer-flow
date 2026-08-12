@@ -1,17 +1,15 @@
-"""Middleware to inject dynamic context (memory, current date) as a system-reminder.
+"""동적 context(memory, 현재 날짜)를 system-reminder로 주입하는 middleware.
 
-The system prompt is kept fully static for maximum prefix-cache reuse across users
-and sessions.  The current date is always injected.  Per-user memory is also injected
-when ``memory.injection_enabled`` is True in the app config.  Both are delivered once
-per conversation as a dedicated <system-reminder> SystemMessage inserted before the
-first user message (frozen-snapshot pattern).
+system prompt는 사용자와 session 전반에서 prefix-cache 재사용을 극대화하기 위해 완전히
+정적으로 유지한다. 현재 날짜는 항상 주입되고, app config의 ``memory.injection_enabled``가
+True이면 사용자별 memory도 함께 주입된다. 둘 다 첫 user 메시지 앞에 삽입되는 전용
+<system-reminder> SystemMessage로 대화당 한 번만 전달된다(frozen-snapshot 패턴).
 
-When a conversation spans midnight the middleware detects the date change and injects
-a lightweight date-update reminder as a separate SystemMessage before the current turn.
-This correction is persisted so subsequent turns on the new day see a consistent history
-and do not re-inject.
+대화가 자정을 넘기면 middleware가 날짜 변경을 감지해 현재 turn 앞에 별도 SystemMessage로
+가벼운 날짜 갱신 reminder를 주입한다. 이 보정은 영속화되므로 새 날짜의 이후 turn들은 일관된
+history를 보고 다시 주입하지 않는다.
 
-Reminder format:
+Reminder 형식:
 
     <system-reminder>
     <memory>...</memory>
@@ -19,7 +17,7 @@ Reminder format:
     <current_date>2026-05-08, Friday</current_date>
     </system-reminder>
 
-Date-update format:
+날짜 갱신 형식:
 
     <system-reminder>
     <current_date>2026-05-09, Saturday</current_date>
@@ -48,31 +46,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Upper bound (seconds) for a single _inject() offload.  If the warm-up at
-# gateway startup failed silently, the first request may still hit a cold
-# tiktoken BPE download that blocks until the OS TCP timeout (~26 min).
-# This cap ensures the request degrades gracefully instead of hanging.
+# 단일 _inject() offload의 상한(초). gateway 시작 시 warm-up이 조용히 실패했다면 첫 요청이
+# 여전히 cold tiktoken BPE 다운로드에 걸려 OS TCP timeout(~26분)까지 블로킹될 수 있다.
+# 이 상한 덕분에 요청은 멈추지 않고 우아하게 성능을 낮춘다.
 _INJECT_TIMEOUT_SECONDS = 5.0
 
 _DATE_RE = re.compile(r"<current_date>([^<]+)</current_date>")
 _DYNAMIC_CONTEXT_REMINDER_KEY = "dynamic_context_reminder"
-# Authoritative injected date, carried in additional_kwargs of the date
-# SystemMessage. Detection reads this instead of regex-parsing message content,
-# so it is never exposed to user-influenceable memory content.
+# 주입된 날짜의 authoritative 값. 날짜 SystemMessage의 additional_kwargs에 실린다. 탐지는
+# 메시지 content를 regex로 파싱하는 대신 이 값을 읽으므로, 사용자가 영향을 줄 수 있는 memory
+# 내용에 절대 노출되지 않는다.
 _REMINDER_DATE_KEY = "reminder_date"
 _SUMMARY_MESSAGE_NAME = "summary"
-# Suffix the ID-swap gives the real user message; the reminder SystemMessage
-# takes the original id so ``add_messages`` can replace it in place.
+# ID-swap이 실제 user 메시지에 붙이는 suffix. reminder SystemMessage가 원래 id를 가져가므로
+# ``add_messages``가 제자리에서 교체할 수 있다.
 INJECTED_USER_MESSAGE_ID_SUFFIX = "__user"
 
 
 def strip_injected_user_message_id_suffix(message_id: str | None) -> str | None:
-    """Return the id *message_id* had before the reminder ID-swap.
+    """reminder ID-swap 이전에 *message_id*가 가지고 있던 id를 반환한다.
 
-    Replaying a persisted user turn must feed the graph the id the client
-    originally sent: a ``{id}__user`` message is skipped as an injection target,
-    so replaying one into a state that has no reminder yet silently drops the
-    date and memory block for that turn.
+    영속화된 user turn을 replay할 때는 client가 원래 보낸 id를 graph에 넣어야 한다.
+    ``{id}__user`` 메시지는 주입 대상에서 제외되므로, reminder가 아직 없는 state에 그대로
+    replay하면 해당 turn의 날짜와 memory 블록이 조용히 사라진다.
     """
 
     if isinstance(message_id, str) and message_id.endswith(INJECTED_USER_MESSAGE_ID_SUFFIX):
@@ -81,30 +77,28 @@ def strip_injected_user_message_id_suffix(message_id: str | None) -> str | None:
 
 
 def _extract_date(content: str) -> str | None:
-    """Return the first <current_date> value found in *content*, or None."""
+    """*content*에서 처음 발견된 <current_date> 값을 반환한다. 없으면 None."""
     m = _DATE_RE.search(content)
     return m.group(1) if m else None
 
 
 def is_dynamic_context_reminder(message: object) -> bool:
-    """Return whether *message* is a hidden dynamic-context reminder."""
-    # DEPRECATED: HumanMessage reminders only exist in pre-PR checkpoints.
-    # Once all active checkpoints are migrated, the HumanMessage branch can be
-    # removed and this function can check SystemMessage exclusively.
+    """*message*가 숨겨진 dynamic-context reminder인지 반환한다."""
+    # DEPRECATED: HumanMessage reminder는 이 PR 이전 checkpoint에만 존재한다. 활성 checkpoint가
+    # 모두 마이그레이션되면 HumanMessage 분기를 제거하고 SystemMessage만 검사하면 된다.
     return isinstance(message, (HumanMessage, SystemMessage)) and bool(message.additional_kwargs.get(_DYNAMIC_CONTEXT_REMINDER_KEY))
 
 
 def _last_injected_date(messages: list) -> str | None:
-    """Scan messages in reverse and return the most recently injected date.
+    """메시지를 역순으로 훑어 가장 최근에 주입된 날짜를 반환한다.
 
-    Detection uses the ``dynamic_context_reminder`` additional_kwargs flag rather
-    than content substring matching, so user messages containing ``<system-reminder>``
-    are not mistakenly treated as injected reminders.
+    탐지는 content substring 매칭이 아니라 ``dynamic_context_reminder``
+    additional_kwargs 플래그를 쓰므로, ``<system-reminder>``를 포함한 user 메시지가 주입된
+    reminder로 오인되지 않는다.
 
-    The authoritative date is the ``reminder_date`` value in additional_kwargs of
-    the date SystemMessage. Reminders without it (the separate ``<memory>``
-    HumanMessage, or any future dateless reminder) carry no date and are skipped,
-    so they cannot shadow the real date reminder.
+    authoritative 날짜는 날짜 SystemMessage의 additional_kwargs에 있는 ``reminder_date``
+    값이다. 이 값이 없는 reminder(별도의 ``<memory>`` HumanMessage나 향후의 날짜 없는
+    reminder)는 날짜를 담지 않으므로 건너뛰고, 실제 날짜 reminder를 가리지 못한다.
     """
     for msg in reversed(messages):
         if not is_dynamic_context_reminder(msg):
@@ -112,10 +106,10 @@ def _last_injected_date(messages: list) -> str | None:
         structured = msg.additional_kwargs.get(_REMINDER_DATE_KEY)
         if isinstance(structured, str) and structured:
             return structured
-        # Backward-compat for checkpoints written before reminder_date existed:
-        # the date lived in content. Scope the regex to SystemMessage so it never
-        # runs on the user-influenceable memory HumanMessage (preserves the OWASP
-        # role separation from #3630 and closes the memory date-spoofing hole).
+        # reminder_date가 생기기 전에 기록된 checkpoint를 위한 하위 호환: 그때는 날짜가
+        # content에 있었다. regex를 SystemMessage로 한정해 사용자가 영향을 줄 수 있는 memory
+        # HumanMessage에서는 절대 돌지 않게 한다(#3630의 OWASP role 분리를 유지하고 memory를
+        # 통한 날짜 위조 구멍을 막는다).
         if isinstance(msg, SystemMessage):
             content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
             date = _extract_date(content_str)
@@ -125,40 +119,36 @@ def _last_injected_date(messages: list) -> str | None:
 
 
 def _is_user_injection_target(message: object) -> bool:
-    """Return whether *message* can receive a dynamic-context reminder."""
+    """*message*가 dynamic-context reminder를 받을 수 있는지 반환한다."""
     if not isinstance(message, HumanMessage):
         return False
     if is_dynamic_context_reminder(message):
         return False
     if message.name == _SUMMARY_MESSAGE_NAME:
         return False
-    # Prevent recursive ID-swap: a message whose ID ends with "__user" was
-    # produced by a prior _make_reminder_and_user_messages call and must not
-    # be processed again — doing so causes unbounded suffix growth
-    # (id__user__user__user...) and ghost-message re-execution.
-    # Using endswith (not substring "in") avoids false positives on IDs that
-    # happen to contain "__user" in the middle.
+    # 재귀적 ID-swap 방지: ID가 "__user"로 끝나는 메시지는 이전
+    # _make_reminder_and_user_messages 호출이 만든 것이므로 다시 처리하면 안 된다. 그러면
+    # suffix가 무한히 늘어나고(id__user__user__user...) ghost 메시지가 재실행된다.
+    # substring "in"이 아니라 endswith를 써서 중간에 "__user"가 들어간 ID의 오탐을 막는다.
     if message.id and str(message.id).endswith(INJECTED_USER_MESSAGE_ID_SUFFIX):
         return False
     return True
 
 
 class DynamicContextMiddleware(AgentMiddleware):
-    """Inject memory and current date as a SystemMessage <system-reminder>.
+    """memory와 현재 날짜를 SystemMessage <system-reminder>로 주입한다.
 
-    First turn
-    ----------
-    Prepends a full system-reminder (memory + date) to the first HumanMessage and
-    persists it (same message ID).  The first message is then frozen for the whole
-    session — its content never changes again, so the prefix cache can hit on every
-    subsequent turn.
+    첫 turn
+    -------
+    첫 HumanMessage 앞에 전체 system-reminder(memory + 날짜)를 붙이고 같은 메시지 ID로
+    영속화한다. 이후 첫 메시지는 session 내내 고정되어 content가 다시 바뀌지 않으므로, 뒤따르는
+    모든 turn에서 prefix cache가 적중할 수 있다.
 
-    Midnight crossing
-    -----------------
-    If the conversation spans midnight, the current date differs from the date that
-    was injected earlier.  In that case a lightweight date-update reminder is prepended
-    to the **current** (last) HumanMessage and persisted.  Subsequent turns on the new
-    day see the corrected date in history and skip re-injection.
+    자정 통과
+    ---------
+    대화가 자정을 넘기면 현재 날짜가 앞서 주입된 날짜와 달라진다. 이 경우 **현재**(마지막)
+    HumanMessage 앞에 가벼운 날짜 갱신 reminder를 붙이고 영속화한다. 새 날짜의 이후 turn들은
+    history에서 보정된 날짜를 보고 재주입을 건너뛴다.
     """
 
     def __init__(self, agent_name: str | None = None, *, app_config: AppConfig | None = None):
@@ -167,12 +157,11 @@ class DynamicContextMiddleware(AgentMiddleware):
         self._app_config = app_config
 
     def _build_full_reminder(self, runtime: Runtime | None = None) -> tuple[str, str | None]:
-        """Return (date_reminder, memory_block | None).
+        """(date_reminder, memory_block | None)을 반환한다.
 
-        Framework-owned data (date) is separated from user-owned data (memory)
-        so the downstream SystemMessage carries only framework authority and
-        memory stays at role:user — preventing untrusted content from gaining
-        system privilege (OWASP LLM01).
+        framework 소유 데이터(날짜)를 사용자 소유 데이터(memory)와 분리해, 하위의
+        SystemMessage는 framework 권한만 담고 memory는 role:user에 머무르게 한다. 신뢰할 수
+        없는 내용이 system 권한을 얻는 것을 막는다(OWASP LLM01).
         """
         from deerflow.agents.lead_agent.prompt import _get_memory_context
 
@@ -218,19 +207,18 @@ class DynamicContextMiddleware(AgentMiddleware):
         *,
         reminder_date: str | None = None,
     ) -> list[SystemMessage | HumanMessage]:
-        """Return messages using the ID-swap technique.
+        """ID-swap 기법으로 메시지들을 반환한다.
 
-        SystemMessage carries framework-owned data (date, metadata) — takes
-        the original ID so add_messages replaces it in-place.  *reminder_date*
-        is recorded in its additional_kwargs as the authoritative injected date
-        (``_last_injected_date`` reads it instead of parsing content).  Optional
-        HumanMessage carries user-owned memory content with ``{id}__memory``.
-        The actual user message gets ``{id}__user``.
+        SystemMessage는 framework 소유 데이터(날짜, metadata)를 담고 원래 ID를 가져가므로
+        add_messages가 제자리에서 교체한다. *reminder_date*는 주입된 날짜의 authoritative
+        값으로 그 additional_kwargs에 기록된다(``_last_injected_date``가 content를 파싱하는
+        대신 이 값을 읽는다). 선택적인 HumanMessage는 사용자 소유 memory 내용을
+        ``{id}__memory``로 담는다. 실제 user 메시지는 ``{id}__user``를 받는다.
 
-        SystemMessage is used — system context must not masquerade as user
-        input (#3630).  Memory is deliberately kept as HumanMessage so
-        user-influenceable content does not gain system authority (OWASP LLM01)
-        — and it deliberately never carries ``reminder_date``.
+        SystemMessage를 쓰는 이유는 system context가 user 입력으로 위장해서는 안 되기
+        때문이다(#3630). memory는 의도적으로 HumanMessage로 남겨서 사용자가 영향을 줄 수 있는
+        내용이 system 권한을 얻지 않게 하고(OWASP LLM01), 의도적으로 ``reminder_date``를 절대
+        싣지 않는다.
         """
         stable_id = original.id or str(uuid.uuid4())
         messages: list[SystemMessage | HumanMessage] = []
@@ -280,7 +268,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         )
 
         if last_date is None:
-            # ── First turn: inject full reminder as a SystemMessage ─────
+            # ── 첫 turn: 전체 reminder를 SystemMessage로 주입 ─────
             first_idx = next((i for i, m in enumerate(messages) if _is_user_injection_target(m)), None)
             if first_idx is None:
                 return None
@@ -294,10 +282,10 @@ class DynamicContextMiddleware(AgentMiddleware):
             return {"messages": result_msgs}
 
         if last_date == current_date:
-            # ── Same day: nothing to do ──────────────────────────────────────────
+            # ── 같은 날: 할 일 없음 ──────────────────────────────────────────
             return None
 
-        # ── Midnight crossed: inject date-update reminder as a SystemMessage ──
+        # ── 자정 통과: 날짜 갱신 reminder를 SystemMessage로 주입 ──
         last_human_idx = next((i for i in reversed(range(len(messages))) if _is_user_injection_target(messages[i])), None)
         if last_human_idx is None:
             return None
@@ -314,17 +302,15 @@ class DynamicContextMiddleware(AgentMiddleware):
 
     @override
     async def abefore_agent(self, state, runtime: Runtime) -> dict | None:
-        # _inject() performs synchronous file I/O (memory JSON loading) and
-        # potentially blocking network calls (tiktoken encoding download on
-        # first use).  Offload to a thread so the event loop is never blocked
-        # — a blocking call here starves all concurrent HTTP handlers (auth,
-        # SSE heartbeats, etc.).  See issue #3402.
+        # _inject()는 동기 파일 I/O(memory JSON 로딩)와 잠재적으로 블로킹되는 네트워크 호출
+        # (최초 사용 시 tiktoken encoding 다운로드)을 수행한다. event loop가 절대 막히지 않도록
+        # thread로 offload한다. 여기서 블로킹되면 동시에 처리 중인 모든 HTTP handler(auth,
+        # SSE heartbeat 등)가 굶는다. issue #3402 참고.
         #
-        # Bounded timeout: if startup warm-up failed silently (e.g. network
-        # blip during deploy), the first request's cold tiktoken download can
-        # block for tens of minutes (OS TCP timeout).  Time-box injection so
-        # the request degrades gracefully (no new dynamic-context update)
-        # rather than hanging. Frozen context already in state remains active.
+        # 제한된 timeout: 시작 시 warm-up이 조용히 실패했다면(예: 배포 중 네트워크 순단) 첫
+        # 요청의 cold tiktoken 다운로드가 수십 분(OS TCP timeout) 동안 블로킹될 수 있다. 주입에
+        # 시간 제한을 둬서 요청이 멈추는 대신 우아하게 성능을 낮춘다(새 dynamic-context 갱신
+        # 없음). 이미 state에 고정된 context는 그대로 유효하다.
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(self._inject, state, runtime),
@@ -342,12 +328,11 @@ class DynamicContextMiddleware(AgentMiddleware):
 
     @staticmethod
     def _effective_memory_message(state, update: dict | None, runtime: Runtime) -> HumanMessage | None:
-        """Find server-created memory that is effective for this run.
+        """이번 run에 유효한, 서버가 생성한 memory를 찾는다.
 
-        A first-run block must come from this middleware's update. A reused
-        block must have existed in the checkpoint before the run; the Gateway
-        strips the reminder marker from untrusted input so a caller cannot
-        replace a known checkpoint ID with forged provenance.
+        첫 run의 블록은 이 middleware의 update에서 와야 한다. 재사용된 블록은 run 이전에
+        checkpoint에 존재했어야 한다. Gateway가 신뢰할 수 없는 입력에서 reminder 마커를
+        제거하므로, 호출자가 알려진 checkpoint ID를 위조된 출처로 바꿔치기할 수 없다.
         """
         if isinstance(update, dict):
             update_messages = update.get("messages")
@@ -373,7 +358,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         return None
 
     def _record_effective_memory(self, state, update: dict | None, runtime: Runtime) -> None:
-        """Attach the effective hidden memory block to the current run ledger."""
+        """유효한 숨은 memory 블록을 현재 run ledger에 기록한다."""
         context = getattr(runtime, "context", None)
         journal = context.get("__run_journal") if isinstance(context, dict) else None
         if journal is None:

@@ -1,15 +1,14 @@
-"""Stateful, loop-affine browser sessions backed by Playwright.
+"""Playwright 기반의 상태 유지형, loop 종속 browser session.
 
-Playwright's async objects (``Browser``/``BrowserContext``/``Page``) are affine
-to the event loop that created them. DeerFlow tools may be awaited on the
-Gateway loop, the TUI loop, or a fresh test loop, and a browser session must
-survive across turns of the same thread. To decouple Playwright's loop from the
-caller's loop, every Playwright operation runs on one private daemon event loop
-(same approach the BoxLite provider uses for its loop-affine box handles); async
-tools await the result via :func:`asyncio.wrap_future`.
+Playwright의 async 객체(``Browser``/``BrowserContext``/``Page``)는 자신을 생성한 event loop에
+종속된다. DeerFlow 도구는 Gateway loop, TUI loop, 새 테스트 loop 어디에서든 await될 수 있고,
+browser session은 같은 thread의 여러 turn에 걸쳐 살아 있어야 한다. Playwright의 loop를 호출자
+loop와 분리하기 위해 모든 Playwright 연산은 전용 daemon event loop 하나에서 실행한다
+(BoxLite provider가 loop 종속 box handle에 쓰는 방식과 같다). async 도구는
+:func:`asyncio.wrap_future`로 결과를 await한다.
 
-Playwright itself is an optional dependency — it is imported lazily inside the
-private loop so the core harness installs without it.
+Playwright 자체는 optional 의존성이다. 전용 loop 안에서 지연 import하므로 core harness는
+Playwright 없이도 설치된다.
 """
 
 from __future__ import annotations
@@ -32,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Element roles/tags treated as interactive when building a page snapshot. The
-# model addresses elements by the ``data-df-ref`` index this snapshot stamps, so
-# it never has to guess a CSS selector or hold a stale element handle.
+# page snapshot을 만들 때 interactive로 취급하는 element role/tag. 모델은 이 snapshot이
+# 찍어 두는 ``data-df-ref`` 인덱스로 element를 지정하므로, CSS selector를 추측하거나
+# 오래된 element handle을 들고 있을 필요가 없다.
 _SNAPSHOT_JS = r"""
 () => {
   // Clear ref stamps from any previous snapshot first. GitHub-style SPAs keep
@@ -120,27 +119,27 @@ _WHEEL_SCROLL_JS = r"""
 """
 
 
-# Per-action timeout for clicks. Kept well under the session default (30s) so a
-# stale/invalid ref fails fast and the model can re-snapshot instead of blocking
-# the whole browsing loop (and tripping the agent loop-detection safety stop).
+# click 액션별 timeout. session 기본값(30s)보다 훨씬 짧게 두어, 오래되거나 잘못된 ref가
+# 빨리 실패하고 모델이 다시 snapshot을 뜨게 한다. 그렇지 않으면 browsing loop 전체가 막히고
+# agent의 loop-detection 안전 중단까지 걸린다.
 _CLICK_TIMEOUT_MS = 8000
-# Short, best-effort settle wait after a click. SPA (client-side) navigations
-# never fire a fresh load event, so this must never block the action.
+# click 이후의 짧은 best-effort 안정화 대기. SPA(클라이언트 측) 이동은 새 load 이벤트를
+# 발생시키지 않으므로 이 대기가 액션을 막아서는 안 된다.
 _POST_CLICK_LOAD_TIMEOUT_MS = 3000
 _LIVE_FRAME_JPEG_QUALITY = 85
 _MANUAL_LIVE_FRAME_MIN_INTERVAL_S = 0.75
 _LIVE_FRAME_INPUT_INTERVAL_S = 0.05
 _LIVE_FRAME_SETTLE_DELAYS_S = (0.8, 2.0)
 
-# Bound per-thread Chromium accumulation on a long-running multi-user gateway.
-# Sessions unused past the idle timeout are lazily evicted on the next
-# get_session call, and the LRU session is closed once the cap is exceeded.
+# 장기 실행 다중 사용자 gateway에서 thread별 Chromium이 무한정 쌓이는 것을 막는다.
+# idle timeout을 넘긴 session은 다음 get_session 호출 때 lazy하게 제거하고,
+# 상한을 넘으면 LRU session을 닫는다.
 _DEFAULT_MAX_SESSIONS = 32
 _DEFAULT_IDLE_TIMEOUT_S = 30 * 60.0
 
 
 def browser_multi_worker_error(workers: int | None = None) -> str | None:
-    """Return the fail-closed reason for process-local browser sessions."""
+    """browser session이 프로세스 로컬이라 fail-closed해야 하는 사유를 반환한다."""
     if workers is None:
         try:
             workers = int(os.environ.get("GATEWAY_WORKERS", "1"))
@@ -152,27 +151,27 @@ def browser_multi_worker_error(workers: int | None = None) -> str | None:
 
 
 def ensure_browser_worker_compatibility() -> None:
-    """Reject runtime browser use when requests can land in another worker."""
+    """요청이 다른 worker로 갈 수 있는 환경에서는 런타임 browser 사용을 거부한다."""
     error = browser_multi_worker_error()
     if error is not None:
         raise RuntimeError(error)
 
 
 class BrowserSessionCapacityError(RuntimeError):
-    """Raised when the browser session cap has no evictable slot."""
+    """browser session 상한에 밀어낼 수 있는 슬롯이 없을 때 발생한다."""
 
 
 class BrowserLiveViewerError(RuntimeError):
-    """Raised when a second Live viewer tries to attach to a session."""
+    """두 번째 Live viewer가 같은 session에 붙으려 할 때 발생한다."""
 
 
 def _is_playwright_timeout_error(exc: Exception) -> bool:
-    """Recognize Playwright timeouts without requiring Playwright at import time."""
+    """import 시점에 Playwright를 요구하지 않고 Playwright timeout을 식별한다."""
     return exc.__class__.__name__ == "TimeoutError" and exc.__class__.__module__.startswith("playwright.")
 
 
 def redact_browser_url(url: str) -> str:
-    """Drop query/fragment so a blocked-URL log line can't leak tokens/PII."""
+    """차단된 URL 로그가 token/PII를 흘리지 않도록 query와 fragment를 제거한다."""
     try:
         parsed = urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
@@ -181,7 +180,7 @@ def redact_browser_url(url: str) -> str:
 
 
 class _PlaywrightLoopThread:
-    """A private asyncio event loop running on a dedicated daemon thread."""
+    """전용 daemon thread에서 도는 전용 asyncio event loop."""
 
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -193,12 +192,12 @@ class _PlaywrightLoopThread:
         self._loop.run_forever()
 
     async def run(self, coro: Coroutine[Any, Any, T]) -> T:
-        """Schedule *coro* on the private loop and await it from any loop."""
+        """*coro*를 전용 loop에 예약하고 어떤 loop에서든 await한다."""
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return await asyncio.wrap_future(future)
 
     def submit(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Schedule *coro* on the private loop without blocking the caller."""
+        """호출자를 block하지 않고 *coro*를 전용 loop에 예약한다."""
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
 
         def _log_failure(done: Any) -> None:
@@ -254,7 +253,7 @@ class BrowserTab:
 
 
 class BrowserSession:
-    """A single Playwright browser+page bound to the private loop."""
+    """전용 loop에 묶인 Playwright browser+page 한 쌍."""
 
     def __init__(
         self,
@@ -271,19 +270,16 @@ class BrowserSession:
         self._headless = headless
         self._timeout_ms = timeout_ms
         self._viewport = viewport
-        # Optional SSRF guard applied at the browser request boundary. It returns
-        # an error string to block a URL (redirect/popup/subresource) or None to
-        # allow it. The explicit navigate URL is screened by the caller, but
-        # Playwright follows redirects and issues subresource/popup requests that
-        # bypass that single check — so we also validate every request the page
-        # makes here, catching a public URL that 30x-redirects to a private or
-        # cloud-metadata host.
+        # browser request 경계에 적용하는 선택적 SSRF guard. URL(redirect/popup/subresource)을
+        # 차단할 때는 에러 문자열을, 허용할 때는 None을 반환한다. 명시적 navigate URL은 호출자가
+        # 검사하지만, Playwright는 redirect를 따라가고 subresource/popup 요청을 내보내며 그
+        # 한 번의 검사를 우회한다. 그래서 page가 만드는 모든 요청을 여기서도 검증해,
+        # 사설 호스트나 cloud metadata로 30x redirect되는 공개 URL을 잡아낸다.
         self._url_guard = url_guard
         self._request_guard_bound = False
-        # When set, attach to an already-running Chrome via the DevTools
-        # Protocol (like Codex's "connect to your real browser") instead of
-        # launching a private headless instance. The user watches the agent
-        # drive their own visible browser, with their real login sessions.
+        # 설정되면 전용 headless 인스턴스를 띄우는 대신 DevTools Protocol로 이미 실행 중인
+        # Chrome에 붙는다(Codex의 "connect to your real browser"와 같다). 사용자는 자신의
+        # 실제 로그인 session이 살아 있는 보이는 browser를 agent가 조작하는 걸 지켜본다.
         self._cdp_url = cdp_url
         self._on_activity = on_activity
         self._activity_lock = threading.Lock()
@@ -293,22 +289,20 @@ class BrowserSession:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
-        # Tool calls and the Live WebSocket share this session and can observe a
-        # closed page concurrently. Only one caller may rebuild the browser
-        # hierarchy; the second check inside the lock reuses its result.
+        # 도구 호출과 Live WebSocket이 이 session을 공유하므로 닫힌 page를 동시에 볼 수 있다.
+        # browser 계층 재구성은 한 호출자만 수행하고, lock 안의 두 번째 검사가 그 결과를 재사용한다.
         self._ensure_page_lock = asyncio.Lock()
-        # Live screencast state. When streaming, ``_on_frame`` is retained so the
-        # screencast can be re-bound to a new page — login/OAuth flows commonly
-        # open a popup or a fresh tab, and the user must see (and drive) it.
+        # Live screencast 상태. streaming 중에는 ``_on_frame``을 유지해 screencast를 새 page에
+        # 다시 bind할 수 있게 한다. 로그인/OAuth 흐름은 흔히 popup이나 새 tab을 여는데,
+        # 사용자가 그것을 보고 조작해야 한다.
         self._on_frame: Callable[[bytes], None] | None = None
-        # The page the live screencast's CDP session is currently bound to. Frames
-        # are captured from ``self._page`` (the live active page), but the CDP
-        # repaint signal is tied to a specific page; when the active page diverges
-        # from this one we must rebind so new-page repaints keep driving frames.
+        # live screencast의 CDP session이 현재 bind된 page. frame은 ``self._page``(현재 활성
+        # page)에서 캡처하지만 CDP repaint 신호는 특정 page에 묶여 있다. 활성 page가 이 값과
+        # 어긋나면 다시 bind해야 새 page의 repaint가 계속 frame을 만든다.
         self._screencast_page: Page | None = None
-        # Guards against re-entrant rebinds: while (re)binding the screencast we
-        # may call _ensure_page (which routes through _set_active_page); without
-        # this flag that would schedule another rebind and recurse.
+        # 재진입 rebind 방지 플래그. screencast를 (재)bind하는 동안 _ensure_page를 호출할 수
+        # 있고 이는 _set_active_page를 거친다. 이 플래그가 없으면 또 다른 rebind가 예약되어
+        # 재귀에 빠진다.
         self._screencast_binding = False
         self._last_manual_live_frame_at = 0.0
         self._settle_live_frames_pending = False
@@ -322,7 +316,7 @@ class BrowserSession:
             return self._active_refs
 
     def _pin(self) -> None:
-        """Keep this session in the manager while a caller owns it."""
+        """호출자가 점유하는 동안 이 session을 manager에 붙잡아 둔다."""
         with self._activity_lock:
             self._active_refs += 1
 
@@ -332,7 +326,7 @@ class BrowserSession:
 
     @contextlib.contextmanager
     def _activity(self):
-        """Reference a real browser operation and refresh its recency."""
+        """실제 browser 연산을 참조 카운트에 잡고 최근 사용 시각을 갱신한다."""
         self._pin()
         if self._on_activity is not None:
             self._on_activity()
@@ -353,19 +347,17 @@ class BrowserSession:
                 self._playwright = await async_playwright().start()
 
             if self._cdp_url:
-                # Attach to the user's running Chrome (started with
-                # --remote-debugging-port). Reuse its default context + an existing
-                # tab: calling new_context()/new_page() on a CDP-attached real
-                # Chrome trips "Browser context management is not supported", so we
-                # adopt the tab Chrome already opened instead.
+                # 사용자가 --remote-debugging-port로 띄운 Chrome에 붙는다. 기본 context와
+                # 기존 tab을 재사용한다. CDP로 붙은 실제 Chrome에서 new_context()/new_page()를
+                # 호출하면 "Browser context management is not supported"가 나므로,
+                # Chrome이 이미 열어 둔 tab을 그대로 쓴다.
                 if self._browser is None or not self._browser.is_connected():
                     self._browser = await self._playwright.chromium.connect_over_cdp(self._cdp_url)
                     self._connected_over_cdp = True
-                    # CDP-attached real Chrome owns its own browsing context, so the
-                    # SSRF request guard is intentionally NOT installed for it (see
-                    # _install_request_guard). Surface that to operators — for this
-                    # session redirects/subresources to private/metadata hosts are
-                    # not aborted; cdp_url is documented local/trusted-only.
+                    # CDP로 붙은 실제 Chrome은 자체 browsing context를 소유하므로 SSRF request
+                    # guard를 의도적으로 설치하지 않는다(_install_request_guard 참고).
+                    # 운영자가 알 수 있게 경고를 남긴다. 이 session에서는 사설/metadata 호스트로의
+                    # redirect나 subresource가 차단되지 않으며, cdp_url은 로컬/신뢰 환경 전용이다.
                     logger.warning(
                         "browser SSRF request guard is disabled for CDP-attached session (cdp_url=%s)",
                         redact_browser_url(self._cdp_url),
@@ -379,8 +371,8 @@ class BrowserSession:
 
             if self._browser is None or not self._browser.is_connected():
                 self._browser = await self._playwright.chromium.launch(headless=self._headless)
-            # device_scale_factor=2 renders screenshots at retina density so the
-            # panel stays crisp when the image is scaled up to fill the view.
+            # device_scale_factor=2로 screenshot을 retina 밀도로 렌더링해, 이미지를 확대해
+            # 화면을 채워도 panel이 선명하게 유지된다.
             self._context = await self._browser.new_context(viewport=self._viewport, device_scale_factor=2)
             self._context.set_default_timeout(self._timeout_ms)
             await self._install_request_guard()
@@ -389,28 +381,25 @@ class BrowserSession:
             return self._page
 
     def _set_active_page(self, page: Page) -> None:
-        """Adopt *page* as the active page and keep the live screencast on it.
+        """*page*를 활성 page로 채택하고 live screencast를 그 page에 유지한다.
 
-        Every path that changes the active page (initial/rebuilt page, popups and
-        new tabs, explicit tab switches) routes through here so the live stream can
-        never drift onto a stale page. The CDP screencast's repaint signal is bound
-        to one page; when the active page diverges from the one the screencast is
-        bound to, rebind it. Rebinding is scheduled with error handling so a
-        transient failure cannot leave the callback un-awaited and silently
-        swallowed (the previous fire-and-forget rebind could strand Live on the
-        old page — address bar / snapshot moved on, frames did not).
+        활성 page를 바꾸는 모든 경로(최초/재구성 page, popup과 새 tab, 명시적 tab 전환)가
+        여기를 거치므로 live stream이 오래된 page로 흘러갈 수 없다. CDP screencast의 repaint
+        신호는 page 하나에 묶여 있으므로, 활성 page가 screencast가 bind된 page와 어긋나면
+        다시 bind한다. rebind는 에러 처리와 함께 예약해, 일시적 실패로 callback이 await되지
+        않은 채 조용히 삼켜지지 않게 한다. 이전의 fire-and-forget rebind는 Live를 옛 page에
+        묶어 둘 수 있었다. 주소창과 snapshot은 넘어갔는데 frame만 그대로였다.
         """
         self._page = page
         if self._on_frame is not None and not self._screencast_binding and page is not self._screencast_page:
             asyncio.ensure_future(self._rebind_screencast_safe())
 
     def _bind_new_page_listener(self) -> None:
-        """Follow popups/new tabs so auth flows stay visible and controllable.
+        """popup과 새 tab을 따라가 인증 흐름이 계속 보이고 조작 가능하게 한다.
 
-        Login and OAuth consent screens routinely open a popup or a fresh tab.
-        Without following it the user sees a frozen frame and cannot authorize.
-        On a new page we adopt it as the active page and, if a screencast is
-        running, re-bind it so the stream tracks the tab the user must act on.
+        로그인과 OAuth 동의 화면은 흔히 popup이나 새 tab을 연다. 따라가지 않으면 사용자는
+        멈춘 화면만 보고 승인할 수 없다. 새 page가 열리면 그것을 활성 page로 채택하고,
+        screencast가 돌고 있으면 다시 bind해 stream이 사용자가 조작해야 할 tab을 따라가게 한다.
         """
         if self._context is None or self._page_listener_bound:
             return
@@ -422,14 +411,12 @@ class BrowserSession:
         self._page_listener_bound = True
 
     async def _install_request_guard(self) -> None:
-        """Abort any request whose URL fails the SSRF guard.
+        """URL이 SSRF guard를 통과하지 못하는 요청을 모두 중단시킨다.
 
-        Runs at the context level so it covers the top navigation, every
-        redirect hop, popups/new tabs, iframes, and subresource fetches — the
-        paths a one-time initial-URL check cannot see. A public URL that
-        redirects to ``http://169.254.169.254/...`` is aborted before the
-        response is exposed through snapshots/text. Skipped for CDP-attached
-        real Chrome, which owns its own browsing context.
+        context 수준에서 동작하므로 최상위 navigation, 모든 redirect hop, popup/새 tab,
+        iframe, subresource fetch까지 덮는다. 최초 URL 한 번 검사로는 볼 수 없는 경로들이다.
+        ``http://169.254.169.254/...`` 로 redirect되는 공개 URL은 응답이 snapshot이나 텍스트로
+        노출되기 전에 중단된다. 자체 browsing context를 소유하는 CDP 연결 Chrome에서는 건너뛴다.
         """
         if self._url_guard is None or self._context is None or self._request_guard_bound or self._cdp_url:
             return
@@ -481,15 +468,14 @@ class BrowserSession:
         selector = f'[data-df-ref="{ref}"]'
         base = page.locator(selector)
 
-        # Fast-fail on a stale ref instead of blocking on the 30s session
-        # default: after a SPA re-render the ref may no longer exist, and the
-        # model should re-snapshot and retry rather than the browsing loop
-        # stalling until it trips the agent loop-detection safety stop.
+        # 오래된 ref는 session 기본값 30초를 기다리지 않고 바로 실패시킨다. SPA가 다시
+        # 렌더링하면 ref가 사라질 수 있고, 이때는 browsing loop가 멎어 agent의 loop-detection
+        # 안전 중단까지 가기보다 모델이 다시 snapshot을 뜨고 재시도하는 편이 낫다.
         if await base.count() == 0:
             raise RuntimeError(f"element [{ref}] is no longer on the page; call browser_snapshot to get fresh refs")
 
         locator = base.first
-        # Bring the target into view; harmless if it is already on-screen.
+        # 대상을 화면 안으로 스크롤한다. 이미 보이는 상태여도 무해하다.
         try:
             await locator.scroll_into_view_if_needed(timeout=_CLICK_TIMEOUT_MS)
         except Exception as exc:
@@ -503,8 +489,8 @@ class BrowserSession:
                 raise
             raise RuntimeError(f"element [{ref}] was not clickable within {_CLICK_TIMEOUT_MS // 1000}s; the page may have changed — call browser_snapshot and retry") from exc
 
-        # SPA (client-side) navigations never fire a fresh load event, so this
-        # settle wait is best-effort and must never block the snapshot.
+        # SPA(클라이언트 측) 이동은 새 load 이벤트를 발생시키지 않으므로, 이 안정화 대기는
+        # best-effort이며 snapshot을 막아서는 안 된다.
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=_POST_CLICK_LOAD_TIMEOUT_MS)
         except Exception as exc:
@@ -519,8 +505,8 @@ class BrowserSession:
         await page.fill(selector, text)
         if submit:
             await page.press(selector, "Enter")
-            # Best-effort settle; a client-side search/submit may never fire a
-            # fresh load event, so this must not block the snapshot for 30s.
+            # best-effort 안정화 대기. 클라이언트 측 검색/제출은 새 load 이벤트를 발생시키지
+            # 않을 수 있으므로 snapshot을 30초씩 막아서는 안 된다.
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=_POST_CLICK_LOAD_TIMEOUT_MS)
             except Exception as exc:
@@ -570,16 +556,15 @@ class BrowserSession:
         elapsed = time.monotonic() - self._last_manual_live_frame_at
         if elapsed >= _MANUAL_LIVE_FRAME_MIN_INTERVAL_S:
             await self._emit_live_frame()
-        # One frame is often too early for SPAs: the URL may have changed while
-        # the page body is still rendering. Add a small, bounded settle burst
-        # instead of returning to continuous screencast.
+        # SPA에서는 frame 하나만으로는 대개 너무 이르다. page body가 아직 렌더링 중인데
+        # URL만 바뀌었을 수 있다. 연속 screencast로 되돌아가는 대신 짧고 제한된 안정화
+        # burst를 덧붙인다.
         self._schedule_settle_live_frames()
 
     async def _flush_input_live_frames(self) -> None:
         try:
-            # Coalesce the first burst, then keep refreshing at a bounded cadence
-            # while input continues. A trailing debounce would freeze the visible
-            # page until a wheel/keyboard gesture stopped.
+            # 첫 burst는 합쳐 보내고, 입력이 이어지는 동안에는 제한된 주기로 계속 갱신한다.
+            # trailing debounce 방식이면 wheel/키보드 제스처가 끝날 때까지 화면이 멈춘다.
             await asyncio.sleep(_LIVE_FRAME_INPUT_INTERVAL_S)
             while self._on_frame is not None:
                 generation = self._input_live_frame_generation
@@ -637,9 +622,8 @@ class BrowserSession:
             return
         target = pages[index]
         await target.bring_to_front()
-        # This path is async, so rebind the screencast inline (awaited) rather
-        # than going through _set_active_page's scheduled rebind — that keeps the
-        # frame source aligned with the switched-to tab before this call returns.
+        # 이 경로는 async이므로 _set_active_page의 예약 rebind를 거치지 않고 여기서 바로
+        # await하며 rebind한다. 그래야 이 호출이 반환되기 전에 frame 소스가 전환된 tab과 맞는다.
         self._page = target
         if self._on_frame is not None and target is not self._screencast_page:
             await self._rebind_screencast()
@@ -649,8 +633,8 @@ class BrowserSession:
             with contextlib.suppress(Exception):
                 await self._stop_screencast()
             if self._connected_over_cdp:
-                # Attached to the user's real Chrome — never close their browser,
-                # context, or the tab we adopted. Just disconnect Playwright.
+                # 사용자의 실제 Chrome에 붙어 있다. browser, context, 채택한 tab을 절대 닫지
+                # 않고 Playwright 연결만 끊는다.
                 if self._browser is not None:
                     with contextlib.suppress(Exception):
                         await self._browser.close()
@@ -678,14 +662,12 @@ class BrowserSession:
             self._request_guard_bound = False
 
     async def _start_screencast(self, on_frame: Callable[[bytes], None]) -> None:
-        """Start Live mode and send an initial JPEG frame.
+        """Live 모드를 시작하고 첫 JPEG frame을 보낸다.
 
-        This used to attach Chrome's CDP screencast and then turn every repaint
-        into a high-quality Playwright screenshot. That made GitHub-like pages
-        expensive to open because a mostly static panel still kept the headless
-        renderer/GPU busy. Live control now uses on-demand frames instead:
-        initial connect, browser tool completion, and user input all push a
-        throttled screenshot.
+        예전에는 Chrome의 CDP screencast에 붙어 모든 repaint를 고품질 Playwright screenshot으로
+        바꿨다. 그러면 거의 정적인 panel도 headless renderer/GPU를 계속 붙잡아 GitHub 같은
+        page를 여는 비용이 커졌다. 지금은 필요할 때만 frame을 만든다. 최초 연결, browser 도구
+        완료, 사용자 입력이 각각 throttle된 screenshot을 밀어 넣는다.
         """
         page = await self._ensure_page()
         if self._on_frame is not None and self._on_frame is not on_frame:
@@ -765,7 +747,7 @@ class BrowserSession:
         if etype != "move":
             self._schedule_input_live_frame()
 
-    # Public API — each marshals onto the private loop.
+    # 공개 API. 각각 전용 loop로 작업을 넘긴다.
     async def navigate(self, url: str) -> PageSnapshot:
         with self._activity():
             return await self._loop.run(self._navigate(url))
@@ -830,19 +812,17 @@ class BrowserSession:
 
 
 class BrowserSessionManager:
-    """Process-local registry of per-thread browser sessions.
+    """thread별 browser session의 프로세스 로컬 registry.
 
-    Sessions are keyed by ``thread_id`` and each owns a headless Chromium
-    process, so a long-running multi-user gateway would otherwise accumulate one
-    browser per thread that ever used the tools (a real memory/FD leak). To bound
-    that, ``get_session`` lazily evicts sessions that have been idle past
-    ``idle_timeout_s`` and enforces a ``max_sessions`` cap by closing the
-    least-recently-used unpinned session. Active browser operations and Live
-    WebSocket leases are reference-counted, so eviction never closes a session
-    while it is in use. Admission is a hard bound: when every existing session
-    is pinned, a new thread is rejected instead of exceeding ``max_sessions``.
-    Eviction is fire-and-forget on the private Playwright loop so it never
-    blocks the caller; the just-requested thread is always kept.
+    session은 ``thread_id``로 키를 잡고 각각 headless Chromium 프로세스를 소유한다. 그대로
+    두면 장기 실행 다중 사용자 gateway에서 도구를 한 번이라도 쓴 thread마다 browser가 쌓여
+    실제 메모리/FD 누수가 된다. 이를 막기 위해 ``get_session``은 ``idle_timeout_s``를 넘겨
+    유휴 상태인 session을 lazy하게 제거하고, ``max_sessions`` 상한을 초과하면 가장 오래
+    쓰이지 않은 비고정 session을 닫는다. 실행 중인 browser 연산과 Live WebSocket lease는
+    참조 카운트로 관리되므로 사용 중인 session이 제거되는 일은 없다. 수용은 하드 상한이다.
+    기존 session이 모두 고정되어 있으면 ``max_sessions``를 넘기는 대신 새 thread를 거부한다.
+    제거는 전용 Playwright loop에서 fire-and-forget으로 수행되어 호출자를 막지 않으며,
+    방금 요청된 thread는 항상 유지된다.
     """
 
     def __init__(self, *, max_sessions: int = _DEFAULT_MAX_SESSIONS, idle_timeout_s: float = _DEFAULT_IDLE_TIMEOUT_S) -> None:
@@ -910,7 +890,7 @@ class BrowserSessionManager:
 
     @contextlib.contextmanager
     def acquire_session(self, thread_id: str | None, **kwargs: Any):
-        """Acquire an atomically pinned session for one browser operation."""
+        """browser 연산 하나를 위해 원자적으로 고정된 session을 획득한다."""
         key = thread_id or "default"
         session = self.get_session(key, pin=True, **kwargs)
         try:
@@ -919,7 +899,7 @@ class BrowserSessionManager:
             self.release_session(key, session)
 
     def release_session(self, thread_id: str | None, session: BrowserSession) -> None:
-        """Release a lease and restore idle/LRU bounds when it becomes evictable."""
+        """lease를 반납하고, 제거 가능해지면 idle/LRU 상한을 다시 적용한다."""
         key = thread_id or "default"
         session._unpin()
         now = time.monotonic()
@@ -929,12 +909,12 @@ class BrowserSessionManager:
             self._schedule_close(evicted_session)
 
     def _collect_evictable_locked(self, *, keep_key: str | None, now: float) -> list[BrowserSession]:
-        """Drop idle/over-cap sessions from the registry; return them for close.
+        """유휴이거나 상한을 넘은 session을 registry에서 빼고, 닫을 대상으로 반환한다.
 
-        Must be called under ``self._lock``. When set, ``keep_key`` (the
-        just-touched thread) is never evicted so a new request cannot lose its
-        session. Lease release passes ``None`` so newly unpinned sessions can
-        restore the configured bounds without waiting for another request.
+        반드시 ``self._lock``을 잡은 상태에서 호출한다. ``keep_key``(방금 사용된 thread)가
+        지정되면 절대 제거하지 않으므로 새 요청이 자신의 session을 잃지 않는다. lease 반납
+        경로는 ``None``을 넘겨, 방금 고정 해제된 session이 다음 요청을 기다리지 않고 설정된
+        상한을 회복하게 한다.
         """
         to_close: list[BrowserSession] = []
         to_close.extend(self._collect_idle_locked(keep_key=keep_key, now=now))
@@ -948,7 +928,7 @@ class BrowserSessionManager:
         return to_close
 
     def _collect_idle_locked(self, *, keep_key: str | None, now: float) -> list[BrowserSession]:
-        """Drop idle, unpinned sessions from the registry."""
+        """유휴 상태이고 고정되지 않은 session을 registry에서 제거한다."""
         to_close: list[BrowserSession] = []
         if self._idle_timeout_s > 0:
             for other_key, last_used in list(self._last_used.items()):
@@ -1014,7 +994,7 @@ def get_browser_session_manager() -> BrowserSessionManager:
 
 
 def reset_browser_session_manager() -> None:
-    """Test hook: drop the process-local manager without closing sessions."""
+    """테스트용 hook. session을 닫지 않고 프로세스 로컬 manager만 버린다."""
     global _manager
     with _manager_lock:
         _manager = None

@@ -1,4 +1,4 @@
-"""Configuration for tool output budget protection."""
+"""tool 출력 budget 보호 설정."""
 
 from __future__ import annotations
 
@@ -10,12 +10,11 @@ from deerflow.constants import TOOL_RESULTS_DIRNAME
 
 
 class ToolOutputConfig(BaseModel):
-    """Config section for tool-result output budget enforcement.
+    """tool 결과 출력 budget 강제를 위한 config 섹션.
 
-    When a tool returns more than ``externalize_min_chars`` characters,
-    the full output is persisted to disk and replaced with a compact
-    preview + file reference.  If disk persistence is unavailable the
-    output falls back to head+tail truncation.
+    tool이 ``externalize_min_chars``보다 긴 출력을 반환하면 전체 출력을 디스크에 저장하고 간결한
+    preview + 파일 참조로 대체한다. 디스크 저장이 불가능하면 앞뒤를 남기는 truncation으로
+    대체한다.
     """
 
     enabled: bool = Field(
@@ -64,13 +63,12 @@ class ToolOutputConfig(BaseModel):
     @field_validator("storage_subdir")
     @classmethod
     def _storage_subdir_is_single_segment(cls, value: str) -> str:
-        """Require a single directory name (no path separators).
+        """디렉터리 이름 한 조각만 허용한다(경로 구분자 불가).
 
-        The workspace-changes scanner prunes by directory name during
-        ``os.walk``, which yields one-segment dirnames — a nested value like
-        ``cache/tool-results`` would never match the exclusion and its files
-        would silently be counted as produced artifacts again. A loud config
-        error beats a silent exclusion no-op.
+        workspace-changes 스캐너는 ``os.walk`` 중 디렉터리 이름으로 가지치기하며, 그때 얻는
+        dirname은 한 조각이다. ``cache/tool-results`` 같은 중첩 값은 제외 조건에 절대 걸리지
+        않아 그 파일들이 다시 조용히 산출 artifact로 집계된다. 조용한 무효 제외보다 요란한
+        config 오류가 낫다.
         """
         if value == "" or value in {".", ".."} or os.path.isabs(value):
             raise ValueError("storage_subdir must be a single non-empty directory name")

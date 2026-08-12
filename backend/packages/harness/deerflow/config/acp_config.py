@@ -1,4 +1,4 @@
-"""ACP (Agent Client Protocol) agent configuration loaded from config.yaml."""
+"""config.yaml에서 읽어 오는 ACP(Agent Client Protocol) agent 설정."""
 
 import logging
 from collections.abc import Mapping
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class ACPAgentConfig(BaseModel):
-    """Configuration for a single ACP-compatible agent."""
+    """ACP 호환 agent 하나의 설정."""
 
     command: str = Field(description="Command to launch the ACP agent subprocess")
     args: list[str] = Field(default_factory=list, description="Additional command arguments")
@@ -41,19 +41,19 @@ _acp_agents: dict[str, ACPAgentConfig] = {}
 
 
 def get_acp_agents() -> dict[str, ACPAgentConfig]:
-    """Get the currently configured ACP agents.
+    """현재 설정된 ACP agent들을 반환한다.
 
     Returns:
-        Mapping of agent name -> ACPAgentConfig.  Empty dict if no ACP agents are configured.
+        agent 이름 -> ACPAgentConfig 매핑. 설정된 ACP agent가 없으면 빈 dict.
     """
     return _acp_agents
 
 
 def load_acp_config_from_dict(config_dict: Mapping[str, Mapping[str, object]] | None) -> None:
-    """Load ACP agent configuration from a dictionary (typically from config.yaml).
+    """dict(보통 config.yaml에서 온 것)에서 ACP agent 설정을 읽어 들인다.
 
     Args:
-        config_dict: Mapping of agent name -> config fields.
+        config_dict: agent 이름 -> 설정 필드 매핑.
     """
     global _acp_agents
     if config_dict is None:

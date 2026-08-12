@@ -1,7 +1,7 @@
-"""Shared skill archive installation logic.
+"""공용 skill 아카이브 설치 로직.
 
-Pure business logic — no FastAPI/HTTP dependencies.
-Both Gateway and Client delegate to these functions.
+FastAPI/HTTP 의존성이 없는 순수 비즈니스 로직이다.
+Gateway와 Client 모두 이 함수들에 위임한다.
 """
 
 import asyncio
@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 _PROMPT_INPUT_DIRS = {"references", "templates"}
 _PROMPT_INPUT_SUFFIXES = frozenset({".json", ".markdown", ".md", ".rst", ".txt", ".yaml", ".yml"})
 _CODE_SUFFIXES = frozenset({".bash", ".cjs", ".js", ".mjs", ".php", ".pl", ".ps1", ".py", ".rb", ".sh", ".ts", ".zsh"})
-# Full magics per variant — a shorter shared prefix would also match
-# non-executable data files.
+# 변종마다 전체 magic을 적는다. 더 짧은 공통 접두사를 쓰면 실행 파일이 아닌 데이터 파일까지
+# 매칭된다.
 _EXECUTABLE_MAGIC_PREFIXES = (
     b"\x7fELF",  # ELF
     b"MZ",  # PE/DOS
@@ -46,11 +46,11 @@ _EXECUTABLE_MAGIC_PREFIXES = (
 
 
 class SkillAlreadyExistsError(ValueError):
-    """Raised when a skill with the same name is already installed."""
+    """같은 이름의 skill이 이미 설치돼 있을 때 raise된다."""
 
 
 class SkillSecurityScanError(ValueError):
-    """Raised when a skill archive fails security scanning."""
+    """skill 아카이브가 보안 스캔을 통과하지 못했을 때 raise된다."""
 
     findings: list[StaticFinding]
     skill_name: str | None
@@ -62,20 +62,17 @@ class SkillSecurityScanError(ValueError):
 
 
 def is_unsafe_zip_member(info: zipfile.ZipInfo) -> bool:
-    """Return True if the zip member path is absolute, attempts directory
-    traversal, or contains a colon.
+    """zip member 경로가 절대 경로거나, directory traversal을 시도하거나, 콜론을 포함하면
+    True를 반환한다.
 
-    A colon has no legitimate use in a relative archive member path — zip
-    entries always use ``/`` separators, and a real Windows drive prefix
-    (``C:\\...``) is already rejected above as absolute. But on Windows/NTFS,
-    a colon anywhere else in a path (e.g. ``scripts/run.sh:hidden.txt``)
-    addresses an Alternate Data Stream on the preceding path component
-    instead of creating a new file: it silently attaches extra content to
-    ``scripts/run.sh`` rather than creating a sibling file. That stream is
-    invisible to ``Path.rglob()`` / ``os.walk()``-based listing, so it would
-    let an archive smuggle content past directory-based security scanning
-    while the content still lands on disk. Reject outright rather than
-    trying to allow-list "safe" colon positions.
+    상대 아카이브 member 경로에서 콜론은 정당한 쓰임이 없다. zip 엔트리는 항상 ``/``
+    구분자를 쓰고, 실제 Windows 드라이브 접두사(``C:\\...``)는 위에서 이미 절대 경로로
+    거부된다. 그런데 Windows/NTFS에서는 경로 다른 위치의 콜론(예:
+    ``scripts/run.sh:hidden.txt``)이 새 파일을 만드는 대신 앞선 경로 구성 요소의 Alternate
+    Data Stream을 가리킨다. 즉 형제 파일을 만드는 게 아니라 ``scripts/run.sh``에 조용히
+    내용을 덧붙인다. 이 stream은 ``Path.rglob()`` / ``os.walk()`` 기반 목록에 보이지 않으므로,
+    아카이브가 디렉터리 기반 보안 스캔을 우회해 내용을 디스크에 심을 수 있다. "안전한" 콜론
+    위치를 allow-list하려 하지 말고 곧바로 거부한다.
     """
     name = info.filename
     if not name:
@@ -96,31 +93,31 @@ def is_unsafe_zip_member(info: zipfile.ZipInfo) -> bool:
 
 
 def is_symlink_member(info: zipfile.ZipInfo) -> bool:
-    """Detect symlinks based on the external attributes stored in the ZipInfo."""
+    """ZipInfo에 저장된 external attribute로 symlink를 감지한다."""
     mode = info.external_attr >> 16
     return stat.S_ISLNK(mode)
 
 
 def is_executable_binary_prefix(prefix: bytes) -> bool:
-    """Detect ELF, PE, and Mach-O executables by magic bytes."""
+    """magic byte로 ELF, PE, Mach-O 실행 파일을 감지한다."""
     return prefix.startswith(_EXECUTABLE_MAGIC_PREFIXES)
 
 
 def should_ignore_archive_entry(path: Path) -> bool:
-    """Return True for macOS metadata dirs and dotfiles."""
+    """macOS 메타데이터 디렉터리와 dotfile이면 True를 반환한다."""
     return path.name.startswith(".") or path.name == "__MACOSX"
 
 
 def resolve_skill_dir_from_archive(temp_path: Path) -> Path:
-    """Locate the skill root directory from extracted archive contents.
+    """추출된 아카이브 내용에서 skill 루트 디렉터리를 찾는다.
 
-    Filters out macOS metadata (__MACOSX) and dotfiles (.DS_Store).
+    macOS 메타데이터(__MACOSX)와 dotfile(.DS_Store)은 걸러낸다.
 
     Returns:
-        Path to the skill directory.
+        skill 디렉터리 경로.
 
     Raises:
-        ValueError: If the archive is empty after filtering.
+        ValueError: 필터링 후 아카이브가 비어 있을 때.
     """
     items = [p for p in temp_path.iterdir() if not should_ignore_archive_entry(p)]
     if not items:
@@ -136,31 +133,29 @@ def safe_extract_skill_archive(
     max_total_size: int = 512 * 1024 * 1024,
     max_entries: int = 4096,
 ) -> None:
-    """Safely extract a skill archive with security protections.
+    """보안 보호 장치를 적용해 skill 아카이브를 안전하게 추출한다.
 
-    Protections:
-    - Reject absolute paths and directory traversal (..).
-    - Skip symlink entries instead of materialising them.
-    - Enforce a hard limit on total uncompressed size (zip bomb defence).
-    - Enforce a hard limit on member count (zip bomb defence by entry count —
-      a huge number of tiny/empty members can be cheap to store yet still
-      slow to extract, independent of total size).
-    - Reject executable binaries (ELF/PE/Mach-O) by magic bytes.
+    보호 장치:
+    - 절대 경로와 directory traversal(..)을 거부한다.
+    - symlink 엔트리는 실제로 만들지 않고 건너뛴다.
+    - 압축 해제 총 크기에 하드 리밋을 강제한다(zip bomb 방어).
+    - member 개수에 하드 리밋을 강제한다(엔트리 수 기준 zip bomb 방어. 아주 작거나 빈
+      member가 엄청나게 많으면 저장 비용은 싸지만 총 크기와 무관하게 추출이 느려진다).
+    - magic byte로 실행 바이너리(ELF/PE/Mach-O)를 거부한다.
 
     Raises:
-        ValueError: If unsafe members, executable binaries, entry count, or size limit exceeded.
+        ValueError: 안전하지 않은 member, 실행 바이너리, 엔트리 수 또는 크기 제한 초과 시.
     """
     dest_root = dest_path.resolve()
     total_written = 0
 
     infos = zip_ref.infolist()
     if len(infos) > max_entries:
-        # Early-abort before any per-member work below — mirrors the same
-        # early-abort in skillscan/orchestrator.py::scan_archive_preflight
-        # (its comment: "a huge member count is a bounded DoS vector even
-        # when the total size is small"). That scan is optional
-        # (skill_scan.enabled); this check must hold unconditionally since
-        # it lives in the extraction path every install goes through.
+        # 아래 member별 작업을 시작하기 전에 조기 중단한다.
+        # skillscan/orchestrator.py::scan_archive_preflight의 조기 중단과 같은 방식이다
+        # (그쪽 주석: "총 크기가 작아도 엄청난 member 개수는 유한한 DoS 벡터다"). 그 스캔은
+        # 선택적이지만(skill_scan.enabled), 이 검사는 모든 설치가 거치는 추출 경로에 있으므로
+        # 무조건 적용돼야 한다.
         raise ValueError(f"Skill archive contains too many entries ({len(infos)} > {max_entries}).")
 
     for info in infos:
@@ -212,17 +207,17 @@ def _has_shebang(path: Path) -> bool:
 
 
 def _is_code_file_by_name(rel_path: Path) -> bool:
-    """Pure name-based code classification: scripts/ members and code suffixes."""
+    """이름만으로 코드 파일을 분류한다. scripts/ 하위 member와 코드 확장자가 대상이다."""
     if _is_script_support_file(rel_path):
         return True
     return rel_path.suffix.lower() in _CODE_SUFFIXES
 
 
 async def _is_code_file(path: Path, rel_path: Path) -> bool:
-    """Classify code files anywhere in the tree for the executable scan policy.
+    """executable 스캔 정책을 위해 트리 어디에 있든 코드 파일을 분류한다.
 
-    Name checks are pure and stay on the event loop; only the shebang
-    sniff for extensionless files reads the file and is offloaded.
+    이름 검사는 순수하므로 event loop에 남겨 두고, 확장자 없는 파일의 shebang 확인만 파일을
+    읽으므로 offload한다.
     """
     if _is_code_file_by_name(rel_path):
         return True
@@ -302,12 +297,12 @@ async def _scan_static_skill_archive_or_raise(skill_dir: Path, skill_name: str, 
 
 
 def _collect_scannable_files(skill_dir: Path) -> list[Path]:
-    """Enumerate archive files for scanning (blocking; run off the event loop)."""
+    """스캔 대상 아카이브 파일을 열거한다(blocking이므로 event loop 밖에서 실행한다)."""
     return [candidate for candidate in sorted(skill_dir.rglob("*")) if candidate.is_file()]
 
 
 async def _scan_skill_archive_contents_or_raise(skill_dir: Path, skill_name: str, *, app_config=None) -> list[StaticFinding]:
-    """Run the skill security scanner against all installable text and script files."""
+    """설치 대상 텍스트·스크립트 파일 전부에 skill 보안 스캐너를 실행한다."""
     static_findings = await _scan_static_skill_archive_or_raise(skill_dir, skill_name, app_config=app_config)
 
     skill_md = skill_dir / "SKILL.md"

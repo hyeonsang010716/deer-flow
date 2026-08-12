@@ -63,20 +63,19 @@ CONFIG_FILE_DATABASE_DEFAULTS = {
 
 
 class CircuitBreakerConfig(BaseModel):
-    """Configuration for the LLM Circuit Breaker."""
+    """LLM Circuit Breaker 설정."""
 
     failure_threshold: int = Field(default=5, description="Number of consecutive failures before tripping the circuit")
     recovery_timeout_sec: int = Field(default=60, description="Time in seconds before attempting to recover the circuit")
 
 
 class LlmCallConfig(BaseModel):
-    """Configuration for LLM call execution (concurrency / rate shaping).
+    """LLM 호출 실행 설정(동시성 / rate shaping).
 
-    Distinct from :class:`CircuitBreakerConfig` (which handles a *failing*
-    provider) and from :class:`ModelConfig` (which describes model endpoints):
-    these knobs shape how many LLM calls run at once and how the retry/backoff
-    loop behaves. Capping concurrency caps the *slope* of the request rate,
-    which is what a provider burst-rate (``limit_burst_rate``) limit fires on.
+    *실패하는* provider를 다루는 :class:`CircuitBreakerConfig` 나 모델 endpoint를 기술하는
+    :class:`ModelConfig` 와는 다르다. 여기 옵션들은 LLM 호출을 동시에 몇 개 돌릴지와
+    retry/backoff 루프의 동작을 정한다. 동시성을 제한하면 요청 rate의 *기울기*가 제한되는데,
+    provider의 burst-rate(``limit_burst_rate``) 제한이 반응하는 게 바로 그 기울기다.
     """
 
     max_concurrent_calls: int = Field(
@@ -127,28 +126,26 @@ class LlmCallConfig(BaseModel):
 
 
 class LoggingEnhanceConfig(BaseModel):
-    """Request trace logging enhancement settings."""
+    """요청 trace 로깅 향상 설정."""
 
     enabled: bool = Field(default=False, description="Enable request-level trace ids in Gateway response headers and log records.")
     format: Literal["text", "json"] = Field(default="text", description="Enhanced log output format.")
 
 
 class LoggingConfig(BaseModel):
-    """Logging configuration."""
+    """로깅 설정."""
 
     enhance: LoggingEnhanceConfig = Field(default_factory=LoggingEnhanceConfig, description="Request trace correlation logging settings.")
 
 
 def is_trace_correlation_enabled(config: Any) -> bool:
-    """Return ``True`` when ``logging.enhance.enabled`` is set on *config*.
+    """*config* 에 ``logging.enhance.enabled`` 가 켜져 있으면 ``True``를 반환한다.
 
-    Single source of truth for the request-trace-correlation gate, shared by
-    the Gateway ``TraceMiddleware`` and the embedded ``DeerFlowClient`` so
-    the two entry points cannot drift on when ``deerflow_trace_id`` is
-    emitted (Langfuse metadata) and when a request-level trace id is bound
-    at all. Accepts any object exposing ``logging.enhance.enabled`` via
-    ``getattr`` chains (``AppConfig``, ``SimpleNamespace`` fixtures, etc.);
-    missing intermediate attributes silently degrade to ``False``.
+    요청 trace 상관관계 게이트의 단일 진실 공급원이다. Gateway ``TraceMiddleware`` 와 내장
+    ``DeerFlowClient`` 가 공유하므로, ``deerflow_trace_id``(Langfuse metadata)를 언제 내보내는지와
+    요청 단위 trace id를 아예 바인딩할지에 대해 두 진입점이 어긋날 수 없다. ``getattr`` 체인으로
+    ``logging.enhance.enabled`` 를 노출하는 객체면 무엇이든 받는다(``AppConfig``, 테스트용
+    ``SimpleNamespace`` 등). 중간 속성이 없으면 조용히 ``False``로 떨어진다.
     """
     logging_config = getattr(config, "logging", None)
     enhance = getattr(logging_config, "enhance", None)
@@ -156,27 +153,25 @@ def is_trace_correlation_enabled(config: Any) -> bool:
 
 
 def _legacy_config_candidates() -> tuple[Path, ...]:
-    """Return source-tree config.yaml locations for monorepo compatibility."""
+    """monorepo 호환을 위해 소스 트리의 config.yaml 후보 경로를 반환한다."""
     backend_dir = Path(__file__).resolve().parents[4]
     repo_root = backend_dir.parent
     return (backend_dir / "config.yaml", repo_root / "config.yaml")
 
 
 def logging_level_from_config(name: str | None) -> int:
-    """Map ``config.yaml`` ``log_level`` string to a :mod:`logging` level constant."""
+    """``config.yaml`` 의 ``log_level`` 문자열을 :mod:`logging` 레벨 상수로 매핑한다."""
     mapping = logging.getLevelNamesMapping()
     return mapping.get((name or "info").strip().upper(), logging.INFO)
 
 
 def apply_logging_level(name: str | None) -> None:
-    """Resolve *name* to a logging level and apply it to the ``deerflow``/``app`` logger hierarchies.
+    """*name* 을 로깅 레벨로 해석해 ``deerflow``/``app`` logger 계층에 적용한다.
 
-    Only the ``deerflow`` and ``app`` logger levels are changed so that
-    third-party library verbosity (e.g. uvicorn, sqlalchemy) is not
-    affected. Root handler levels are lowered (never raised) so that
-    messages from the configured loggers can propagate through without
-    being filtered, while preserving handler thresholds that may be
-    intentionally restrictive for third-party log output.
+    서드파티 라이브러리(uvicorn, sqlalchemy 등)의 로그 양에 영향을 주지 않도록 ``deerflow`` 와
+    ``app`` logger 레벨만 바꾼다. root handler 레벨은 낮추기만 하고 올리지 않는다. 그래야 설정된
+    logger의 메시지가 걸러지지 않고 통과하면서도, 서드파티 로그 출력을 위해 의도적으로 엄격하게
+    잡아 둔 handler 임계값은 유지된다.
     """
     level = logging_level_from_config(name)
     for logger_name in ("deerflow", "app"):
@@ -187,7 +182,7 @@ def apply_logging_level(name: str | None) -> None:
 
 
 class AppConfig(BaseModel):
-    """Config for the DeerFlow application"""
+    """DeerFlow 애플리케이션 설정."""
 
     log_level: str = Field(
         default="info",
@@ -327,10 +322,10 @@ class AppConfig(BaseModel):
         ),
     )
 
-    # Name -> config lookup tables, (re)built after validation by
-    # ``_build_name_indexes``. They make ``get_model_config`` / ``get_tool_config``
-    # / ``get_tool_group_config`` O(1) instead of an O(n) ``next(...)`` scan per
-    # call. Private attrs are excluded from serialization.
+    # 이름 -> config 조회 테이블. validation 이후 ``_build_name_indexes`` 가 (재)구축한다.
+    # 덕분에 ``get_model_config`` / ``get_tool_config`` / ``get_tool_group_config`` 가
+    # 호출마다 O(n) ``next(...)`` 스캔을 하지 않고 O(1)로 동작한다.
+    # private attr이므로 직렬화 대상에서 제외된다.
     _models_by_name: dict[str, ModelConfig] = PrivateAttr(default_factory=dict)
     _tools_by_name: dict[str, ToolConfig] = PrivateAttr(default_factory=dict)
     _tool_groups_by_name: dict[str, ToolGroupConfig] = PrivateAttr(default_factory=dict)
@@ -338,23 +333,19 @@ class AppConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _drop_null_config_sections(cls, data: Any) -> Any:
-        """Treat a present-but-null config section as absent so its default applies.
+        """값이 null인 설정 섹션을 없는 것으로 취급해 기본값이 적용되게 한다.
 
-        Commenting out every entry under a top-level YAML key — e.g. ``models:``
-        (a list) or ``memory:`` (an object), with only comments beneath it as
-        shipped throughout ``config.example.yaml`` — makes PyYAML parse the value
-        as ``None``. Without this, the documented ``cp config.example.yaml
-        config.yaml`` first-run flow crashes with an opaque ``Input should be a
-        valid list`` / ``valid dictionary`` pydantic error for that section.
+        최상위 YAML 키 아래 항목을 전부 주석 처리하면(예: 리스트인 ``models:`` 나 객체인 ``memory:``.
+        ``config.example.yaml`` 전반이 이런 형태로 배포된다) PyYAML이 값을 ``None``으로 파싱한다.
+        이 처리가 없으면 문서화된 ``cp config.example.yaml config.yaml`` 첫 실행 흐름이 해당 섹션에서
+        ``Input should be a valid list`` / ``valid dictionary`` 같은 불친절한 pydantic 에러로 죽는다.
 
-        Dropping the ``None`` lets each field fall back to its default: list
-        sections become ``[]`` via ``default_factory=list`` and object sections
-        get their default config. This generalizes the earlier list-only
-        handling to every section that defines a default. The ``database``
-        section is independent and still owned by ``_apply_database_defaults``
-        (in ``from_file``), which applies concrete defaults beyond null-coercion.
-        Required sections without a default (``sandbox``) intentionally still
-        error when null — there is nothing to fall back to.
+        ``None``을 제거하면 각 필드가 기본값으로 떨어진다. 리스트 섹션은 ``default_factory=list`` 로
+        ``[]`` 가 되고, 객체 섹션은 기본 설정을 받는다. 기존의 리스트 전용 처리를 기본값이 있는 모든
+        섹션으로 일반화한 것이다. ``database`` 섹션은 별개이며 여전히 ``from_file`` 안의
+        ``_apply_database_defaults`` 가 담당한다. 그쪽은 null 보정을 넘어 구체적인 기본값까지 적용한다.
+        기본값이 없는 필수 섹션(``sandbox``)은 null일 때 의도적으로 계속 에러를 낸다.
+        떨어질 곳이 없기 때문이다.
         """
         if isinstance(data, dict):
             return {key: value for key, value in data.items() if value is not None}
@@ -362,13 +353,13 @@ class AppConfig(BaseModel):
 
     @classmethod
     def resolve_config_path(cls, config_path: str | None = None) -> Path:
-        """Resolve the config file path.
+        """설정 파일 경로를 해석한다.
 
-        Priority:
-        1. If provided `config_path` argument, use it.
-        2. If provided `DEER_FLOW_CONFIG_PATH` environment variable, use it.
-        3. Otherwise, search the caller project root.
-        4. Finally, search legacy backend/repository-root defaults for monorepo compatibility.
+        우선순위:
+        1. `config_path` 인자가 있으면 그것을 쓴다.
+        2. `DEER_FLOW_CONFIG_PATH` 환경변수가 있으면 그것을 쓴다.
+        3. 없으면 호출자 프로젝트 루트를 찾는다.
+        4. 마지막으로 monorepo 호환을 위해 레거시 backend/저장소 루트 기본 경로를 찾는다.
         """
         if config_path:
             path = Path(config_path)
@@ -392,34 +383,33 @@ class AppConfig(BaseModel):
 
     @classmethod
     def from_file(cls, config_path: str | None = None) -> Self:
-        """Load config from YAML file.
+        """YAML 파일에서 설정을 로드한다.
 
-        See `resolve_config_path` for more details.
+        자세한 내용은 `resolve_config_path` 를 참고한다.
 
         Args:
-            config_path: Path to the config file.
+            config_path: 설정 파일 경로.
 
         Returns:
-            AppConfig: The loaded config.
+            AppConfig: 로드된 설정.
         """
         resolved_path = cls.resolve_config_path(config_path)
         with open(resolved_path, encoding="utf-8") as f:
             config_data = yaml.safe_load(f) or {}
 
-        # Check config version before processing
+        # 처리 전에 설정 버전을 확인한다
         cls._check_config_version(config_data, resolved_path)
 
         config_data = cls.resolve_env_variables(config_data)
         cls._apply_database_defaults(config_data)
 
-        # Load circuit_breaker config if present
+        # circuit_breaker 설정이 있으면 로드한다
         if "circuit_breaker" in config_data:
             config_data["circuit_breaker"] = config_data["circuit_breaker"]
 
-        # Load extensions config separately (it's in a different file), while
-        # preserving any config.yaml-backed extension fields. config.yaml wins
-        # when it explicitly declares a field because those values are part of
-        # the main AppConfig hot-reload contract.
+        # extensions 설정은 별도 파일이므로 따로 로드하되, config.yaml에 있는 extension 필드는 보존한다.
+        # config.yaml이 필드를 명시적으로 선언하면 그쪽이 이긴다.
+        # 그 값들은 AppConfig 본체의 hot-reload 계약에 속하기 때문이다.
         yaml_extensions = config_data.get("extensions")
         extensions_config = ExtensionsConfig.from_file()
         extensions_data = extensions_config.model_dump(by_alias=True)
@@ -466,18 +456,16 @@ class AppConfig(BaseModel):
         load_acp_config_from_dict({name: agent.model_dump() for name, agent in acp_agents.items()})
 
         if previous_checkpointer_config != config.checkpointer:
-            # These runtime singletons derive their backend from checkpointer config.
-            # Keep imports local to avoid cycles: both providers import get_app_config.
+            # 이 런타임 싱글턴들은 backend를 checkpointer 설정에서 가져온다.
+            # 두 provider 모두 get_app_config를 import하므로 순환을 피하려고 import를 지역에 둔다.
             #
-            # The unified ``database`` section is intentionally NOT handled here.
-            # ``database`` is a restart-required field (reload_boundary.STARTUP_ONLY_FIELDS):
-            # ``init_engine_from_config()`` builds the ORM engine once at startup and
-            # never rebuilds it on a config.yaml edit. Resetting only the sync
-            # checkpointer/store singletons on a live ``database``/``postgres_schema``
-            # change would half-migrate the deployment -- new checkpoint/store tables
-            # would land in the new schema while ORM rows keep landing in the old one,
-            # with no error surfaced. Requiring the documented restart keeps the
-            # deployment self-consistent.
+            # 통합 ``database`` 섹션은 의도적으로 여기서 다루지 않는다.
+            # ``database`` 는 재시작이 필요한 필드다(reload_boundary.STARTUP_ONLY_FIELDS).
+            # ``init_engine_from_config()`` 는 시작 시 ORM engine을 한 번 만들고 config.yaml 수정에도
+            # 다시 만들지 않는다. 운영 중 ``database``/``postgres_schema`` 가 바뀌었을 때 동기
+            # checkpointer/store 싱글턴만 리셋하면 배포가 반쪽만 마이그레이션된다. 새 checkpoint/store
+            # 테이블은 새 schema에 생기는데 ORM row는 계속 옛 schema로 들어가고, 에러도 드러나지 않는다.
+            # 문서화된 재시작을 요구해야 배포가 일관된 상태로 유지된다.
             from deerflow.runtime.checkpointer import reset_checkpointer
             from deerflow.runtime.store import reset_store
 
@@ -486,7 +474,7 @@ class AppConfig(BaseModel):
 
     @classmethod
     def _apply_database_defaults(cls, config_data: dict[str, Any]) -> None:
-        """Apply config.yaml defaults for persistence when the section is absent."""
+        """섹션이 없을 때 영속성 관련 config.yaml 기본값을 적용한다."""
         database_config = config_data.get("database")
         if database_config is None:
             database_config = {}
@@ -498,20 +486,20 @@ class AppConfig(BaseModel):
 
     @classmethod
     def _check_config_version(cls, config_data: dict, config_path: Path) -> None:
-        """Check if the user's config.yaml is outdated compared to config.example.yaml.
+        """사용자의 config.yaml이 config.example.yaml보다 오래됐는지 확인한다.
 
-        Emits a warning if the user's config_version is lower than the example's.
-        Missing config_version is treated as version 0 (pre-versioning).
+        사용자 config_version이 예제보다 낮으면 경고를 남긴다.
+        config_version이 없으면 버전 0(버전 관리 이전)으로 취급한다.
         """
         try:
             user_version = int(config_data.get("config_version", 0))
         except (TypeError, ValueError):
             user_version = 0
 
-        # Find config.example.yaml by searching config.yaml's directory and its parents
+        # config.yaml이 있는 디렉터리와 상위 디렉터리를 훑어 config.example.yaml을 찾는다
         example_path = None
         search_dir = config_path.parent
-        for _ in range(5):  # search up to 5 levels
+        for _ in range(5):  # 최대 5단계까지 탐색
             candidate = search_dir / "config.example.yaml"
             if candidate.exists():
                 example_path = candidate
@@ -543,15 +531,15 @@ class AppConfig(BaseModel):
 
     @classmethod
     def resolve_env_variables(cls, config: Any) -> Any:
-        """Recursively resolve environment variables in the config.
+        """설정 안의 환경변수를 재귀적으로 해석한다.
 
-        Environment variables are resolved using the `os.getenv` function. Example: $OPENAI_API_KEY
+        환경변수는 `os.getenv` 로 해석한다. 예: $OPENAI_API_KEY
 
         Args:
-            config: The config to resolve environment variables in.
+            config: 환경변수를 해석할 설정.
 
         Returns:
-            The config with environment variables resolved.
+            환경변수가 해석된 설정.
         """
         if isinstance(config, str):
             if config.startswith("$"):
@@ -568,14 +556,13 @@ class AppConfig(BaseModel):
 
     @model_validator(mode="after")
     def _build_name_indexes(self) -> "AppConfig":
-        """Build name -> config lookup tables for O(1) ``get_*_config``.
+        """``get_*_config`` 를 O(1)로 만들기 위한 이름 -> config 조회 테이블을 만든다.
 
-        ``get_tool_config`` runs 2-3x per community-tool invocation (e.g.
-        web_search) and ``get_model_config`` several times per agent build, so
-        the previous O(n) ``next(...)`` scans sat on hot paths. Rebuilt here so a
-        config reload (which constructs a fresh ``AppConfig``) refreshes them.
-        ``setdefault`` keeps the first entry on duplicate names, preserving the
-        prior ``next(...)`` first-match semantics.
+        ``get_tool_config`` 는 community 도구 호출마다 2~3번, ``get_model_config`` 는 agent를
+        만들 때마다 여러 번 호출되므로 기존 O(n) ``next(...)`` 스캔은 hot path에 있었다.
+        여기서 다시 만들어, 설정 reload(새 ``AppConfig`` 를 생성한다)가 테이블도 갱신하게 한다.
+        ``setdefault`` 는 이름이 중복되면 첫 항목을 유지하므로 기존 ``next(...)`` 의
+        first-match 의미가 그대로 보존된다.
         """
         models_by_name: dict[str, ModelConfig] = {}
         for model in self.models:
@@ -592,42 +579,41 @@ class AppConfig(BaseModel):
         return self
 
     def get_model_config(self, name: str) -> ModelConfig | None:
-        """Get the model config by name.
+        """이름으로 모델 설정을 가져온다.
 
         Args:
-            name: The name of the model to get the config for.
+            name: 설정을 가져올 모델 이름.
 
         Returns:
-            The model config if found, otherwise None.
+            찾으면 모델 설정, 없으면 None.
         """
         return self._models_by_name.get(name)
 
     def get_tool_config(self, name: str) -> ToolConfig | None:
-        """Get the tool config by name.
+        """이름으로 도구 설정을 가져온다.
 
         Args:
-            name: The name of the tool to get the config for.
+            name: 설정을 가져올 도구 이름.
 
         Returns:
-            The tool config if found, otherwise None.
+            찾으면 도구 설정, 없으면 None.
         """
         return self._tools_by_name.get(name)
 
     def get_tool_group_config(self, name: str) -> ToolGroupConfig | None:
-        """Get the tool group config by name.
+        """이름으로 tool group 설정을 가져온다.
 
         Args:
-            name: The name of the tool group to get the config for.
+            name: 설정을 가져올 tool group 이름.
 
         Returns:
-            The tool group config if found, otherwise None.
+            찾으면 tool group 설정, 없으면 None.
         """
         return self._tool_groups_by_name.get(name)
 
 
-# Compatibility singleton layer for code paths that have not yet been
-# migrated to explicit ``AppConfig`` threading. New composition roots should
-# prefer constructing ``AppConfig`` once and passing it down directly.
+# 아직 명시적인 ``AppConfig`` 전달 방식으로 옮기지 못한 코드 경로를 위한 호환 싱글턴 계층.
+# 새 조립 지점에서는 ``AppConfig`` 를 한 번 만들어 직접 내려주는 방식을 택한다.
 _app_config: AppConfig | None = None
 _app_config_path: Path | None = None
 _app_config_mtime: float | None = None
@@ -638,7 +624,7 @@ _current_app_config_stack: ContextVar[tuple[AppConfig | None, ...]] = ContextVar
 
 
 def _get_config_mtime(config_path: Path) -> float | None:
-    """Get the modification time of a config file if it exists."""
+    """설정 파일이 있으면 수정 시각을 반환한다."""
     try:
         return config_path.stat().st_mtime
     except OSError:
@@ -646,7 +632,7 @@ def _get_config_mtime(config_path: Path) -> float | None:
 
 
 def _load_and_cache_app_config(config_path: str | None = None) -> AppConfig:
-    """Load config from disk and refresh cache metadata."""
+    """디스크에서 설정을 로드하고 캐시 메타데이터를 갱신한다."""
     global _app_config, _app_config_path, _app_config_mtime, _app_config_signature, _app_config_is_custom
 
     resolved_path = AppConfig.resolve_config_path(config_path)
@@ -659,12 +645,10 @@ def _load_and_cache_app_config(config_path: str | None = None) -> AppConfig:
 
 
 def get_app_config() -> AppConfig:
-    """Get the DeerFlow config instance.
+    """DeerFlow 설정 인스턴스를 반환한다.
 
-    Returns a cached singleton instance and automatically reloads it when the
-    underlying config file path or content signature changes. Use
-    `reload_app_config()` to force a reload, or `reset_app_config()` to clear
-    the cache.
+    캐시된 싱글턴을 반환하며, 설정 파일 경로나 내용 signature가 바뀌면 자동으로 다시 로드한다.
+    강제 reload는 `reload_app_config()`, 캐시 비우기는 `reset_app_config()` 를 쓴다.
     """
     global _app_config, _app_config_path, _app_config_mtime, _app_config_signature
 
@@ -694,27 +678,24 @@ def get_app_config() -> AppConfig:
 
 
 def reload_app_config(config_path: str | None = None) -> AppConfig:
-    """Reload the config from file and update the cached instance.
+    """파일에서 설정을 다시 읽고 캐시된 인스턴스를 갱신한다.
 
-    This is useful when the config file has been modified and you want
-    to pick up the changes without restarting the application.
+    설정 파일이 수정됐고 애플리케이션을 재시작하지 않고 변경을 반영하고 싶을 때 쓴다.
 
     Args:
-        config_path: Optional path to config file. If not provided,
-                     uses the default resolution strategy.
+        config_path: 선택적 설정 파일 경로. 없으면 기본 해석 전략을 쓴다.
 
     Returns:
-        The newly loaded AppConfig instance.
+        새로 로드된 AppConfig 인스턴스.
     """
     return _load_and_cache_app_config(config_path)
 
 
 def reset_app_config() -> None:
-    """Reset the cached config instance.
+    """캐시된 설정 인스턴스를 초기화한다.
 
-    This clears the singleton cache, causing the next call to
-    `get_app_config()` to reload from file. Useful for testing
-    or when switching between different configurations.
+    싱글턴 캐시를 비워서 다음 `get_app_config()` 호출이 파일에서 다시 읽게 한다.
+    테스트나 서로 다른 설정을 전환할 때 유용하다.
     """
     global _app_config, _app_config_path, _app_config_mtime, _app_config_signature, _app_config_is_custom
     _app_config = None
@@ -725,12 +706,12 @@ def reset_app_config() -> None:
 
 
 def set_app_config(config: AppConfig) -> None:
-    """Set a custom config instance.
+    """커스텀 설정 인스턴스를 지정한다.
 
-    This allows injecting a custom or mock config for testing purposes.
+    테스트 목적으로 커스텀이나 mock 설정을 주입할 수 있게 한다.
 
     Args:
-        config: The AppConfig instance to use.
+        config: 사용할 AppConfig 인스턴스.
     """
     global _app_config, _app_config_path, _app_config_mtime, _app_config_signature, _app_config_is_custom
     _app_config = config
@@ -741,19 +722,19 @@ def set_app_config(config: AppConfig) -> None:
 
 
 def peek_current_app_config() -> AppConfig | None:
-    """Return the runtime-scoped AppConfig override, if one is active."""
+    """활성화된 런타임 범위 AppConfig 오버라이드가 있으면 반환한다."""
     return _current_app_config.get()
 
 
 def push_current_app_config(config: AppConfig) -> None:
-    """Push a runtime-scoped AppConfig override for the current execution context."""
+    """현재 실행 컨텍스트에 런타임 범위 AppConfig 오버라이드를 push한다."""
     stack = _current_app_config_stack.get()
     _current_app_config_stack.set(stack + (_current_app_config.get(),))
     _current_app_config.set(config)
 
 
 def pop_current_app_config() -> None:
-    """Pop the latest runtime-scoped AppConfig override for the current execution context."""
+    """현재 실행 컨텍스트의 가장 최근 런타임 범위 AppConfig 오버라이드를 pop한다."""
     stack = _current_app_config_stack.get()
     if not stack:
         _current_app_config.set(None)

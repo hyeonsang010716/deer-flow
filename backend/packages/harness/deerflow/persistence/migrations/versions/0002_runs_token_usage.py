@@ -1,41 +1,37 @@
-"""Add ``runs.token_usage_by_model`` column.
+"""``runs.token_usage_by_model`` 컬럼을 추가한다.
 
 Revision ID: 0002_runs_token_usage
 Revises: 0001_baseline
 Create Date: 2026-06-22
 
-Fixes GitHub issue #3682: any pre-existing DB (created before commit e7a03e52
-on PR #3658) lacks the ``token_usage_by_model`` JSON column on ``runs``.
-Without this migration, every endpoint that ``SELECT``s from ``runs`` raises
-``no such column: runs.token_usage_by_model``.
+GitHub 이슈 #3682을 고친다. PR #3658의 커밋 e7a03e52 이전에 만들어진 DB에는 ``runs``에
+``token_usage_by_model`` JSON 컬럼이 없다. 이 migration이 없으면 ``runs``를 ``SELECT``하는
+모든 endpoint가 ``no such column: runs.token_usage_by_model``을 낸다.
 
-Schema parity with ``Base.metadata``
-------------------------------------
+``Base.metadata``와의 schema 일치
+---------------------------------
 
-The ORM model declares the column as ``Mapped[dict] = mapped_column(JSON,
-default=dict, server_default=text("'{}'"))`` -- non-Optional, so SQLAlchemy
-infers ``nullable=False``. ``Base.metadata.create_all`` (the empty-DB
-bootstrap path) therefore produces ``token_usage_by_model JSON NOT NULL
-DEFAULT '{}'`` on fresh databases.
+ORM 모델은 이 컬럼을 ``Mapped[dict] = mapped_column(JSON, default=dict,
+server_default=text("'{}'"))``로 선언한다. Optional이 아니므로 SQLAlchemy가
+``nullable=False``로 추론한다. 따라서 ``Base.metadata.create_all``(빈 DB bootstrap 경로)은
+새 DB에 ``token_usage_by_model JSON NOT NULL DEFAULT '{}'``를 만든다.
 
-To keep legacy-upgraded databases schema-identical to fresh ones, this
-migration adds the column with the same ``nullable=False`` and
-``server_default='{}'``. The server default is also what lets
-``ALTER TABLE runs ADD COLUMN ... NOT NULL`` succeed on a populated table:
-existing rows pick up the empty-object default at ALTER time instead of
-triggering ``NOT NULL`` violations.
+legacy DB를 업그레이드한 결과가 새 DB와 동일한 schema가 되도록, 이 migration도 같은
+``nullable=False``와 ``server_default='{}'``로 컬럼을 추가한다. 이 server default 덕분에
+데이터가 있는 테이블에서도 ``ALTER TABLE runs ADD COLUMN ... NOT NULL``이 성공한다.
+기존 row는 ALTER 시점에 빈 객체 기본값을 받아 ``NOT NULL`` 위반이 나지 않는다.
 
-Idempotency
------------
+멱등성
+------
 
-Uses ``safe_add_column`` so re-running this revision against a DB where the
-column already exists is a no-op. That covers two real cases:
+``safe_add_column``을 쓰므로 컬럼이 이미 있는 DB에 이 revision을 다시 실행해도 아무 일도
+일어나지 않는다. 실제로 두 가지 경우를 커버한다:
 
-1. Users who applied the workaround in the issue manually
+1. 이슈에 있는 우회책을 수동으로 적용한 사용자
    (``ALTER TABLE runs ADD COLUMN token_usage_by_model JSON``).
-2. Concurrent bootstrap on multiple Gateway instances if the cross-process
-   lock is somehow bypassed -- defence-in-depth on top of
-   ``bootstrap_schema``'s advisory-lock / sentinel-row mutex.
+2. 프로세스 간 lock이 어떤 이유로 우회되었을 때 여러 Gateway 인스턴스가 동시에 bootstrap
+   하는 경우. ``bootstrap_schema``의 advisory lock / sentinel row mutex 위에 얹는
+   defence-in-depth다.
 """
 
 from __future__ import annotations
@@ -46,7 +42,7 @@ import sqlalchemy as sa
 
 from deerflow.persistence.migrations._helpers import safe_add_column, safe_drop_column
 
-# revision identifiers, used by Alembic.
+# Alembic이 사용하는 revision 식별자.
 revision: str = "0002_runs_token_usage"
 down_revision: str | Sequence[str] | None = "0001_baseline"
 branch_labels: str | Sequence[str] | None = None

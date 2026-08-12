@@ -1,9 +1,8 @@
-"""Detectors for provider-side model length termination signals.
+"""provider가 보내는 모델 길이 종료 신호를 감지하는 detector.
 
-Different providers report "the response hit the output-token limit" through
-different fields and values. Keep those provider details here so
-``ModelLengthFinishReasonMiddleware`` can stay focused on when to mark a run,
-not on which provider emitted which spelling.
+provider마다 "응답이 output token 한도에 걸렸다"를 서로 다른 필드와 값으로 알린다. 그런
+provider별 세부사항은 여기에 모아 두어, ``ModelLengthFinishReasonMiddleware``는 어느 provider가
+어떤 표기를 쓰는지가 아니라 언제 run을 표시할지에만 집중하게 한다.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from langchain_core.messages import AIMessage
 
 @dataclass(frozen=True)
 class ModelLengthTermination:
-    """A detected model-output length cap."""
+    """감지된 모델 출력 길이 상한."""
 
     detector: str
     reason_field: str
@@ -26,17 +25,17 @@ class ModelLengthTermination:
 
 @runtime_checkable
 class ModelLengthTerminationDetector(Protocol):
-    """Strategy interface for provider length-cap detection."""
+    """provider 길이 상한 감지를 위한 전략 인터페이스."""
 
     name: str
 
     def detect(self, message: AIMessage) -> ModelLengthTermination | None:
-        """Return a hit when *message* indicates output length truncation."""
+        """*message*가 출력 길이 절단을 나타내면 감지 결과를 반환한다."""
         ...
 
 
 def _get_metadata_value(message: AIMessage, field_name: str) -> str | None:
-    """Read a string metadata value from common LangChain provider fields."""
+    """흔한 LangChain provider 필드에서 문자열 metadata 값을 읽는다."""
     for container_name in ("response_metadata", "additional_kwargs"):
         container = getattr(message, container_name, None) or {}
         if not isinstance(container, dict):
@@ -48,7 +47,7 @@ def _get_metadata_value(message: AIMessage, field_name: str) -> str | None:
 
 
 class OpenAICompatibleLengthDetector:
-    """OpenAI-compatible ``finish_reason == "length"`` signal."""
+    """OpenAI 호환 ``finish_reason == "length"`` 신호."""
 
     name = "openai_compatible_length"
 
@@ -68,7 +67,7 @@ class OpenAICompatibleLengthDetector:
 
 
 class AnthropicMaxTokensDetector:
-    """Anthropic ``stop_reason == "max_tokens"`` signal."""
+    """Anthropic ``stop_reason == "max_tokens"`` 신호."""
 
     name = "anthropic_max_tokens"
 
@@ -88,7 +87,7 @@ class AnthropicMaxTokensDetector:
 
 
 class GeminiMaxTokensDetector:
-    """Gemini / Vertex AI ``finish_reason == "MAX_TOKENS"`` signal."""
+    """Gemini / Vertex AI ``finish_reason == "MAX_TOKENS"`` 신호."""
 
     name = "gemini_max_tokens"
 
@@ -108,7 +107,7 @@ class GeminiMaxTokensDetector:
 
 
 def default_detectors() -> list[ModelLengthTerminationDetector]:
-    """Built-in detector set used for provider length-cap signals."""
+    """provider 길이 상한 신호에 쓰이는 기본 detector 집합."""
     return [
         OpenAICompatibleLengthDetector(),
         AnthropicMaxTokensDetector(),

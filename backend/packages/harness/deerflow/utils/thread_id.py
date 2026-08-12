@@ -1,4 +1,4 @@
-"""Canonical thread identifier validation shared across DeerFlow backends."""
+"""DeerFlow backend 전체가 공유하는 표준 thread 식별자 검증."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ _THREAD_ID_RE = re.compile(THREAD_ID_PATTERN)
 
 
 def validate_thread_id(thread_id: str) -> str:
-    """Return a valid thread ID or raise ``ValueError``.
+    """유효한 thread ID를 반환하거나 ``ValueError``를 던진다.
 
-    Thread IDs are caller-defined opaque identifiers, not necessarily UUIDs,
-    but they must be safe for every persistence and filesystem backend.
+    thread ID는 호출자가 정하는 불투명 식별자이며 반드시 UUID일 필요는 없다. 다만 모든
+    persistence·파일시스템 backend에서 안전한 값이어야 한다.
     """
     if not isinstance(thread_id, str) or _THREAD_ID_RE.fullmatch(thread_id) is None:
         raise ValueError("Invalid thread_id: expected 1-64 ASCII letters, digits, hyphens, or underscores")
@@ -24,7 +24,7 @@ def validate_thread_id(thread_id: str) -> str:
 
 
 def resolve_thread_id(thread_id: str | None) -> str:
-    """Validate a supplied ID, generating a UUID only when it is ``None``."""
+    """전달된 ID를 검증하고, ``None``일 때만 UUID를 생성한다."""
     if thread_id is None:
         return str(uuid.uuid4())
     return validate_thread_id(thread_id)

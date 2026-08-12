@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 class Crawl4AiClient:
-    """Client for a self-hosted Crawl4AI Docker server (POST /md)."""
+    """자체 호스팅 Crawl4AI Docker 서버(POST /md)용 client."""
 
     def __init__(self, base_url: str, token: str = "", timeout_s: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -16,14 +16,14 @@ class Crawl4AiClient:
         self.timeout_s = timeout_s
 
     async def fetch_markdown(self, url: str, filter_mode: str = "fit") -> str:
-        """Fetch a page's clean markdown via Crawl4AI's POST /md endpoint.
+        """Crawl4AI의 POST /md endpoint로 page의 정제된 markdown을 가져온다.
 
         Args:
-            url: The URL to fetch.
-            filter_mode: Crawl4AI markdown filter ("fit", "raw", "bm25", "llm").
+            url: 가져올 URL.
+            filter_mode: Crawl4AI markdown 필터("fit", "raw", "bm25", "llm").
 
         Returns:
-            Markdown content, or an "Error: ..." string on failure.
+            markdown 내용. 실패 시 "Error: ..." 문자열.
         """
         payload: dict[str, Any] = {"url": url, "f": filter_mode}
         headers = {"Content-Type": "application/json"}

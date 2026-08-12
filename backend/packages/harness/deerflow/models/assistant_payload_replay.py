@@ -1,9 +1,8 @@
-"""Helpers for replaying provider-specific assistant message fields.
+"""provider별 assistant message 필드를 복원하는 헬퍼.
 
-Several provider adapters need to preserve fields that LangChain stores on the
-original ``AIMessage`` but drops when serializing request payloads. This module
-keeps the assistant-message matching logic shared while letting each provider
-decide which fields to restore.
+일부 provider adapter는 LangChain이 원본 ``AIMessage``에는 보관하지만 request payload를
+직렬화할 때 버리는 필드를 유지해야 한다. 이 모듈은 assistant message 매칭 로직을 공유하되,
+어떤 필드를 복원할지는 각 provider가 결정하게 한다.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ def restore_assistant_payloads(
     original_messages: Sequence[BaseMessage],
     restore: AssistantPayloadRestorer,
 ) -> None:
-    """Restore provider-specific fields onto serialized assistant payloads."""
+    """직렬화된 assistant payload에 provider별 필드를 복원한다."""
     if len(payload_messages) == len(original_messages):
         for payload_msg, orig_msg in zip(payload_messages, original_messages):
             if payload_msg.get("role") == "assistant" and isinstance(orig_msg, AIMessage):
@@ -40,14 +39,14 @@ def restore_assistant_payloads(
 
 
 def restore_additional_kwargs_field(payload_msg: dict[str, Any], orig_msg: AIMessage, field_name: str) -> None:
-    """Copy a provider-specific ``additional_kwargs`` field onto a payload message."""
+    """provider별 ``additional_kwargs`` 필드를 payload message로 복사한다."""
     value = orig_msg.additional_kwargs.get(field_name)
     if value is not None:
         payload_msg[field_name] = value
 
 
 def restore_reasoning_content(payload_msg: dict[str, Any], orig_msg: AIMessage) -> None:
-    """Copy provider reasoning content onto a serialized assistant payload."""
+    """provider의 reasoning content를 직렬화된 assistant payload로 복사한다."""
     restore_additional_kwargs_field(payload_msg, orig_msg, "reasoning_content")
 
 
@@ -73,13 +72,12 @@ def _match_ai_message(
 
 
 def _next_unused_index_at_or_after(count: int, used_ai_indexes: set[int], start: int) -> int | None:
-    """Return the next unused AI index at or after ``start``.
+    """``start`` 이상에서 아직 쓰이지 않은 다음 AI index를 반환한다.
 
-    Scanning forward from the payload's ordinal preserves the positional bias of
-    the previous behaviour while still recovering when serialization drops or
-    reorders messages so the exact ordinal index is already taken. It does not
-    wrap to earlier indexes because those messages may be represented by payload
-    entries that were already dropped.
+    payload의 서수부터 앞으로 훑으면 기존 동작의 위치 편향을 유지하면서도, 직렬화 과정에서
+    메시지가 빠지거나 순서가 바뀌어 정확한 서수 index가 이미 점유된 경우에도 복구할 수 있다.
+    앞쪽 index로 되돌아가지는 않는다. 그 메시지들은 이미 버려진 payload 항목에 대응할 수 있기
+    때문이다.
     """
     if count == 0 or start >= count:
         return None

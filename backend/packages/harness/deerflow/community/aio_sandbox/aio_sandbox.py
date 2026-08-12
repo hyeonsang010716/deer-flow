@@ -21,11 +21,11 @@ _MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
 _ERROR_OBSERVATION_SIGNATURE = "'ErrorObservation' object has no attribute 'exit_code'"
 
-# Env-bearing commands require the bash.exec API (POST /v1/bash/exec), which the
-# all-in-one-sandbox image only ships since 1.9.x. Older images (including any
-# ``latest`` tag frozen on the 1.0.0.x line) answer 404 for the whole /v1/bash/*
-# namespace. That raw 404 is useless to the model (it just retries), so the
-# sandbox fails fast with this operator-facing message instead (#3921).
+# env를 실어 보내는 명령은 bash.exec API(POST /v1/bash/exec)가 필요한데,
+# all-in-one-sandbox 이미지는 1.9.x부터만 이를 제공한다. 더 오래된 이미지(1.0.0.x 계열에
+# 고정된 ``latest`` 태그 포함)는 /v1/bash/* 네임스페이스 전체에 404를 준다.
+# 날것의 404는 모델에게 쓸모없고 재시도만 유발하므로, sandbox는 대신 이 operator용 메시지로
+# 즉시 실패한다(#3921).
 _BASH_EXEC_UNSUPPORTED_ERROR = (
     "Error: this sandbox image does not support per-command environment injection "
     "(POST /v1/bash/exec returned 404), which is required to run skills that declare "
@@ -36,20 +36,20 @@ _BASH_EXEC_UNSUPPORTED_ERROR = (
 
 
 class AioSandbox(Sandbox):
-    """Sandbox implementation using the agent-infra/sandbox Docker container.
+    """agent-infra/sandbox Docker 컨테이너를 사용하는 Sandbox 구현.
 
-    This sandbox connects to a running AIO sandbox container via HTTP API.
-    A threading lock serializes shell commands to prevent concurrent requests
-    from corrupting the container's single persistent session (see #1433).
+    실행 중인 AIO sandbox 컨테이너에 HTTP API로 연결한다.
+    threading lock으로 shell 명령을 직렬화해서, 동시 요청이 컨테이너의 단일 persistent session을
+    망가뜨리지 않게 한다(#1433 참고).
     """
 
     def __init__(self, id: str, base_url: str, home_dir: str | None = None):
-        """Initialize the AIO sandbox.
+        """AIO sandbox를 초기화한다.
 
         Args:
-            id: Unique identifier for this sandbox instance.
-            base_url: URL of the sandbox API (e.g., http://localhost:8080).
-            home_dir: Home directory inside the sandbox. If None, will be fetched from the sandbox.
+            id: 이 sandbox 인스턴스의 고유 식별자.
+            base_url: sandbox API의 URL(예: http://localhost:8080).
+            home_dir: sandbox 내부의 홈 디렉터리. None이면 sandbox에서 가져온다.
         """
         super().__init__(id)
         self._base_url = base_url
@@ -65,8 +65,8 @@ class AioSandbox(Sandbox):
         self._home_dir = home_dir
         self._lock = threading.Lock()
         self._closed = False
-        # Set to True after bash.exec answers 404 (image predates /v1/bash/*),
-        # so later env-bearing calls fail fast instead of re-hitting HTTP (#3921).
+        # bash.exec가 404를 준 뒤 True가 된다(이미지가 /v1/bash/* 이전 버전).
+        # 이후 env를 실은 호출이 HTTP를 다시 때리지 않고 즉시 실패한다(#3921).
         self._bash_exec_unsupported = False
 
     @property
@@ -74,40 +74,37 @@ class AioSandbox(Sandbox):
         return self._base_url
 
     def close(self) -> None:
-        """Best-effort close of the host-side HTTP client owned by this sandbox.
+        """이 sandbox가 소유한 host 측 HTTP client를 best-effort로 닫는다.
 
-        The agent_sandbox SDK is Fern-generated and exposes no ``close()`` /
-        ``__exit__``, so we reach the socket-owning ``httpx.Client`` explicitly
-        through its attribute chain::
+        agent_sandbox SDK는 Fern으로 생성되어 ``close()`` / ``__exit__``를 노출하지 않는다.
+        그래서 socket을 실제로 소유한 ``httpx.Client``에 속성 체인을 따라 직접 접근한다::
 
             Sandbox._client_wrapper        -> SyncClientWrapper
                 .httpx_client              -> Fern HttpClient (a wrapper, NOT httpx.Client)
                     .httpx_client          -> httpx.Client     <- the real socket owner
 
-        Closing it releases pooled sockets so long-running provider lifecycles
-        do not accumulate unreclaimed host-side resources (#2872).
+        이를 닫으면 pool에 있던 socket이 반환되므로, 오래 사는 provider lifecycle이
+        회수되지 않은 host 측 자원을 쌓지 않는다(#2872).
 
-        Resolution is most-specific-first with graceful degradation: if a future
-        SDK adds a top-level ``Sandbox.close()`` it is picked up automatically
-        without changing this code. Idempotent, thread-safe, and non-fatal:
-        failures during teardown are logged and swallowed so provider/backend
-        cleanup is never blocked.
+        해석 순서는 가장 구체적인 것부터이며 단계적으로 물러난다. 미래의 SDK가 최상위
+        ``Sandbox.close()``를 추가하면 이 코드를 고치지 않아도 자동으로 그것을 쓴다.
+        멱등하고 thread-safe하며 치명적이지 않다. teardown 중 실패는 로그만 남기고 삼켜서
+        provider/backend 정리를 막지 않는다.
         """
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             client = self._client
-            # Drop the reference under the lock for use-after-close safety: any
-            # later command on this instance fails loudly instead of reusing a
-            # half-closed client.
+            # use-after-close 안전을 위해 lock 안에서 참조를 버린다. 이후 이 인스턴스에
+            # 들어오는 명령은 반쯤 닫힌 client를 재사용하지 않고 크게 실패한다.
             self._client = None
 
         if client is None:
             return
 
-        # Walk from the real httpx.Client up to the top-level client, picking the
-        # first object that actually exposes close().
+        # 실제 httpx.Client에서 최상위 client까지 거슬러 올라가며 close()를 실제로
+        # 노출하는 첫 객체를 고른다.
         wrapper = getattr(client, "_client_wrapper", None)
         fern_http = getattr(wrapper, "httpx_client", None)
         real_httpx = getattr(fern_http, "httpx_client", None)
@@ -126,26 +123,23 @@ class AioSandbox(Sandbox):
 
     @property
     def home_dir(self) -> str:
-        """Get the home directory inside the sandbox."""
+        """sandbox 내부의 홈 디렉터리를 반환한다."""
         if self._home_dir is None:
             context = self._client.sandbox.get_context()
             self._home_dir = context.home_dir
         return self._home_dir
 
-    # Default no_change_timeout for exec_command (seconds).  Matches the
-    # client-level timeout so that long-running commands which produce no
-    # output are not prematurely terminated by the sandbox's built-in 120 s
-    # default.
+    # exec_command의 기본 no_change_timeout(초). client 수준 timeout과 맞춰서,
+    # 출력이 없는 장시간 명령이 sandbox 내장 기본값 120초에 조기 종료되지 않게 한다.
     _DEFAULT_NO_CHANGE_TIMEOUT = 600
 
-    # Wall-clock hard timeout for env-bearing commands routed through bash.exec.
-    # The bash.exec API exposes no idle/no-change timeout (unlike
-    # shell.exec_command's ``no_change_timeout`` on the legacy path), so
-    # env-bearing commands are bounded by total elapsed wall-clock time, not
-    # time-since-last-output. Kept at the same numeric value as the legacy idle
-    # budget so the two paths broadly agree on how long a single command may
-    # run; a future SDK that exposes an idle timeout on bash.exec should switch
-    # this call site to it.
+    # bash.exec로 보내는 env 포함 명령의 wall-clock hard timeout.
+    # bash.exec API는 idle/no-change timeout을 노출하지 않는다(legacy 경로의
+    # shell.exec_command ``no_change_timeout``과 다르다). 따라서 env 포함 명령은
+    # 마지막 출력 이후 시간이 아니라 총 경과 wall-clock 시간으로 제한된다.
+    # 두 경로가 명령 하나의 허용 실행 시간에 대해 대체로 일치하도록 legacy idle 예산과
+    # 같은 숫자로 유지한다. 미래 SDK가 bash.exec에 idle timeout을 노출하면 이 호출부를
+    # 그쪽으로 바꿔야 한다.
     _DEFAULT_HARD_TIMEOUT = 600.0
 
     def execute_command(
@@ -154,37 +148,31 @@ class AioSandbox(Sandbox):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Execute a shell command in the sandbox.
+        """sandbox에서 shell 명령을 실행한다.
 
-        Uses a lock to serialize concurrent requests. The AIO sandbox
-        container maintains a single persistent shell session that
-        corrupts when hit with concurrent exec_command calls (returns
-        ``ErrorObservation`` instead of real output). If corruption is
-        detected despite the lock (e.g. multiple processes sharing a
-        sandbox), the command is retried on a fresh session.
+        lock으로 동시 요청을 직렬화한다. AIO sandbox 컨테이너는 단일 persistent shell session을
+        유지하는데, 동시 exec_command 호출을 받으면 망가져서 실제 출력 대신
+        ``ErrorObservation``을 반환한다. lock에도 불구하고 손상이 감지되면
+        (예: 여러 프로세스가 sandbox를 공유) 새 session에서 명령을 재시도한다.
 
         Args:
-            command: The command to execute.
-            env: Optional per-call environment variables (request-scoped secrets,
-                issue #3861). When provided, the command runs via the ``bash.exec``
-                API (which supports per-command env) on a fresh auto-created session
-                so the secrets are scoped to this single command and never persist;
-                secret values travel in the structured ``env`` field, never in the
-                command string. When ``None`` the legacy persistent-shell path runs
-                unchanged.
-            timeout: Optional per-call timeout. The current sandbox SDK does not
-                expose a command-level timeout distinct from its client/request
-                timeout, so DeerFlow keeps using the backend's default here.
+            command: 실행할 명령.
+            env: 호출 단위 환경 변수(request-scoped secrets, issue #3861). 주어지면 명령은
+                per-command env를 지원하는 ``bash.exec`` API를 통해 자동 생성된 새 session에서
+                실행된다. 덕분에 secret은 이 명령 하나로만 범위가 한정되고 남지 않는다.
+                secret 값은 명령 문자열이 아니라 구조화된 ``env`` 필드로 전달된다.
+                ``None``이면 기존 persistent-shell 경로가 그대로 동작한다.
+            timeout: 호출 단위 timeout. 현재 sandbox SDK는 client/request timeout과 구분되는
+                명령 수준 timeout을 노출하지 않으므로 DeerFlow는 여기서 backend 기본값을 쓴다.
 
         Returns:
-            The output of the command.
+            명령의 출력.
         """
         del timeout
-        # Validate ``env`` keys before forwarding them to the ``bash.exec`` API.
-        # The public ``Sandbox.execute_command`` contract accepts arbitrary dict
-        # keys; enforcing the POSIX env-var name rule keeps the contract
-        # consistent with the local and e2b sandboxes and catches unsafe keys
-        # early. ``_validate_extra_env`` is a no-op when ``env`` is None or empty.
+        # ``env`` 키를 ``bash.exec`` API로 넘기기 전에 검증한다. 공개 ``Sandbox.execute_command``
+        # 계약은 임의의 dict 키를 받지만, POSIX 환경 변수 이름 규칙을 강제하면 local·e2b sandbox와
+        # 계약이 일관되게 유지되고 위험한 키를 일찍 잡아낸다.
+        # ``env``가 None이거나 비어 있으면 ``_validate_extra_env``는 아무것도 하지 않는다.
         _validate_extra_env(env)
         if env:
             return self._execute_with_env(command, env)
@@ -195,17 +183,16 @@ class AioSandbox(Sandbox):
 
                 if output and _ERROR_OBSERVATION_SIGNATURE in output:
                     logger.warning("ErrorObservation detected in sandbox output, retrying on a fresh session")
-                    # exec_command only auto-creates a session when called with
-                    # no id, so the recovery session must be created explicitly
-                    # before we target it on retry.
+                    # exec_command는 id 없이 호출될 때만 session을 자동 생성하므로,
+                    # 재시도에서 지정할 recovery session은 미리 명시적으로 만들어야 한다.
                     fresh_id = str(uuid.uuid4())
                     self._client.shell.create_session(id=fresh_id)
                     try:
                         result = self._client.shell.exec_command(command=command, id=fresh_id, no_change_timeout=self._DEFAULT_NO_CHANGE_TIMEOUT)
                         output = result.data.output if result.data else ""
                     finally:
-                        # Release the one-shot recovery session, best-effort, so
-                        # repeated corruption can't accumulate sessions.
+                        # 일회용 recovery session을 best-effort로 반환해서,
+                        # 손상이 반복돼도 session이 쌓이지 않게 한다.
                         try:
                             self._client.shell.cleanup_session(fresh_id)
                         except Exception as cleanup_error:
@@ -217,32 +204,28 @@ class AioSandbox(Sandbox):
                 return f"Error: {e}"
 
     def _execute_with_env(self, command: str, env: dict[str, str]) -> str:
-        """Execute a command with per-call environment variables injected.
+        """호출 단위 환경 변수를 주입해 명령을 실행한다.
 
-        The persistent-shell ``shell.exec_command`` API has no env parameter, so
-        injected commands use the ``bash.exec`` API which accepts per-command env.
-        Each call lets the sandbox auto-create a fresh session (no ``session_id``),
-        so injected request-scoped secrets are scoped to this command and never
-        persist across calls. Secret values travel in the structured ``env`` field,
-        never in the command string.
+        persistent-shell ``shell.exec_command`` API에는 env 파라미터가 없으므로, 주입이 필요한
+        명령은 per-command env를 받는 ``bash.exec`` API를 쓴다. 호출마다 ``session_id`` 없이
+        sandbox가 새 session을 자동 생성하게 해서, 주입된 request-scoped secret이 이 명령으로만
+        범위가 한정되고 호출 간에 남지 않게 한다. secret 값은 명령 문자열이 아니라 구조화된
+        ``env`` 필드로 전달된다.
 
-        Trade-off of the fresh-session choice: consecutive env-bearing bash calls
-        within the same skill do not share session state (cwd, sourced venv,
-        exported variables). This mirrors the LocalSandbox model (each call is a
-        fresh subprocess) and is intentional — a shared session_id would let
-        request-scoped secrets ride the session env into later commands, which the
-        SDK does not contractually forbid. Skills that need setup must fold it into
-        a single command (e.g. ``cd /mnt/user-data/workspace && source .venv/bin/activate && python run.py``).
+        새 session을 쓰는 선택의 트레이드오프: 같은 skill 안에서 연속으로 실행되는 env 포함 bash
+        호출은 session 상태(cwd, source한 venv, export한 변수)를 공유하지 않는다. 이는 LocalSandbox
+        모델(호출마다 새 subprocess)과 같으며 의도된 동작이다. session_id를 공유하면 request-scoped
+        secret이 session env를 타고 이후 명령까지 흘러갈 수 있는데, SDK가 이를 계약으로 금지하지
+        않는다. 사전 준비가 필요한 skill은 하나의 명령으로 합쳐야 한다
+        (예: ``cd /mnt/user-data/workspace && source .venv/bin/activate && python run.py``).
 
-        The ``_ERROR_OBSERVATION_SIGNATURE`` recovery contract is shared with the
-        legacy persistent-shell path: if the (unlikely, since each call is a fresh
-        session) corruption marker shows up, the call is retried on another fresh
-        session rather than returned verbatim.
+        ``_ERROR_OBSERVATION_SIGNATURE`` 복구 계약은 legacy persistent-shell 경로와 공유한다.
+        (호출마다 새 session이라 가능성은 낮지만) 손상 표식이 나타나면 그대로 반환하지 않고
+        또 다른 새 session에서 재시도한다.
 
-        Images older than all-in-one-sandbox 1.9.x have no ``/v1/bash/*`` routes;
-        there is no fallback on the legacy shell path that would keep the secret
-        values out of the command string, so the only safe behaviour is to fail
-        fast with an actionable error (#3921).
+        all-in-one-sandbox 1.9.x 이전 이미지에는 ``/v1/bash/*`` 라우트가 없다. secret 값을 명령
+        문자열 밖에 유지해 주는 legacy shell 경로의 fallback은 존재하지 않으므로, 안전한 동작은
+        실행 가능한 안내를 담은 오류로 즉시 실패하는 것뿐이다(#3921).
         """
         if self._bash_exec_unsupported:
             return _BASH_EXEC_UNSUPPORTED_ERROR
@@ -255,7 +238,7 @@ class AioSandbox(Sandbox):
         return output
 
     def _run_bash_exec(self, command: str, env: dict[str, str]) -> str:
-        """Single bash.exec invocation with injected env (one fresh session)."""
+        """env를 주입한 bash.exec 단일 호출(새 session 하나)."""
         with self._lock:
             try:
                 result = self._client.bash.exec(
@@ -287,13 +270,13 @@ class AioSandbox(Sandbox):
         start_line: int | None = None,
         end_line: int | None = None,
     ) -> str:
-        """Read the content of a file in the sandbox.
+        """sandbox에 있는 파일의 내용을 읽는다.
 
         Args:
-            path: The absolute path of the file to read.
+            path: 읽을 파일의 절대 경로.
 
         Returns:
-            The content of the file.
+            파일의 내용.
         """
         try:
             kwargs = {}
@@ -308,16 +291,16 @@ class AioSandbox(Sandbox):
             return f"Error: {e}"
 
     def download_file(self, path: str) -> bytes:
-        """Download file bytes from the sandbox.
+        """sandbox에서 파일 bytes를 내려받는다.
 
         Raises:
-            PermissionError: If the path contains '..' traversal segments or is
-                outside ``VIRTUAL_PATH_PREFIX``.
-            OSError: If the file cannot be retrieved from the sandbox.
+            PermissionError: 경로에 '..' traversal 구간이 있거나
+                ``VIRTUAL_PATH_PREFIX`` 밖일 때.
+            OSError: sandbox에서 파일을 가져오지 못했을 때.
         """
-        # Reject path traversal before sending to the container API.
-        # LocalSandbox gets this implicitly via _resolve_path;
-        # here the path is forwarded verbatim so we must check explicitly.
+        # 컨테이너 API로 보내기 전에 path traversal을 거부한다.
+        # LocalSandbox는 _resolve_path를 통해 이를 암묵적으로 처리하지만,
+        # 여기서는 경로를 그대로 전달하므로 명시적으로 검사해야 한다.
         normalised = path.replace("\\", "/")
         for segment in normalised.split("/"):
             if segment == "..":
@@ -351,14 +334,14 @@ class AioSandbox(Sandbox):
                 raise OSError(f"Failed to download file '{path}' from sandbox: {e}") from e
 
     def list_dir(self, path: str, max_depth: int = 2) -> list[str]:
-        """List the contents of a directory in the sandbox.
+        """sandbox에 있는 디렉터리의 내용을 나열한다.
 
         Args:
-            path: The absolute path of the directory to list.
-            max_depth: The maximum depth to traverse. Default is 2.
+            path: 나열할 디렉터리의 절대 경로.
+            max_depth: 순회할 최대 깊이. 기본값은 2.
 
         Returns:
-            The contents of the directory.
+            디렉터리의 내용.
         """
         with self._lock:
             try:
@@ -372,12 +355,12 @@ class AioSandbox(Sandbox):
                 return []
 
     def write_file(self, path: str, content: str, append: bool = False) -> None:
-        """Write content to a file in the sandbox.
+        """sandbox에 있는 파일에 내용을 쓴다.
 
         Args:
-            path: The absolute path of the file to write to.
-            content: The text content to write to the file.
-            append: Whether to append the content to the file.
+            path: 쓸 파일의 절대 경로.
+            content: 파일에 쓸 텍스트 내용.
+            append: 내용을 파일 끝에 덧붙일지 여부.
         """
         with self._lock:
             try:
@@ -428,9 +411,8 @@ class AioSandbox(Sandbox):
         import re as _re
 
         regex_source = _re.escape(pattern) if literal else pattern
-        # Validate the pattern locally so an invalid regex raises re.error
-        # (caught by grep_tool's except re.error handler) rather than a
-        # generic remote API error.
+        # 패턴을 로컬에서 검증해서, 잘못된 regex가 범용 원격 API 오류가 아니라
+        # re.error를 던지게 한다(grep_tool의 except re.error 핸들러가 잡는다).
         _re.compile(regex_source, 0 if case_sensitive else _re.IGNORECASE)
         total_cap = max(max_results * 4, max_results + 50)
         result = self._client.file.grep_files(
@@ -475,11 +457,11 @@ class AioSandbox(Sandbox):
         return matches, truncated
 
     def update_file(self, path: str, content: bytes) -> None:
-        """Update a file with binary content in the sandbox.
+        """sandbox에 있는 파일을 바이너리 내용으로 갱신한다.
 
         Args:
-            path: The absolute path of the file to update.
-            content: The binary content to write to the file.
+            path: 갱신할 파일의 절대 경로.
+            content: 파일에 쓸 바이너리 내용.
         """
         with self._lock:
             try:

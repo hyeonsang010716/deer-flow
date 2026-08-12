@@ -1,18 +1,18 @@
-"""Sync checkpointer factory.
+"""동기 checkpointer factory.
 
-Provides a **sync singleton** and a **sync context manager** for LangGraph
-graph compilation and CLI tools.
+LangGraph graph 컴파일과 CLI 도구를 위해 **동기 singleton**과 **동기 context
+manager**를 제공한다.
 
-Supported backends: memory, sqlite, postgres.
+지원 backend: memory, sqlite, postgres.
 
-Usage::
+사용법::
 
     from deerflow.runtime.checkpointer.provider import get_checkpointer, checkpointer_context
 
-    # Singleton — reused across calls, closed on process exit
+    # singleton — 호출 간 재사용되고 프로세스 종료 시 닫힌다
     cp = get_checkpointer()
 
-    # One-shot — fresh connection, closed on block exit
+    # 일회성 — 새 connection을 만들고 블록을 벗어날 때 닫는다
     with checkpointer_context() as cp:
         graph.invoke(input, config={"configurable": {"thread_id": "1"}})
 """
@@ -35,7 +35,7 @@ from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resol
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Error message constants — imported by aio.provider too
+# 에러 메시지 상수 — aio.provider도 import한다
 # ---------------------------------------------------------------------------
 
 SQLITE_INSTALL = "langgraph-checkpoint-sqlite is required for the SQLite checkpointer. Install it with: uv add langgraph-checkpoint-sqlite"
@@ -46,23 +46,22 @@ POSTGRES_CONN_REQUIRED = "checkpointer.connection_string is required for the pos
 
 
 def _ensure_postgres_schema(conn_string: str, schema: str) -> None:
-    """Create the configured schema before LangGraph creates its tables."""
+    """LangGraph가 테이블을 만들기 전에 설정된 schema를 생성한다."""
     ensure_postgres_schema(conn_string, schema, install_hint=POSTGRES_INSTALL)
 
 
 # ---------------------------------------------------------------------------
-# Config resolution
+# config 해석
 # ---------------------------------------------------------------------------
 
 
 def _resolve_checkpointer_config(app_config: AppConfig) -> CheckpointerConfig:
-    """Resolve the checkpointer backend from legacy or unified application config.
+    """레거시 또는 통합 애플리케이션 config에서 checkpointer backend를 해석한다.
 
-    The legacy ``checkpointer`` section remains authoritative when present so
-    Checkpointer and Store keep using the same backend. Otherwise the unified
-    ``database`` section drives the checkpointer, matching the async
-    :func:`~deerflow.runtime.checkpointer.async_provider.make_checkpointer`
-    factory and the sync Store provider's ``_resolve_store_config``.
+    레거시 ``checkpointer`` 섹션이 있으면 그것이 우선이라 Checkpointer와 Store가 같은
+    backend를 계속 쓴다. 없으면 통합 ``database`` 섹션이 checkpointer를 결정하며, 이는
+    async :func:`~deerflow.runtime.checkpointer.async_provider.make_checkpointer`
+    factory 및 동기 Store provider의 ``_resolve_store_config``와 동일한 동작이다.
     """
     if app_config.checkpointer is not None:
         return app_config.checkpointer
@@ -80,10 +79,10 @@ def _resolve_checkpointer_config(app_config: AppConfig) -> CheckpointerConfig:
 
 
 def _get_checkpointer_config() -> CheckpointerConfig:
-    """Load checkpointer config without holding the provider singleton lock."""
+    """provider singleton lock을 잡지 않은 채 checkpointer config를 로드한다."""
     ensure_config_loaded()
 
-    # Preserve callers that initialise the legacy config singleton directly.
+    # 레거시 config singleton을 직접 초기화하는 호출자를 그대로 지원한다.
     legacy_config = get_checkpointer_config()
     if legacy_config is not None:
         return legacy_config
@@ -95,18 +94,17 @@ def _get_checkpointer_config() -> CheckpointerConfig:
 
 
 # ---------------------------------------------------------------------------
-# Sync factory
+# 동기 factory
 # ---------------------------------------------------------------------------
 
 
 @contextlib.contextmanager
 def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
-    """Context manager that creates and tears down a sync checkpointer.
+    """동기 checkpointer를 만들고 정리하는 context manager.
 
-    Returns a configured ``Checkpointer`` instance. Resource cleanup for any
-    underlying connections or pools is handled by higher-level helpers in
-    this module (such as the singleton factory or context manager); this
-    function does not return a separate cleanup callback.
+    설정된 ``Checkpointer`` 인스턴스를 반환한다. 하위 connection이나 pool의 리소스
+    정리는 이 모듈의 상위 헬퍼(singleton factory나 context manager)가 처리하며, 이
+    함수는 별도의 정리 콜백을 반환하지 않는다.
     """
     if config.type == "memory":
         from langgraph.checkpoint.memory import InMemorySaver
@@ -150,29 +148,28 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
 
 
 # ---------------------------------------------------------------------------
-# Sync singleton
+# 동기 singleton
 # ---------------------------------------------------------------------------
 
 _checkpointer: Checkpointer | None = None
-_checkpointer_ctx = None  # open context manager keeping the connection alive
+_checkpointer_ctx = None  # connection을 살려두는 열린 context manager
 _checkpointer_lock = threading.Lock()
-_checkpointer_cache = None  # MemoryCheckpointHistoryCache singleton shared by wrapped sync savers
-_checkpointer_cache_prefix: str | None = None  # key prefix the singleton was built for
+_checkpointer_cache = None  # 래핑된 동기 saver들이 공유하는 MemoryCheckpointHistoryCache singleton
+_checkpointer_cache_prefix: str | None = None  # singleton을 만들 때 쓴 key prefix
 
 
 def _wrap_sync_if_delta(saver: Checkpointer, app_config: AppConfig) -> Checkpointer:
-    """Wrap *saver* in a delta-history cache when the effective mode is ``delta``.
+    """유효 모드가 ``delta``이면 *saver*를 delta history cache로 감싼다.
 
-    The process-frozen mode wins; ``database.checkpoint_channel_mode`` is the
-    fallback when nothing is frozen yet. Only the memory cache backend is
-    supported on the sync path (TUI/embedded) — it is process-local anyway.
+    프로세스에 고정된 모드가 우선이고, 아직 고정된 값이 없으면
+    ``database.checkpoint_channel_mode``로 fallback한다. 동기 경로(TUI/embedded)에서는
+    memory cache backend만 지원한다 — 어차피 프로세스 로컬이기 때문이다.
     """
     global _checkpointer_cache, _checkpointer_cache_prefix
-    # The ``_checkpointer_cache`` singleton is reassigned here without holding
-    # ``_checkpointer_lock`` on the ``checkpointer_context()`` path (and under
-    # the lock on the ``get_checkpointer()`` path). The race is intentional
-    # and benign: worst case two wrappers get their own fresh memory cache —
-    # last writer wins, and the cache is performance-only.
+    # ``_checkpointer_cache`` singleton은 ``checkpointer_context()`` 경로에서
+    # ``_checkpointer_lock``을 잡지 않은 채 재할당된다(``get_checkpointer()`` 경로에서는
+    # lock 안에서 재할당). 이 경쟁은 의도적이고 무해하다: 최악의 경우 두 wrapper가 각자
+    # 새 memory cache를 갖게 될 뿐이며, 마지막 writer가 이기고 cache는 성능 전용이다.
     db_config = getattr(app_config, "database", None)
     mode = frozen_checkpoint_channel_mode() or (db_config.checkpoint_channel_mode if db_config is not None else "full")
     if mode != "delta":
@@ -185,8 +182,8 @@ def _wrap_sync_if_delta(saver: Checkpointer, app_config: AppConfig) -> Checkpoin
     from deerflow.runtime.checkpointer.cached_saver import CachedHistorySaver
 
     key_prefix = checkpoint_cache_key_prefix(app_config)
-    # Recreate on capacity OR namespace change: entries under a stale prefix
-    # would be unreachable and no longer covered by thread purges.
+    # 용량이나 namespace가 바뀌면 다시 만든다: 낡은 prefix 아래의 항목은 접근할 수 없고
+    # thread 삭제 시 정리 대상에도 들어가지 않는다.
     if _checkpointer_cache is None or _checkpointer_cache._max_entries != cache_config.max_entries or _checkpointer_cache_prefix != key_prefix:
         _checkpointer_cache = MemoryCheckpointHistoryCache(max_entries=cache_config.max_entries)
         _checkpointer_cache_prefix = key_prefix
@@ -194,29 +191,29 @@ def _wrap_sync_if_delta(saver: Checkpointer, app_config: AppConfig) -> Checkpoin
 
 
 def get_checkpointer() -> Checkpointer:
-    """Return the global sync checkpointer singleton, creating it on first call.
+    """전역 동기 checkpointer singleton을 반환하며, 첫 호출 시 생성한다.
 
-    The legacy ``checkpointer`` section takes precedence when configured;
-    otherwise the unified ``database`` section selects the backend. Returns an
-    ``InMemorySaver`` when neither selects a persistent backend.
+    레거시 ``checkpointer`` 섹션이 설정돼 있으면 그것이 우선이고, 아니면 통합
+    ``database`` 섹션이 backend를 고른다. 둘 다 영속 backend를 고르지 않으면
+    ``InMemorySaver``를 반환한다.
 
     Raises:
-        ImportError: If the required package for the configured backend is not installed.
-        ValueError: If ``connection_string`` is missing for a backend that requires it.
+        ImportError: 설정된 backend에 필요한 패키지가 설치돼 있지 않은 경우.
+        ValueError: 해당 backend에 필요한 ``connection_string``이 없는 경우.
     """
     global _checkpointer, _checkpointer_ctx
 
     if _checkpointer is not None:
         return _checkpointer
 
-    # Config loading can reset both persistence singletons. Resolve the full
-    # config outside this provider lock to avoid cross-provider lock-order inversion.
+    # config 로딩은 두 persistence singleton을 모두 리셋할 수 있다. provider 간 lock 순서
+    # 역전을 피하기 위해 전체 config는 이 provider lock 바깥에서 해석한다.
     config = _get_checkpointer_config()
 
-    # ``get_app_config()`` can trigger a config reload whose
-    # ``_apply_singleton_configs`` calls ``reset_checkpointer()`` — which takes
-    # ``_checkpointer_lock``. Resolve it (non-reentrant lock) BEFORE acquiring
-    # the lock below, exactly like ``_get_checkpointer_config()`` above.
+    # ``get_app_config()``는 config reload를 유발할 수 있고, 그 안의
+    # ``_apply_singleton_configs``가 ``_checkpointer_lock``을 잡는
+    # ``reset_checkpointer()``를 호출한다. 위의 ``_get_checkpointer_config()``와 똑같이
+    # (재진입 불가 lock이므로) 아래에서 lock을 잡기 전에 먼저 해석한다.
     try:
         app_config = get_app_config()
     except FileNotFoundError:
@@ -241,10 +238,10 @@ def get_checkpointer() -> Checkpointer:
 
 
 def reset_checkpointer() -> None:
-    """Reset the sync singleton, forcing recreation on the next call.
+    """동기 singleton을 리셋해 다음 호출 때 다시 만들게 한다.
 
-    Closes any open backend connections and clears the cached instance.
-    Useful in tests or after a configuration change.
+    열려 있는 backend connection을 닫고 캐시된 인스턴스를 비운다. 테스트나 설정 변경
+    직후에 유용하다.
     """
     global _checkpointer, _checkpointer_ctx, _checkpointer_cache, _checkpointer_cache_prefix
     with _checkpointer_lock:
@@ -260,24 +257,24 @@ def reset_checkpointer() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sync context manager
+# 동기 context manager
 # ---------------------------------------------------------------------------
 
 
 @contextlib.contextmanager
 def checkpointer_context() -> Iterator[Checkpointer]:
-    """Sync context manager that yields a checkpointer and cleans up on exit.
+    """checkpointer를 yield하고 종료 시 정리하는 동기 context manager.
 
-    Unlike :func:`get_checkpointer`, this does **not** cache the instance —
-    each ``with`` block creates and destroys its own connection.  Use it in
-    CLI scripts or tests where you want deterministic cleanup::
+    :func:`get_checkpointer`와 달리 인스턴스를 캐시하지 **않는다** — 각 ``with`` 블록이
+    자기 connection을 만들고 파괴한다. 확정적인 정리가 필요한 CLI 스크립트나 테스트에서
+    쓴다::
 
         with checkpointer_context() as cp:
             graph.invoke(input, config={"configurable": {"thread_id": "1"}})
 
-    The legacy ``checkpointer`` section takes precedence when configured;
-    otherwise the unified ``database`` section selects the backend. Yields an
-    ``InMemorySaver`` when neither selects a persistent backend.
+    레거시 ``checkpointer`` 섹션이 설정돼 있으면 그것이 우선이고, 아니면 통합
+    ``database`` 섹션이 backend를 고른다. 둘 다 영속 backend를 고르지 않으면
+    ``InMemorySaver``를 yield한다.
     """
 
     app_config = get_app_config()

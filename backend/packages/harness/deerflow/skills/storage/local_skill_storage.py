@@ -1,4 +1,4 @@
-"""Local-filesystem implementation of ``SkillStorage``."""
+"""``SkillStorage``의 로컬 파일시스템 구현."""
 
 from __future__ import annotations
 
@@ -22,15 +22,15 @@ from deerflow.skills.types import SkillCategory
 
 logger = logging.getLogger(__name__)
 
-# Bound for the best-effort temp-dir cleanup so a stalled filesystem (e.g. NFS)
-# cannot hold back the install outcome propagating out of the finally block.
+# best-effort 임시 디렉터리 정리에 거는 제한 시간. 멈춘 파일시스템(예: NFS)이 finally 블록에서
+# install 결과가 전파되는 것을 붙잡지 못하게 한다.
 _INSTALL_TMP_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 class LocalSkillStorage(SkillStorage):
-    """Skill storage backed by the local filesystem.
+    """로컬 파일시스템을 백엔드로 쓰는 skill storage.
 
-    Layout::
+    레이아웃::
 
         <root>/public/<name>/SKILL.md
         <root>/custom/<name>/SKILL.md
@@ -51,16 +51,15 @@ class LocalSkillStorage(SkillStorage):
             self._app_config = config
             self._host_root: Path = config.skills.get_skills_path()
         else:
-            # Keep app_config as-is (may be None). This host_path constructor is used by
-            # tests and non-user-scoped storage; eagerly calling get_app_config() here would
-            # break config-free environments (e.g. CI). The skill_scan.enabled kill switch is
-            # resolved lazily at scan time by skill_scan_enabled(), which also picks up
-            # hot-reloaded config, so a None here is honored, not ignored.
+            # app_config는 그대로 둔다(None일 수 있다). 이 host_path 생성자는 테스트와 user scope가
+            # 아닌 storage가 쓰므로, 여기서 get_app_config()를 즉시 호출하면 config 없는 환경(예: CI)이
+            # 깨진다. skill_scan.enabled kill switch는 scan 시점에 skill_scan_enabled()가 지연
+            # 해석하며 hot-reload된 config도 반영하므로, 여기의 None은 무시되지 않고 존중된다.
             self._app_config = app_config
             self._host_root = resolve_path(host_path)
 
     # ------------------------------------------------------------------
-    # Abstract operation implementations
+    # 추상 연산 구현
     # ------------------------------------------------------------------
 
     def get_skills_root_path(self) -> Path:
@@ -84,11 +83,9 @@ class LocalSkillStorage(SkillStorage):
                 dir_names[:] = sorted(name for name in dir_names if not name.startswith("."))
                 if SKILL_MD_FILE not in file_names:
                     continue
-                # A directory containing SKILL.md is a package boundary. Any
-                # nested SKILL.md files belong to that package's supporting
-                # resources (for example eval fixtures), not to the runtime
-                # skill registry. Namespace directories without SKILL.md still
-                # recurse, preserving layouts such as public/team/helper.
+                # SKILL.md를 포함한 디렉터리는 패키지 경계다. 중첩된 SKILL.md는 runtime skill
+                # registry가 아니라 그 패키지의 보조 리소스(예: eval fixture)에 속한다. SKILL.md가
+                # 없는 namespace 디렉터리는 계속 재귀하므로 public/team/helper 같은 레이아웃이 유지된다.
                 dir_names.clear()
                 yield category, category_path, Path(current_root) / SKILL_MD_FILE
 
@@ -128,8 +125,8 @@ class LocalSkillStorage(SkillStorage):
         path = Path(archive_path)
         custom_dir = self._host_root / "custom"
 
-        # The per-file security scan is an async LLM call and must stay on the
-        # event loop; every filesystem phase around it runs in a worker thread.
+        # 파일별 보안 scan은 async LLM 호출이므로 event loop에 남아야 한다. 그 주변의 파일시스템
+        # 단계는 전부 worker thread에서 실행한다.
         tmp = await asyncio.to_thread(tempfile.mkdtemp)
         try:
             skill_dir, skill_name, target = await asyncio.to_thread(self._prepare_skill_archive, path, Path(tmp), custom_dir, archive_path)
@@ -155,14 +152,14 @@ class LocalSkillStorage(SkillStorage):
 
     @staticmethod
     def _cleanup_install_tmp(tmp: str) -> None:
-        """Best-effort removal that never masks the install outcome, but leaves a trace."""
+        """best-effort 삭제. install 결과를 절대 가리지 않되 로그는 남긴다."""
         try:
             shutil.rmtree(tmp)
         except OSError:
             logger.warning("Failed to clean up skill install temp dir %s", tmp, exc_info=True)
 
     def _prepare_skill_archive(self, path: Path, tmp_path: Path, custom_dir: Path, archive_path: str | Path) -> tuple[Path, str, Path]:
-        """Extract and validate the archive (blocking; runs off the event loop)."""
+        """archive를 추출하고 검증한다(blocking. event loop 밖에서 실행한다)."""
         import zipfile
 
         from deerflow.skills.installer import (
@@ -208,7 +205,7 @@ class LocalSkillStorage(SkillStorage):
         return skill_dir, skill_name, target
 
     def _commit_skill_install(self, skill_dir: Path, skill_name: str, custom_dir: Path, target: Path) -> None:
-        """Stage and move the validated skill into place (blocking; runs off the event loop)."""
+        """검증된 skill을 staging한 뒤 제자리로 옮긴다(blocking. event loop 밖에서 실행한다)."""
         from deerflow.skills.installer import _move_staged_skill_into_reserved_target
 
         with self._skill_projection_mutation():

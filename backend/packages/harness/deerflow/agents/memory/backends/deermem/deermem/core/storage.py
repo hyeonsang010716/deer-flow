@@ -1,11 +1,9 @@
-"""Memory storage providers.
+"""memory 저장소 provider.
 
-The file backend stores only project-independent user/history summaries in one
-user-level ``memory.json``. Each fact is canonical in one Markdown file below
-its required agent name. The
-public ``load``/``save`` compatibility surface still exposes the historical
-document shape (``facts`` is a list), so updater and gateway callers can move
-to the fact repository API incrementally.
+file backend는 프로젝트와 무관한 user/history 요약만 사용자 단위 ``memory.json``
+하나에 저장한다. 각 fact의 정본은 지정된 agent 이름 아래의 Markdown 파일 하나다.
+공개 ``load``/``save`` 호환 표면은 여전히 기존 문서 형태(``facts``가 리스트)를
+노출하므로, updater와 gateway 호출자가 fact repository API로 점진적으로 옮겨갈 수 있다.
 """
 
 from __future__ import annotations
@@ -40,27 +38,27 @@ CORE_CATEGORIES = frozenset({"preference", "correction", "context", "goal", "beh
 
 
 class MemoryStorageError(RuntimeError):
-    """Base error for persistent memory failures."""
+    """영속 memory 실패의 기반 예외."""
 
 
 class MemoryStorageCorruption(MemoryStorageError):
-    """The global memory JSON or a canonical fact cannot be parsed safely."""
+    """전역 memory JSON이나 정본 fact를 안전하게 파싱할 수 없다."""
 
 
 class MemoryRevisionConflict(MemoryStorageError):
-    """A stale writer attempted to overwrite a newer user-memory revision."""
+    """오래된 writer가 더 최신인 user-memory revision을 덮어쓰려 했다."""
 
 
 class MemoryManifestRevisionConflict(MemoryRevisionConflict):
-    """The shared user-memory revision changed before a transaction committed."""
+    """transaction이 커밋되기 전에 공유 user-memory revision이 바뀌었다."""
 
 
 class MemoryFactRevisionConflict(MemoryRevisionConflict):
-    """A fact no longer satisfies its expected absence or revision."""
+    """fact가 기대했던 부재 조건이나 revision을 더 이상 만족하지 않는다."""
 
 
 class RetrievalPort(Protocol):
-    """Storage-facing adapter implemented by the independent retrieval module."""
+    """독립적인 retrieval 모듈이 구현하는, storage 쪽을 향한 adapter."""
 
     def upsert(self, fact: dict[str, Any], *, scope: dict[str, str | None], path: str) -> None: ...
 
@@ -82,7 +80,7 @@ def utc_now_iso_z() -> str:
 
 
 def create_empty_memory() -> dict[str, Any]:
-    """Return the compatibility document shape used by updater/injection."""
+    """updater/injection이 쓰는 호환 문서 형태를 반환한다."""
     return {
         "version": "1.0",
         "revision": 0,
@@ -102,7 +100,7 @@ def create_empty_memory() -> dict[str, Any]:
 
 
 def _has_meaningful_data(value: Any) -> bool:
-    """Return whether a legacy summary value contains anything worth preserving."""
+    """레거시 summary 값에 보존할 만한 내용이 있는지 반환한다."""
     if isinstance(value, dict):
         return any(_has_meaningful_data(item) for item in value.values())
     if isinstance(value, (list, tuple, set)):
@@ -111,7 +109,7 @@ def _has_meaningful_data(value: Any) -> bool:
 
 
 def _merge_legacy_summary_section(*, canonical: Any, legacy: Any, section: str, legacy_path: Path) -> Any:
-    """Adopt a legacy section only when doing so cannot overwrite live data."""
+    """살아 있는 데이터를 덮어쓸 위험이 없을 때만 레거시 섹션을 채택한다."""
     if canonical == legacy or not _has_meaningful_data(legacy):
         return copy.deepcopy(canonical)
     if not _has_meaningful_data(canonical):
@@ -128,7 +126,7 @@ def _content_hash(raw: bytes) -> str:
 
 
 def _file_signature(path: Path) -> tuple[int, int] | None:
-    """Use nanosecond mtime plus size so cache validation is not mtime-only."""
+    """cache 검증이 mtime에만 의존하지 않도록 나노초 mtime과 크기를 함께 쓴다."""
     try:
         stat = path.stat()
         return (stat.st_mtime_ns, stat.st_size)
@@ -137,7 +135,7 @@ def _file_signature(path: Path) -> tuple[int, int] | None:
 
 
 def _ensure_migration_backup(source_path: Path) -> Path:
-    """Durably preserve one immutable pre-migration JSON source beside it."""
+    """마이그레이션 이전 JSON 원본을 불변 사본으로 옆에 durable하게 보존한다."""
     backup_path = source_path.with_name(f"{source_path.name}.v1.bak")
     try:
         source_bytes = source_path.read_bytes()
@@ -176,17 +174,17 @@ def _normalize_fact(
     scope: dict[str, str | None],
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate one fact and derive its per-item revision.
+    """fact 하나를 검증하고 항목별 revision을 계산한다.
 
-    The shared JSON revision protects the multi-file transaction.  The fact's
-    own revision protects one Markdown object when a disjoint transaction is
-    safely rebased after that shared revision changed.
+    공유 JSON revision은 여러 파일에 걸친 transaction을 보호한다. fact 자체의 revision은
+    공유 revision이 바뀐 뒤 서로 겹치지 않는 transaction이 안전하게 rebase될 때 Markdown
+    객체 하나를 보호한다.
     """
     if not isinstance(fact, dict):
         raise ValueError("fact must be an object")
     normalized = copy.deepcopy(fact)
     normalized["id"] = str(normalized.get("id") or f"fact_{uuid.uuid4().hex}")
-    # Validate the id through the canonical path builder's public contract.
+    # 정본 path builder의 공개 계약에 맞춰 id를 검증한다.
     if not normalized["id"] or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for character in normalized["id"]):
         raise ValueError("fact.id may contain only letters, numbers, '_' and '-'")
     normalized["schemaVersion"] = 2
@@ -254,7 +252,7 @@ def _normalize_fact(
 
 
 def _safe_relative_path(root: Path, relative: str, *, label: str) -> Path:
-    """Resolve an untrusted persisted relative path without leaving root."""
+    """저장된 신뢰할 수 없는 상대 경로를 root 밖으로 벗어나지 않게 해석한다."""
     candidate = Path(relative)
     if candidate.is_absolute():
         raise MemoryStorageCorruption(f"{label} path escapes the user memory directory: {relative!r}")
@@ -314,7 +312,7 @@ def _parse_fact_markdown(path: Path) -> dict[str, Any]:
 
 
 def _fsync_parent_directory(directory: Path) -> None:
-    """Make a completed rename durable on POSIX filesystems."""
+    """POSIX 파일시스템에서 완료된 rename을 durable하게 만든다."""
     if os.name == "nt":
         return
     descriptor = os.open(directory, os.O_RDONLY)
@@ -343,7 +341,7 @@ def _atomic_write(path: Path, raw: bytes) -> None:
 
 @contextmanager
 def _process_file_lock(lock_path: Path, timeout_seconds: float) -> Iterator[None]:
-    """Cross-process advisory lock for one scope, using only the stdlib."""
+    """stdlib만으로 구현한, scope 하나에 대한 프로세스 간 advisory lock."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(lock_path, "a+b")
     deadline = time.monotonic() + timeout_seconds
@@ -405,15 +403,15 @@ class MemoryStorage(abc.ABC):
     ) -> bool: ...
 
     def apply_changes(self, change_set: dict[str, Any], **scope: Any) -> dict[str, Any]:
-        """Apply one repository change set; providers may override atomically."""
+        """repository change set 하나를 적용한다. provider는 원자적으로 override할 수 있다."""
         raise NotImplementedError
 
     def clear_all(self, *, user_id: str | None = None) -> dict[str, Any]:
-        """Clear global summaries and every agent fact bucket for one user."""
+        """사용자 한 명의 전역 summary와 모든 agent fact 버킷을 비운다."""
         raise NotImplementedError
 
     def close(self) -> None:
-        """Release optional storage resources."""
+        """선택적 storage 리소스를 반환한다."""
 
 
 class FileMemoryStorage(MemoryStorage):
@@ -426,7 +424,7 @@ class FileMemoryStorage(MemoryStorage):
         self._retrieval_dirty_scopes: set[tuple[str | None, str | None]] = set()
 
     def close(self) -> None:
-        """Release the retrieval adapter owned by this storage instance."""
+        """이 storage 인스턴스가 소유한 retrieval adapter를 정리한다."""
         if self._retrieval is not None:
             self._retrieval.close()
 
@@ -442,13 +440,12 @@ class FileMemoryStorage(MemoryStorage):
         return memory_file_path(self._config, agent_name, user_id=user_id)
 
     def _scope_signature(self, path: Path, agent_name: str | None) -> tuple[Any, ...]:
-        """Track supported writes without scanning the agent's fact files.
+        """agent의 fact 파일을 스캔하지 않고 지원되는 쓰기를 추적한다.
 
-        Every storage-managed fact mutation advances and atomically replaces
-        the user-level JSON revision. Including that revision prevents stale
-        cache hits when a coarse-mtime filesystem reports identical metadata
-        for two same-size writes. Direct out-of-band Markdown edits require
-        ``reload()``.
+        storage가 관리하는 모든 fact 변경은 사용자 수준 JSON revision을 올리고 원자적으로
+        교체한다. 그 revision을 포함시키면 mtime 해상도가 낮은 파일시스템이 같은 크기의 두
+        쓰기에 대해 동일한 메타데이터를 보고해도 낡은 cache hit이 생기지 않는다. storage를
+        거치지 않은 직접 Markdown 편집은 ``reload()``가 필요하다.
         """
         file_signature = _file_signature(path)
         if file_signature is None:
@@ -464,7 +461,7 @@ class FileMemoryStorage(MemoryStorage):
         user_id: str | None,
         agent_name: str | None,
     ) -> None:
-        """Notify the optional index only after durable storage locks are released."""
+        """durable storage lock이 풀린 뒤에만 선택적 index에 알린다."""
         if self._retrieval is None:
             return
         scope = _scope_dict(user_id, agent_name)
@@ -506,8 +503,8 @@ class FileMemoryStorage(MemoryStorage):
         for fact_path in sorted(agent_facts_directory(path, agent_name).glob("**/*.md")):
             fact = _parse_fact_markdown(fact_path)
             facts.append(self._validate_loaded_fact(fact, fact_path, user_id=user_id, agent_name=agent_name))
-        # Shard directories are an internal layout detail and must not change
-        # the stable fact order observed by callers.
+        # shard 디렉터리는 내부 레이아웃 세부사항이므로 호출자가 보는 안정적인 fact 순서를
+        # 바꿔서는 안 된다.
         return sorted(facts, key=lambda fact: str(fact["id"]))
 
     def _read_fact(self, path: Path, fact_id: str, *, user_id: str | None, agent_name: str) -> tuple[dict[str, Any] | None, Path]:
@@ -543,11 +540,11 @@ class FileMemoryStorage(MemoryStorage):
         *,
         user_id: str | None,
     ) -> tuple[bool, list[RetrievalNotification]]:
-        """Move facts written by the earlier ``lead-agent`` default mapping.
+        """예전의 ``lead-agent`` 기본 매핑으로 기록된 fact들을 옮긴다.
 
-        A real custom ``lead-agent`` owns a ``config.yaml`` and is never
-        touched.  A directory with any other unexpected file is also preserved
-        and rejected instead of being guessed at or recursively deleted.
+        진짜 custom ``lead-agent``는 ``config.yaml``을 갖고 있으며 절대 건드리지 않는다.
+        예상치 못한 파일이 있는 디렉터리도 추측하거나 재귀 삭제하지 않고 그대로 보존한 채
+        거부한다.
         """
         legacy_agent_name = "lead-agent"
         legacy_agent_dir = path.parent / "agents" / legacy_agent_name
@@ -587,9 +584,8 @@ class FileMemoryStorage(MemoryStorage):
             summaries=None,
             expected_revision=int((current_memory or {}).get("revision") or 0),
         )
-        # Delete only the source Markdown files that were parsed above. Never
-        # recursively remove this directory: if an unexpected file appears
-        # concurrently, the final rmdir simply leaves it in place.
+        # 위에서 파싱한 원본 Markdown 파일만 삭제한다. 이 디렉터리를 재귀적으로 지우지
+        # 않는다: 예상치 못한 파일이 동시에 생기면 마지막 rmdir이 그냥 그대로 남겨둔다.
         for fact_path in legacy_facts_dir.glob("**/*.md"):
             fact_path.unlink(missing_ok=True)
         directories = sorted(
@@ -615,7 +611,7 @@ class FileMemoryStorage(MemoryStorage):
         *,
         user_id: str | None,
     ) -> list[ScopedRetrievalNotifications]:
-        """Finish journal recovery and all migrations reachable from reads."""
+        """journal 복구와 읽기 경로에서 도달 가능한 모든 마이그레이션을 마무리한다."""
         notifications_by_agent: list[ScopedRetrievalNotifications] = []
         self._recover_if_needed(path)
         if self._global_json_needs_migration(path):
@@ -656,9 +652,9 @@ class FileMemoryStorage(MemoryStorage):
         return value
 
     def _recover_if_needed(self, path: Path) -> None:
-        """Recover or clean a previously journaled multi-file operation.
+        """이전에 journal에 기록된 다중 파일 작업을 복구하거나 정리한다.
 
-        Callers hold the scope's in-process and cross-process locks.
+        호출자는 해당 scope의 프로세스 내 lock과 프로세스 간 lock을 모두 잡고 있다.
         """
         journal_path = path.parent / ".memory.journal.json"
         if not journal_path.exists():
@@ -716,11 +712,11 @@ class FileMemoryStorage(MemoryStorage):
         delete_revisions: dict[str, int] | None = None,
         upsert_revisions: dict[str, int | None] | None = None,
     ) -> tuple[dict[str, Any], list[RetrievalNotification]]:
-        """Commit only the addressed fact files plus the shared summary JSON.
+        """지정된 fact 파일들과 공유 summary JSON만 커밋한다.
 
-        Callers hold both locks and have already run journal recovery.  This is
-        deliberately not implemented as load-all/replace-all: unchanged fact
-        files are neither opened for backup nor rewritten nor re-indexed.
+        호출자는 두 lock을 모두 잡고 있고 journal 복구도 이미 마쳤다. 의도적으로 전체
+        로드/전체 교체 방식으로 구현하지 않았다: 변경되지 않은 fact 파일은 백업을 위해
+        열지도, 다시 쓰지도, 재색인하지도 않는다.
         """
         current_memory = self._load_memory_file(path)
         current_revision = int((current_memory or {}).get("revision") or 0)
@@ -739,7 +735,7 @@ class FileMemoryStorage(MemoryStorage):
             fact_id = candidate["id"]
             if fact_id in prepared:
                 raise ValueError(f"Duplicate fact id {fact_id!r} in upserts")
-            if agent_name is None:  # guarded above
+            if agent_name is None:  # 위에서 이미 검사됨
                 raise ValueError("agent_name is required for fact repository changes")
             existing, fact_path = self._read_fact(path, fact_id, user_id=user_id, agent_name=agent_name)
             if upsert_revisions is not None and fact_id in upsert_revisions:
@@ -761,7 +757,7 @@ class FileMemoryStorage(MemoryStorage):
         for fact_id in delete_ids:
             if fact_id in prepared:
                 raise ValueError(f"Fact {fact_id!r} cannot be upserted and deleted together")
-            if agent_name is None:  # guarded above
+            if agent_name is None:  # 위에서 이미 검사됨
                 raise ValueError("agent_name is required for fact repository changes")
             existing, fact_path = self._read_fact(path, fact_id, user_id=user_id, agent_name=agent_name)
             if existing is None:
@@ -858,7 +854,7 @@ class FileMemoryStorage(MemoryStorage):
         include_global: bool,
         adopt_legacy_summaries: bool = True,
     ) -> tuple[bool, str | None, list[RetrievalNotification]]:
-        """Merge legacy facts without overwriting an existing canonical fact."""
+        """기존 정본 fact를 덮어쓰지 않고 레거시 fact를 병합한다."""
         sources: list[tuple[Path, dict[str, Any]]] = []
         legacy_path = self._legacy_agent_memory_path(path, agent_name)
         legacy_memory = self._load_memory_file(legacy_path)
@@ -912,9 +908,9 @@ class FileMemoryStorage(MemoryStorage):
                 pending[candidate["id"]] = candidate
                 upserts.append(candidate)
 
-        # Migration is intentionally one-way for the running application.
-        # Preserve every destructive v1 JSON source before the first v2 write;
-        # a failed/mismatched backup aborts while all source data is untouched.
+        # 실행 중인 애플리케이션 입장에서 마이그레이션은 의도적으로 단방향이다.
+        # 첫 v2 쓰기 전에 파괴 대상인 v1 JSON 원본을 모두 보존한다. 백업이 실패하거나
+        # 불일치하면 원본 데이터를 건드리지 않은 상태로 중단한다.
         for source_path, _ in sources:
             _ensure_migration_backup(source_path)
 
@@ -941,7 +937,7 @@ class FileMemoryStorage(MemoryStorage):
         user_id: str | None,
         allow_legacy_facts: bool = False,
     ) -> dict[str, Any]:
-        """Build the compatibility document without persisting facts in JSON."""
+        """fact를 JSON에 저장하지 않고 호환 문서를 구성한다."""
         legacy_facts = memory_file.get("facts")
         contains_owned_legacy_facts = isinstance(legacy_facts, dict) or (isinstance(legacy_facts, list) and bool(legacy_facts))
         if contains_owned_legacy_facts and not allow_legacy_facts:
@@ -1037,7 +1033,7 @@ class FileMemoryStorage(MemoryStorage):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> dict[str, Any]:
-        """Run the idempotent version-driven migration for one exact scope."""
+        """지정한 scope 하나에 대해 멱등한 버전 기반 마이그레이션을 실행한다."""
         if agent_name is None:
             raise ValueError("agent_name is required to migrate legacy facts")
         path = self._get_memory_file_path(agent_name, user_id=user_id)
@@ -1062,12 +1058,11 @@ class FileMemoryStorage(MemoryStorage):
         user_id: str | None = None,
         expected_revision: int | None = None,
     ) -> bool:
-        """Compatibility full replacement, diffed into per-fact operations.
+        """호환용 전체 교체. fact 단위 연산으로 diff해서 적용한다.
 
-        This API must scan the selected agent to determine which omitted facts
-        are deletions, but the commit writes only new/changed/deleted facts.
-        Repository callers should prefer ``apply_changes`` to avoid even that
-        full comparison scan.
+        이 API는 어떤 누락된 fact가 삭제인지 판단하기 위해 선택된 agent를 스캔해야 하지만,
+        커밋 자체는 새로 생기거나 바뀌거나 삭제된 fact만 기록한다. repository 호출자는 그
+        전체 비교 스캔조차 피하려면 ``apply_changes``를 쓰는 편이 낫다.
         """
         path = self._get_memory_file_path(agent_name, user_id=user_id)
         key = self._cache_key(agent_name, user_id=user_id)
@@ -1117,7 +1112,7 @@ class FileMemoryStorage(MemoryStorage):
         return True
 
     def clear_all(self, *, user_id: str | None = None) -> dict[str, Any]:
-        """Clear one user's summaries and all agent facts, preserving agent configs."""
+        """agent 설정은 남기고 사용자 한 명의 summary와 모든 agent fact를 비운다."""
         path = self._get_memory_file_path(user_id=user_id)
         key = self._cache_key(user_id=user_id)
         notifications_by_agent: list[ScopedRetrievalNotifications] = []
@@ -1232,12 +1227,12 @@ class FileMemoryStorage(MemoryStorage):
         expected_manifest_revision: int | None = None,
         allow_manifest_rebase: bool = False,
     ) -> dict[str, Any]:
-        """Commit an incremental change set and return only the applied delta.
+        """증분 change set을 커밋하고 적용된 delta만 반환한다.
 
-        ``complete`` is deliberately false: callers that require the historical
-        full document must explicitly call ``load``.  This prevents a fresh
-        process from presenting a one-fact cache snapshot as the whole agent
-        memory while keeping the mutation path free of full fact scans.
+        ``complete``는 의도적으로 false다: 기존의 전체 문서가 필요한 호출자는 ``load``를
+        명시적으로 호출해야 한다. 이렇게 하면 갓 시작한 프로세스가 fact 하나짜리 cache
+        snapshot을 agent memory 전체인 것처럼 내놓는 일을 막으면서, 변경 경로에서는 전체
+        fact 스캔을 하지 않아도 된다.
         """
         has_fact_changes = bool(change_set.get("upserts") or change_set.get("deletes"))
         if has_fact_changes and agent_name is None:
@@ -1299,7 +1294,7 @@ class FileMemoryStorage(MemoryStorage):
                 expected = int((current or {}).get("revision") or 0)
                 logger.info("Rebasing disjoint memory fact change after revision conflict: %s", exc)
         self._dispatch_retrieval_notifications(notifications, user_id=user_id, agent_name=agent_name)
-        if memory_file is None:  # defensive: the bounded loop either commits or raises
+        if memory_file is None:  # 방어적 처리: 제한된 루프는 커밋하거나 예외를 던진다
             raise MemoryStorageError("Memory repository change did not produce a result")
         return {
             "complete": False,
@@ -1371,7 +1366,7 @@ class FileMemoryStorage(MemoryStorage):
         agent_name: str | None = None,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        # Summaries are always user-global, never agent-specific.
+        # summary는 항상 사용자 전역이며 agent별로 나뉘지 않는다.
         document = self.load(user_id=user_id)
         document.update({key: copy.deepcopy(value) for key, value in summaries.items() if key in {"user", "history"}})
         expected = int(document.get("revision") or 0) if expected_revision is None else expected_revision

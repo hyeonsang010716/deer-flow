@@ -1,4 +1,4 @@
-"""Materialize enabled-only skill trees for sandbox filesystem exposure."""
+"""sandbox 파일시스템에 노출할, 활성 skill만 담은 tree를 materialize한다."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ _MAX_REBUILD_ATTEMPTS = 2
 
 @dataclass(frozen=True)
 class SkillProjectionPaths:
-    """Stable category roots mounted or uploaded by sandbox providers."""
+    """sandbox provider가 mount하거나 업로드하는 안정적인 category root들."""
 
     public: Path
     custom: Path
@@ -74,7 +74,7 @@ def _lock_for(path: Path) -> threading.RLock:
 
 @contextmanager
 def _projection_lock(root: Path) -> Iterator[None]:
-    """Serialize projection replacement in-process and across POSIX workers."""
+    """projection 교체를 프로세스 내부와 POSIX worker 간에 직렬화한다."""
     lock_path = root.parent / f".{root.name}.projection.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     process_lock = _lock_for(lock_path)
@@ -95,8 +95,8 @@ def _projection_lock(root: Path) -> Iterator[None]:
 
 
 def _link_or_copy(source: str, target: str, *, follow_symlinks: bool = True) -> str:
-    # Hardlinks share the source inode and provide no write isolation. Any
-    # read-only guarantee must come from the consuming sandbox or mount.
+    # hardlink는 원본 inode를 공유하므로 write 격리를 제공하지 않는다. 읽기 전용 보장은
+    # 이를 소비하는 sandbox나 mount에서 와야 한다.
     try:
         os.link(source, target, follow_symlinks=follow_symlinks)
     except OSError as exc:
@@ -156,7 +156,7 @@ def _validate_projection_relative_path(relative_path: Path) -> None:
 
 
 def _remove_projection_relative(root: Path, relative_path: Path) -> None:
-    """Remove a projected package without following a drifted namespace symlink."""
+    """어긋난 namespace symlink를 따라가지 않고 projection된 package를 제거한다."""
     current = root
     for part in relative_path.parts:
         current /= part
@@ -187,7 +187,7 @@ def _sync_staged_category(root: Path, staging: Path) -> None:
 
 
 def _replace_category(root: Path, desired: dict[Path, Skill], skill_boundaries: set[Path]) -> None:
-    """Reconcile entries beneath a stable category root without blanking it."""
+    """안정적인 category root를 비우지 않고 그 아래 항목들을 정합화한다."""
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{root.name}.projection-", dir=root.parent) as staging_dir:
         staging = Path(staging_dir)
@@ -213,14 +213,13 @@ def _clear_projection_scope(scope_root: Path, *category_roots: Path) -> None:
 
 
 def _update_tree_digest(digest, root: Path, label: str) -> None:
-    """Hash directory metadata (inode/mode/size/mtime), not file contents.
+    """파일 내용이 아니라 디렉터리 metadata(inode/mode/size/mtime)를 해시한다.
 
-    Trade-off: fast enough to run on every sandbox acquire (O(files), no
-    reads), but an external edit that preserves inode+size+mtime — unlikely,
-    not zero-probability — is invisible to this signature and leaves the
-    projection stale until the next explicit rebuild. Runtime writes through
-    this codebase are covered regardless: the mutation path rebuilds under
-    lock, and atomic-rename always changes the inode.
+    trade-off: sandbox acquire마다 돌려도 될 만큼 빠르지만(O(파일 수), 읽기 없음), inode+size+
+    mtime을 그대로 유지하는 외부 수정은 — 드물지만 확률이 0은 아니다 — 이 signature에 잡히지
+    않아 다음 명시적 rebuild 전까지 projection이 낡은 상태로 남는다. 이 코드베이스를 통한
+    runtime write는 어느 경우든 커버된다. mutation 경로는 lock을 잡고 rebuild하고, atomic
+    rename은 항상 inode를 바꾸기 때문이다.
     """
     digest.update(f"root:{label}\0".encode())
     if not root.exists():
@@ -266,14 +265,13 @@ def _source_signature(storage: SkillStorage, scope: str) -> str:
         _update_tree_digest(digest, user_custom_root, "custom")
         _update_tree_digest(digest, host_root / SkillCategory.CUSTOM.value, "legacy")
         _update_tree_digest(digest, integration_root, "integrations")
-        # CUSTOM/LEGACY/INTEGRATION visibility is the intersection of the
-        # per-user state and the global extensions default, so both belong in
-        # this signature.
+        # CUSTOM/LEGACY/INTEGRATION의 가시성은 사용자별 state와 전역 extensions 기본값의
+        # 교집합이므로, 둘 다 이 signature에 들어가야 한다.
         state = {
             "extensions": _extensions_state(),
             "user": storage._read_skill_states(),
         }
-    else:  # pragma: no cover - internal invariant
+    else:  # pragma: no cover - 내부 불변식
         raise ValueError(f"Unknown skill projection scope: {scope}")
     digest.update(json.dumps(state, sort_keys=True, separators=(",", ":")).encode())
     return digest.hexdigest()
@@ -317,8 +315,8 @@ def _load_public_skills(storage: SkillStorage, *, enabled_only: bool) -> list[Sk
         dir_names[:] = sorted(name for name in dir_names if not name.startswith("."))
         if SKILL_MD_FILE not in file_names:
             continue
-        # Match the runtime loader: nested SKILL.md files inside a package are
-        # support data, not independently configurable skills.
+        # runtime loader와 동작을 맞춘다. package 안에 중첩된 SKILL.md는 독립적으로 설정
+        # 가능한 skill이 아니라 보조 데이터다.
         dir_names.clear()
         skill_file = Path(current_root) / SKILL_MD_FILE
         skill = parse_skill_file(
@@ -402,7 +400,7 @@ def rebuild_skill_projections(
     include_public: bool = True,
     include_user: bool = True,
 ) -> SkillProjectionPaths:
-    """Rebuild enabled-only projection scopes visible through ``storage``."""
+    """``storage``를 통해 보이는, 활성 skill만 담은 projection scope를 rebuild한다."""
     paths = get_skill_projection_paths(storage)
     user_id = getattr(storage, "user_id", None)
     if include_public:
@@ -427,14 +425,14 @@ def _public_projection_is_fresh(storage: SkillStorage, paths: SkillProjectionPat
 
 
 def ensure_skill_projections(storage: SkillStorage) -> SkillProjectionPaths:
-    """Repair stale projection scopes, otherwise leave their inodes untouched."""
+    """낡은 projection scope만 복구하고, 그 외에는 inode를 건드리지 않는다."""
     paths = get_skill_projection_paths(storage)
 
     try:
         public_is_fresh = _public_projection_is_fresh(storage, paths)
     except Exception:
-        # Re-check under the mutation lock before failing closed. A concurrent
-        # writer may have exposed a transient source/manifest state.
+        # fail-closed하기 전에 mutation lock을 잡고 다시 확인한다. 동시 writer가 일시적인
+        # source/manifest 상태를 노출했을 수 있다.
         public_is_fresh = False
     if not public_is_fresh:
         with _projection_lock(paths.public.parent):
@@ -466,11 +464,10 @@ def skill_projection_mutation(
     remove: tuple[tuple[SkillCategory, Path], ...] = (),
     remove_names: tuple[str, ...] = (),
 ) -> Iterator[None]:
-    """Hold a projection scope lock across a source/state mutation."""
+    """source/state 변경 동안 projection scope lock을 유지한다."""
     if not isinstance(storage.get_skills_root_path(), Path):
-        # Lightweight unit-test doubles sometimes return MagicMock here. The
-        # SkillStorage contract requires a Path; real storage implementations
-        # therefore never take this compatibility branch.
+        # 가벼운 단위 테스트 double이 여기서 MagicMock을 반환하기도 한다. SkillStorage 계약은
+        # Path를 요구하므로, 실제 storage 구현은 이 호환용 분기를 타지 않는다.
         yield
         return
     paths = get_skill_projection_paths(storage)
@@ -526,11 +523,11 @@ def skill_projection_mutation(
 
 
 def ensure_public_skill_projection(*, app_config=None) -> bool:
-    """Ensure the global public view during boot without scanning user data.
+    """사용자 데이터를 스캔하지 않고 boot 시점에 전역 public view를 보장한다.
 
-    User projections are repaired lazily by sandbox acquire. Eagerly rebuilding
-    every historical user would make gateway readiness scale with tenant count,
-    while providing no additional safety before that user's next acquire.
+    사용자 projection은 sandbox acquire가 지연 복구한다. 과거 사용자를 전부 미리 rebuild하면
+    gateway readiness가 테넌트 수에 비례해 느려지는 데다, 해당 사용자의 다음 acquire 전까지
+    추가 안전성도 없다.
     """
     from deerflow.config import get_app_config
     from deerflow.config.paths import get_paths

@@ -1,7 +1,7 @@
-"""Middleware to inject current-run uploaded files into the agent context.
+"""현재 run에서 업로드된 파일을 에이전트 context에 주입하는 middleware.
 
-Historical uploads are no longer injected every turn — the agent discovers them
-on demand via the ``list_uploaded_files`` tool.
+과거 업로드는 더 이상 매 턴 주입하지 않는다. 에이전트가 ``list_uploaded_files`` 도구로
+필요할 때 찾는다.
 """
 
 import logging
@@ -39,20 +39,19 @@ def _format_omitted_file_types(files: list[dict]) -> str:
 
 
 class UploadsMiddlewareState(AgentState):
-    """State schema for uploads middleware."""
+    """uploads middleware의 state 스키마."""
 
     uploaded_files: NotRequired[list[dict] | None]
 
 
 class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
-    """Middleware to inject current-run uploaded files into the agent context.
+    """현재 run에서 업로드된 파일을 에이전트 context에 주입하는 middleware.
 
-    Reads file metadata from the current message's additional_kwargs.files
-    (set by the frontend after upload) and prepends a <current_uploads> block
-    to the last human message so the model knows which files were just uploaded.
+    현재 메시지의 additional_kwargs.files(업로드 후 프론트엔드가 설정)에서 파일 메타데이터를
+    읽어, 마지막 human 메시지 앞에 <current_uploads> 블록을 붙인다. 그래야 모델이 방금 어떤
+    파일이 업로드됐는지 안다.
 
-    Historical uploads are NOT injected — the agent discovers them on demand
-    via the ``list_uploaded_files`` tool.
+    과거 업로드는 주입하지 않는다. 에이전트가 ``list_uploaded_files`` 도구로 필요할 때 찾는다.
     """
 
     state_schema = UploadsMiddlewareState
@@ -63,12 +62,11 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         *,
         max_files_per_context_section: int = _MAX_FILES_PER_CONTEXT_SECTION,
     ):
-        """Initialize the middleware.
+        """middleware를 초기화한다.
 
         Args:
-            base_dir: Base directory for thread data. Defaults to Paths resolution.
-            max_files_per_context_section: Maximum number of files listed in
-                each uploaded-files prompt section.
+            base_dir: thread 데이터의 기본 디렉터리. 기본값은 Paths 해석 결과다.
+            max_files_per_context_section: 업로드 파일 prompt 섹션마다 나열할 최대 파일 수.
         """
         super().__init__()
         if max_files_per_context_section < 1:
@@ -77,12 +75,11 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         self._max_files_per_context_section = max_files_per_context_section
 
     def _format_file_entry(self, file: dict, lines: list[str]) -> None:
-        """Append a single file entry (name, size, path, optional outline) to lines.
+        """파일 항목 하나(이름, 크기, 경로, 선택적 outline)를 lines에 추가한다.
 
-        User-derived values (filename, path, outline titles, preview text) are
-        neutralized via ``neutralize_untrusted_tags`` so a crafted filename or
-        document cannot embed blocked authority tags inside the trusted
-        ``<current_uploads>`` wrapper.
+        사용자에서 온 값(파일명, 경로, outline 제목, 미리보기 텍스트)은
+        ``neutralize_untrusted_tags``로 무력화한다. 조작된 파일명이나 문서가 신뢰 영역인
+        ``<current_uploads>`` 안에 차단 대상 authority 태그를 심지 못하게 하기 위해서다.
         """
         size_kb = file["size"] / 1024
         size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
@@ -112,7 +109,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         self,
         files: list[dict],
     ) -> tuple[list[dict], list[dict]]:
-        """Return bounded context files in upload order."""
+        """업로드 순서대로 개수를 제한한 context 파일을 반환한다."""
         selected = [dict(f) for f in files[: self._max_files_per_context_section]]
         omitted = [dict(f) for f in files[self._max_files_per_context_section :]]
         return selected, omitted
@@ -123,14 +120,14 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         *,
         omitted_files: list[dict] | None = None,
     ) -> str:
-        """Create a formatted message listing current-run uploaded files.
+        """현재 run에서 업로드된 파일을 나열하는 메시지를 만든다.
 
         Args:
-            files: Files uploaded in the current message.
-            omitted_files: Files omitted from the prompt context (over cap).
+            files: 현재 메시지에서 업로드된 파일.
+            omitted_files: 상한을 넘어 prompt context에서 제외된 파일.
 
         Returns:
-            Formatted string inside <current_uploads> tags.
+            <current_uploads> 태그로 감싼 포맷 문자열.
         """
         lines = ["<current_uploads>"]
 
@@ -161,19 +158,18 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         return "\n".join(lines)
 
     def _files_from_kwargs(self, message: HumanMessage, uploads_dir: Path | None = None) -> list[dict] | None:
-        """Extract file info from message additional_kwargs.files.
+        """메시지의 additional_kwargs.files에서 파일 정보를 추출한다.
 
-        The frontend sends uploaded file metadata in additional_kwargs.files
-        after a successful upload. Each entry has: filename, size (bytes),
-        path (virtual path), status.
+        프론트엔드는 업로드 성공 후 additional_kwargs.files에 파일 메타데이터를 보낸다.
+        각 항목은 filename, size(바이트), path(virtual path), status를 갖는다.
 
         Args:
-            message: The human message to inspect.
-            uploads_dir: Physical uploads directory used to verify file existence.
-                         When provided, entries whose files no longer exist are skipped.
+            message: 검사할 human 메시지.
+            uploads_dir: 파일 존재 확인에 쓰는 실제 uploads 디렉터리.
+                         주어지면 파일이 더 이상 없는 항목은 건너뛴다.
 
         Returns:
-            List of file dicts with virtual paths, or None if the field is absent or empty.
+            virtual path를 담은 파일 dict 리스트. 필드가 없거나 비어 있으면 None.
         """
         kwargs_files = (message.additional_kwargs or {}).get("files")
         if not isinstance(kwargs_files, list) or not kwargs_files:
@@ -200,12 +196,12 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
 
     @override
     def before_agent(self, state: UploadsMiddlewareState, runtime: Runtime) -> dict | None:
-        """Inject current-run uploads before agent execution.
+        """에이전트 실행 전에 현재 run의 업로드를 주입한다.
 
-        Only files from the current message's additional_kwargs.files are listed.
-        Historical uploads are discovered on demand via ``list_uploaded_files``.
+        현재 메시지의 additional_kwargs.files에 있는 파일만 나열한다. 과거 업로드는
+        ``list_uploaded_files``로 필요할 때 찾는다.
 
-        Prepends <current_uploads> context to the last human message content.
+        마지막 human 메시지 내용 앞에 <current_uploads> context를 붙인다.
         """
         messages = list(state.get("messages", []))
         if not messages:
@@ -217,7 +213,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         if not isinstance(last_message, HumanMessage):
             return {"uploaded_files": []}
 
-        # Resolve uploads directory for existence checks
+        # 존재 확인용 uploads 디렉터리를 해석한다
         thread_id = (runtime.context or {}).get("thread_id")
         if thread_id is None:
             try:
@@ -228,7 +224,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
                 pass
         uploads_dir = self._paths.sandbox_uploads_dir(thread_id, user_id=resolve_runtime_user_id(runtime)) if thread_id else None
 
-        # Get newly uploaded files from the current message's additional_kwargs.files
+        # 현재 메시지의 additional_kwargs.files에서 새로 업로드된 파일을 가져온다
         new_files = self._files_from_kwargs(last_message, uploads_dir) or []
         if not new_files:
             if (last_message.additional_kwargs or {}).get("files"):
@@ -237,13 +233,13 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
                     thread_id,
                     uploads_dir,
                 )
-            # Clear stale uploaded_files so list_uploaded_files doesn't
-            # exclude files that became historical after the previous turn.
+            # 오래된 uploaded_files를 비운다. 그래야 list_uploaded_files가 직전 턴 이후 과거
+            # 업로드가 된 파일을 제외하지 않는다.
             return {"uploaded_files": []}
 
         context_files, omitted_files = self._select_files_for_context(new_files)
 
-        # Attach outlines to context files
+        # context 파일에 outline을 붙인다
         if uploads_dir:
             for file in context_files:
                 phys_path = uploads_dir / file["filename"]
@@ -253,7 +249,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
 
         logger.debug(f"Current uploads: {[f['filename'] for f in new_files]}")
 
-        # Create files message and prepend to the last human message content
+        # 파일 메시지를 만들어 마지막 human 메시지 내용 앞에 붙인다
         files_message = self._create_files_message(
             context_files,
             omitted_files=omitted_files if omitted_files else None,
@@ -294,15 +290,13 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
 
     @override
     async def abefore_agent(self, state: UploadsMiddlewareState, runtime: Runtime) -> dict | None:
-        """Async hook that offloads the synchronous uploads scan off the event loop.
+        """동기 uploads 스캔을 event loop 밖으로 넘기는 async hook.
 
-        ``before_agent`` performs blocking filesystem IO (directory enumeration,
-        ``stat``, reading sibling ``.md`` outlines). When the graph runs async,
-        langgraph would otherwise execute the sync hook directly on the event
-        loop, so it is dispatched to a worker thread via ``run_in_executor``.
-        ``run_in_executor`` copies the current context, preserving both
-        LangGraph's runnable config and DeerFlow's request ContextVar fallback.
-        The runtime itself is also passed explicitly for the authoritative
-        ``runtime.context["user_id"]`` channel.
+        ``before_agent``는 blocking 파일시스템 IO(디렉터리 나열, ``stat``, 형제 ``.md`` outline
+        읽기)를 한다. graph가 async로 돌면 langgraph가 동기 hook을 event loop 위에서 그대로
+        실행하므로, ``run_in_executor``로 worker thread에 넘긴다. ``run_in_executor``는 현재
+        context를 복사하므로 LangGraph의 runnable config와 DeerFlow의 요청 ContextVar fallback이
+        모두 유지된다. 권위 있는 ``runtime.context["user_id"]`` 채널을 위해 runtime 자체도
+        명시적으로 전달한다.
         """
         return await run_in_executor(None, self.before_agent, state, runtime)

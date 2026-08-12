@@ -1,30 +1,30 @@
-"""Middleware to enforce per-run token budget limits.
-Tracks cumulative token usage (input, output, total) across model calls within
-a single agent run and enforces configurable soft-warning and hard-stop
-thresholds.
-Detection strategy:
-  1. After each model response, sum the `usage_metadata` of all `AIMessage`s
-     in the current thread history. This automatically captures tokens from
-     subagents because `TokenUsageMiddleware` retroactively adds them to the
-     history.
-  2. If the highest fraction (input, output, or total) >= warn_threshold,
-     queue a warning.
-  3. If the highest fraction >= hard_stop_threshold, strip tool_calls.
-Warning injection uses the deferred pattern:
-  - after_model queues the warning (does NOT mutate state).
-  - wrap_model_call injects it as a HumanMessage at the next model call.
-This preserves AIMessage(tool_calls) → ToolMessage pairing.
+"""run 단위 token 예산 상한을 강제하는 미들웨어.
 
-Stop-reason surfacing (#3875 Phase 2):
-  The hard stop does NOT raise — it strips tool_calls so the agent loop
-  terminates naturally and produces a final answer. To let the caller (e.g.
-  the subagent executor) distinguish a budget-capped completion from a clean
-  one, the run that triggered the hard stop is recorded in ``_stop_reason``
-  and exposed via :meth:`consume_stop_reason`. That dict is intentionally NOT
-  cleared by ``after_agent``/``_clear_run_state`` so the executor can read it
-  after the run returns; the bounded dict prevents unbounded growth on
-  abandoned runs, and each subagent run builds a fresh middleware instance so
-  there is no cross-run contamination.
+한 agent run 안의 model 호출들에 걸쳐 누적 token 사용량(input, output, total)을 추적하고, 설정 가능한
+소프트 경고와 하드 정지 임계값을 적용한다.
+
+감지 전략:
+
+  1. 매 model 응답 후 현재 thread 이력의 모든 `AIMessage`의 `usage_metadata`를 합산한다.
+     `TokenUsageMiddleware`가 subagent의 token을 이력에 소급 반영하므로 자동으로 함께 잡힌다.
+  2. 가장 높은 비율(input, output, total 중)이 warn_threshold 이상이면 경고를 큐에 넣는다.
+  3. 가장 높은 비율이 hard_stop_threshold 이상이면 tool_calls를 제거한다.
+
+경고 주입은 지연 패턴을 쓴다.
+
+  - after_model이 경고를 큐에 넣는다(state를 변경하지 않는다).
+  - wrap_model_call이 다음 model 호출에서 HumanMessage로 주입한다.
+
+이렇게 하면 AIMessage(tool_calls) → ToolMessage 짝이 보존된다.
+
+stop reason 노출(#3875 Phase 2):
+
+  하드 정지는 예외를 던지지 않는다. tool_calls를 제거해 agent 루프가 자연스럽게 끝나고 최종 답변을 내게
+  한다. 호출자(예: subagent executor)가 예산으로 잘린 완료와 정상 완료를 구분할 수 있도록, 하드 정지가
+  발생한 run을 ``_stop_reason``에 기록하고 :meth:`consume_stop_reason`으로 노출한다. 이 dict은
+  ``after_agent``/``_clear_run_state``에서 의도적으로 지우지 않는다. run이 반환된 뒤 executor가 읽어야
+  하기 때문이다. bounded dict이라 버려진 run 때문에 무한히 커지지 않으며, subagent run마다 새 미들웨어
+  인스턴스를 만들므로 run 간 오염도 없다.
 """
 
 from __future__ import annotations
@@ -60,21 +60,20 @@ class TokenUsage:
 
 
 class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
-    """Enforce per-run token budget limits."""
+    """run 단위 token 예산 상한을 강제한다."""
 
     def __init__(self, config: TokenBudgetConfig) -> None:
         super().__init__()
         self._config = config
         self._lock = threading.Lock()
 
-        # Keyed strictly by run_id (clobber-safe) and bounded (leak-safe)
+        # run_id만을 키로 쓰고(덮어쓰기 안전) 크기를 제한한다(누수 안전).
         self._warned: BoundedDict[str, bool] = BoundedDict(1000)
         self._pending_warnings: BoundedDict[str, list[str]] = BoundedDict(1000)
         self._seen_messages: BoundedDict[str, dict[str, tuple[int, int]]] = BoundedDict(1000)
         self._cumulative_usage: BoundedDict[str, TokenUsage] = BoundedDict(1000)
-        # Stop reason set when the hard-stop fires. NOT cleared by
-        # ``_clear_run_state``/``after_agent`` so the executor can consume it
-        # after the run returns; bounded so abandoned runs cannot leak.
+        # 하드 정지가 발생할 때 기록되는 stop reason. run이 반환된 뒤 executor가 소비할 수 있도록
+        # ``_clear_run_state``/``after_agent``에서 지우지 않으며, 버려진 run이 누수되지 않게 크기를 제한한다.
         self._stop_reason: BoundedDict[str, str] = BoundedDict(1000)
 
     @classmethod
@@ -90,13 +89,12 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
             self._stop_reason.clear()
 
     def consume_stop_reason(self, run_id: str | None) -> str | None:
-        """Pop and return the stop reason the hard-stop set for this run.
+        """이 run에 대해 하드 정지가 기록한 stop reason을 꺼내 반환한다.
 
-        Returns ``"token_capped"`` when the budget hard-stop fired during the
-        run, otherwise ``None``. The executor calls this after the run returns
-        to decide whether a completed subagent was actually budget-capped
-        (and should carry ``stop_reason=token_capped`` to the lead). Popping
-        keeps the dict from accumulating across runs on a reused instance.
+        run 중 예산 하드 정지가 발생했으면 ``"token_capped"``를, 아니면 ``None``을 반환한다. executor는
+        run이 반환된 뒤 이를 호출해, 완료된 subagent가 실제로는 예산으로 잘린 것인지(그래서 lead에게
+        ``stop_reason=token_capped``를 전달해야 하는지) 판단한다. 꺼내면서 제거하므로 재사용되는
+        인스턴스에서 run이 쌓이지 않는다.
         """
         with self._lock:
             return self._stop_reason.pop(run_id, None)
@@ -106,7 +104,7 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
         ctx = getattr(runtime, "context", None)
         if isinstance(ctx, dict) and "run_id" in ctx:
             return ctx["run_id"]
-        # Fallback to runtime object ID to prevent collisions across embedded client runs
+        # embedded client run 간 충돌을 막기 위해 runtime 객체 ID로 대체한다.
         return str(id(runtime))
 
     def _clear_run_state(self, run_id: str) -> None:
@@ -121,7 +119,7 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
         if not self._config.enabled:
             return
 
-        # Mark all old messages from previous runs as 'seen' so they don't count toward THIS run's budget
+        # 이전 run의 메시지를 모두 'seen'으로 표시해 이번 run의 예산에 계산되지 않게 한다.
         messages = state.get("messages", [])
         if not messages:
             return
@@ -154,7 +152,7 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
 
     @staticmethod
     def _append_text(content: str | list[dict | None] | None, stop_msg: str) -> str | list[dict | str]:
-        """Append a stop message to an AIMessage.content field."""
+        """AIMessage.content 필드에 정지 메시지를 덧붙인다."""
         if content is None:
             return stop_msg
         if isinstance(content, str):
@@ -168,7 +166,7 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
         return f"{content}\n\n{stop_msg}"
 
     def _build_hard_stop_update(self, msg: AIMessage, stop_msg: str) -> dict[str, Any]:
-        """Build the state update dictionary for a hard stop."""
+        """하드 정지를 위한 state 갱신 dict을 만든다."""
         updated_content = self._append_text(msg.content, stop_msg)
         kwargs = dict(msg.additional_kwargs) if msg.additional_kwargs else {}
         if "tool_calls" in kwargs:
@@ -209,10 +207,10 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
                     input_tokens = usage.get("input_tokens", 0)
                     output_tokens = usage.get("output_tokens", 0)
 
-                    # Check what previously recorded for this exact message
+                    # 이 메시지에 대해 이전에 기록한 값을 확인한다.
                     prev_input, prev_output = seen.get(msg.id, (0, 0))
 
-                    # Calculate if any new tokens were added (handles retroactive subagent tokens)
+                    # 새로 추가된 token이 있는지 계산한다(소급 반영되는 subagent token도 처리한다).
                     diff_input = max(0, input_tokens - prev_input)
                     diff_output = max(0, output_tokens - prev_output)
 
@@ -246,13 +244,10 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
 
             if highest_fraction >= self._config.hard_stop_threshold:
                 logger.warning("Token budget hard stop triggered for run %s: %s limit exceeded", run_id, trigger_reason)
-                # Record the stop reason so the executor can surface
-                # ``stop_reason=token_capped`` to the lead after the run
-                # returns (the hard stop itself does not raise). See
-                # ``consume_stop_reason``.
+                # run이 반환된 뒤 executor가 lead에게 ``stop_reason=token_capped``를 알릴 수 있도록
+                # stop reason을 기록한다(하드 정지 자체는 예외를 던지지 않는다). ``consume_stop_reason`` 참고.
                 self._stop_reason[run_id] = "token_capped"
-                # Also write to runtime.context so the lead worker can read it
-                # without needing a reference to this middleware instance (#4176).
+                # lead worker가 이 미들웨어 인스턴스 참조 없이도 읽을 수 있게 runtime.context에도 쓴다(#4176).
                 ctx = getattr(runtime, "context", None)
                 if isinstance(ctx, dict):
                     ctx["stop_reason"] = "token_capped"
@@ -264,7 +259,7 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
                 percent = highest_fraction * 100
                 warn_text = _BUDGET_WARNING_MSG.format(reason=trigger_reason, used=trigger_used, budget=trigger_budget, percent=percent)
                 logger.info("Token budget warning triggered for run %s: %s limit at %.1f%%", run_id, trigger_reason, percent)
-                # queue warning for wrap_model_call
+                # wrap_model_call이 주입하도록 경고를 큐에 넣는다.
                 warnings = self._pending_warnings.setdefault(run_id, [])
                 warnings.append(warn_text)
                 return None

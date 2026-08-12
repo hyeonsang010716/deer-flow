@@ -1,10 +1,10 @@
-"""Configuration for tool progress tracking middleware."""
+"""tool progress 추적 middleware 설정."""
 
 from pydantic import BaseModel, Field
 
 
 class ToolProgressConfig(BaseModel):
-    """Configuration for task-level tool call progress tracking."""
+    """task 수준 tool 호출 진행 상황 추적 설정."""
 
     enabled: bool = Field(
         default=False,

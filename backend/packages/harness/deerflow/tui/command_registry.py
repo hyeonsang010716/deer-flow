@@ -1,14 +1,13 @@
-"""Slash-command registry for the DeerFlow TUI (pure).
+"""DeerFlow TUI의 slash command registry(순수 모듈).
 
-Normalizes two command sources into one searchable list:
+두 가지 command source를 검색 가능한 하나의 목록으로 정규화한다:
 
-* **Built-ins** — TUI-owned affordances (``/help``, ``/model``, ``/threads`` …).
-* **Skills** — one ``/<skill-name>`` per enabled skill, preserving DeerFlow's
-  existing slash-skill activation semantics.
+* **Built-in** — TUI가 소유한 기능(``/help``, ``/model``, ``/threads`` …).
+* **Skill** — enabled된 skill마다 ``/<skill-name>`` 하나씩. DeerFlow의 기존 slash-skill 활성화
+  의미를 그대로 유지한다.
 
-The picker filters this list; :func:`resolve` classifies a submitted line as a
-built-in command, a skill activation, an unknown command, or a plain message.
-No Textual dependency.
+picker는 이 목록을 필터링하고, :func:`resolve`는 제출된 입력 줄을 built-in command, skill 활성화,
+알 수 없는 command, 일반 메시지 중 하나로 분류한다. Textual 의존성은 없다.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from typing import Literal
 
 @dataclass(frozen=True)
 class Command:
-    name: str  # without leading slash
+    name: str  # 앞의 슬래시는 제외
     description: str
     category: Literal["builtin", "skill"] = "builtin"
 
@@ -32,7 +31,7 @@ class Resolution:
     text: str = ""
 
 
-# Built-in commands, ordered for display in /help and the picker.
+# built-in command. /help과 picker에서 표시할 순서대로 정렬되어 있다.
 BUILTIN_COMMANDS: tuple[Command, ...] = (
     Command("help", "Show commands and keybindings"),
     Command("new", "Start a fresh thread"),
@@ -58,18 +57,17 @@ _BUILTIN_NAMES = frozenset(c.name for c in BUILTIN_COMMANDS)
 
 
 def format_command_help() -> str:
-    """One-line summary of every built-in slash command, for ``/help``.
+    """``/help``에 쓰는, 모든 built-in slash command의 한 줄 요약.
 
-    Derived from :data:`BUILTIN_COMMANDS` so the help text can never drift out
-    of sync with the registry (and, therefore, the picker). Adding a built-in
-    surfaces it in ``/help`` automatically.
+    :data:`BUILTIN_COMMANDS`에서 파생하므로 help 텍스트가 registry(따라서 picker)와 어긋날 수
+    없다. built-in을 추가하면 ``/help``에 자동으로 나타난다.
     """
     names = "  ".join(f"/{command.name}" for command in BUILTIN_COMMANDS)
     return f"Commands:  {names}"
 
 
 def build_registry(skills: list[dict]) -> list[Command]:
-    """Merge built-ins with one command per enabled skill."""
+    """built-in에 enabled된 skill별 command 하나씩을 합친다."""
     commands = list(BUILTIN_COMMANDS)
     for skill in skills:
         if not skill.get("enabled", False):
@@ -82,10 +80,10 @@ def build_registry(skills: list[dict]) -> list[Command]:
 
 
 def filter_commands(commands: list[Command], query: str) -> list[Command]:
-    """Filter + rank commands for the picker.
+    """picker용으로 command를 필터링하고 순위를 매긴다.
 
-    Ranking: name-prefix matches first, then name-substring, then
-    description-substring. Original order is preserved within a rank tier.
+    순위는 이름 prefix 일치가 먼저, 그다음 이름 substring, 마지막이 description substring이다.
+    같은 등급 안에서는 원래 순서를 유지한다.
     """
     q = query.strip().lower()
     if not q:
@@ -106,7 +104,7 @@ def filter_commands(commands: list[Command], query: str) -> list[Command]:
 
 
 def resolve(text: str, skills: list[str] | None = None) -> Resolution:
-    """Classify a submitted input line."""
+    """제출된 입력 줄을 분류한다."""
     stripped = text.strip()
     if not stripped.startswith("/"):
         return Resolution(kind="message", text=text)

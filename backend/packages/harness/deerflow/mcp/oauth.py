@@ -1,4 +1,4 @@
-"""OAuth token support for MCP HTTP/SSE servers."""
+"""MCP HTTP/SSE 서버를 위한 OAuth token 지원."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _OAuthToken:
-    """Cached OAuth token."""
+    """캐시된 OAuth token."""
 
     access_token: str
     token_type: str
@@ -24,21 +24,19 @@ class _OAuthToken:
 
 
 class OAuthTokenManager:
-    """Acquire/cache/refresh OAuth tokens for MCP servers."""
+    """MCP 서버용 OAuth token을 발급/캐시/갱신한다."""
 
     def __init__(self, oauth_by_server: dict[str, McpOAuthConfig]):
         self._oauth_by_server = oauth_by_server
         self._tokens: dict[str, _OAuthToken] = {}
-        # A plain threading.Lock, not asyncio.Lock: the embedded/TUI sync tool-call
-        # path (DeerFlowClient.stream() -> LangGraph ToolNode._func -> a
-        # ThreadPoolExecutor -> deerflow.tools.sync.make_sync_tool_wrapper's
-        # per-call asyncio.run()) invokes get_authorization_header from a fresh
-        # event loop on a fresh OS thread for every concurrent tool call. An
-        # asyncio.Lock binds to whichever loop first contends on it; a second
-        # caller's release/wake-up crossing loops without call_soon_threadsafe
-        # either deadlocks silently or raises "bound to a different event loop".
-        # threading.Lock has no loop affinity, so it is safe to share across
-        # however many event loops/threads call into the same server's lock.
+        # asyncio.Lock이 아니라 평범한 threading.Lock을 쓴다. 임베디드/TUI의 동기 tool-call
+        # 경로(DeerFlowClient.stream() -> LangGraph ToolNode._func -> ThreadPoolExecutor ->
+        # deerflow.tools.sync.make_sync_tool_wrapper의 호출별 asyncio.run())는 동시 tool call
+        # 마다 새 OS thread의 새 event loop에서 get_authorization_header를 호출한다.
+        # asyncio.Lock은 처음 경합한 loop에 묶이므로, 두 번째 호출자의 release/wake-up이
+        # call_soon_threadsafe 없이 loop를 넘나들면 조용히 deadlock에 빠지거나 "bound to a
+        # different event loop" 예외가 난다. threading.Lock은 loop 종속성이 없어 같은 서버의
+        # lock을 몇 개의 event loop/thread가 호출하든 안전하게 공유할 수 있다.
         self._locks: dict[str, threading.Lock] = {name: threading.Lock() for name in oauth_by_server}
 
     @classmethod
@@ -65,32 +63,26 @@ class OAuthTokenManager:
             return f"{token.token_type} {token.access_token}"
 
         lock = self._locks[server_name]
-        # Acquire the OS-level lock off-thread so a blocking wait never blocks this
-        # event loop, then release it synchronously (release() never blocks). This
-        # keeps the de-duplication behavior of the old `async with lock:` (only one
-        # concurrent caller per server actually fetches a token) while remaining
-        # safe when callers are on different event loops/threads.
+        # blocking 대기가 이 event loop를 막지 않도록 OS 수준 lock을 별도 thread에서 획득하고,
+        # 해제는 동기적으로 한다(release()는 블로킹하지 않는다). 이렇게 하면 예전
+        # `async with lock:`의 중복 제거 동작(서버당 동시 호출자 중 하나만 실제로 token을
+        # 가져온다)을 유지하면서, 호출자가 서로 다른 event loop/thread에 있어도 안전하다.
         #
-        # The acquisition itself runs as an explicit Task, shielded from this
-        # coroutine's own cancellation. A bare `await asyncio.to_thread(lock.acquire)`
-        # cannot be safely cancelled: once the executor thread has started running
-        # lock.acquire(), Python has no way to stop it, so a cancellation delivered
-        # at that await would still let the thread go on to acquire the lock later
-        # (whenever the current holder releases it) with this coroutine already
-        # gone and nobody left to call release() -- the lock would stay locked
-        # forever and every later call for this server would block permanently at
-        # this same line. Shielding the acquisition task means a cancelled caller
-        # can instead wait for that (unstoppable) acquisition to actually land and
-        # release the lock immediately, rather than leaking ownership of it.
+        # 획득 자체는 명시적 Task로 실행하며 이 coroutine의 취소로부터 shield한다. 맨
+        # `await asyncio.to_thread(lock.acquire)`는 안전하게 취소할 수 없다. executor thread가
+        # lock.acquire()를 시작한 뒤에는 Python이 그것을 멈출 방법이 없으므로, 그 await에서
+        # 취소가 전달돼도 thread는 나중에(현재 보유자가 해제할 때) 계속 lock을 획득한다. 그때는
+        # 이 coroutine이 이미 사라져 release()를 호출할 주체가 없어 lock이 영원히 잠긴 채로
+        # 남고, 이 서버에 대한 이후 모든 호출이 같은 줄에서 영구히 막힌다. 획득 task를 shield하면
+        # 취소된 호출자도 (멈출 수 없는) 획득이 실제로 끝날 때까지 기다렸다가 곧바로 lock을
+        # 해제할 수 있어 소유권이 새지 않는다.
         acquire_task = asyncio.create_task(asyncio.to_thread(lock.acquire), name=f"oauth-lock-acquire:{server_name}")
         try:
             await asyncio.shield(acquire_task)
         except asyncio.CancelledError:
-            # Keep waiting -- shielded on every retry -- until the acquisition
-            # actually finishes, even if this coroutine is cancelled again while
-            # cleaning up: the underlying thread cannot be interrupted, so this is
-            # the only way to learn when the lock becomes ours and release it
-            # right away instead of leaving it locked forever.
+            # 정리 도중 이 coroutine이 다시 취소되더라도, 획득이 실제로 끝날 때까지 매번
+            # shield하면서 계속 기다린다. 바탕 thread는 중단할 수 없으므로, lock이 우리 것이
+            # 되는 시점을 알아내 영원히 잠긴 채 두지 않고 즉시 해제하는 유일한 방법이다.
             while not acquire_task.done():
                 try:
                     await asyncio.shield(acquire_task)
@@ -153,11 +145,10 @@ class OAuthTokenManager:
         if not access_token:
             raise ValueError(f"OAuth token response missing '{oauth.token_field}'")
 
-        # Persist a rotated refresh_token so subsequent refreshes use the latest
-        # value. This is an in-process update only — it is intentionally NOT
-        # written back to extensions_config.json. Providers that rotate refresh
-        # tokens (Auth0, Okta, Google, etc.) return a new refresh_token on each
-        # refresh; discarding it makes the next refresh fail with invalid_grant.
+        # 이후 갱신이 최신 값을 쓰도록 회전된 refresh_token을 보관한다. 프로세스 내부 갱신일
+        # 뿐이며 의도적으로 extensions_config.json에 다시 쓰지 않는다. refresh token을 회전시키는
+        # provider(Auth0, Okta, Google 등)는 갱신할 때마다 새 refresh_token을 돌려주므로, 그것을
+        # 버리면 다음 갱신이 invalid_grant로 실패한다.
         if oauth.grant_type == "refresh_token":
             rotated = payload.get("refresh_token")
             if isinstance(rotated, str) and rotated:
@@ -176,7 +167,7 @@ class OAuthTokenManager:
 
 
 def build_oauth_tool_interceptor(extensions_config: ExtensionsConfig) -> Any | None:
-    """Build a tool interceptor that injects OAuth Authorization headers."""
+    """OAuth Authorization 헤더를 주입하는 tool interceptor를 만든다."""
     token_manager = OAuthTokenManager.from_extensions_config(extensions_config)
     if not token_manager.has_oauth_servers():
         return None
@@ -194,7 +185,7 @@ def build_oauth_tool_interceptor(extensions_config: ExtensionsConfig) -> Any | N
 
 
 async def get_initial_oauth_headers(extensions_config: ExtensionsConfig) -> dict[str, str]:
-    """Get initial OAuth Authorization headers for MCP server connections."""
+    """MCP 서버 연결에 사용할 초기 OAuth Authorization 헤더를 가져온다."""
     token_manager = OAuthTokenManager.from_extensions_config(extensions_config)
     if not token_manager.has_oauth_servers():
         return {}

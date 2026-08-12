@@ -1,6 +1,6 @@
-"""Declarative feature flags and middleware positioning for create_deerflow_agent.
+"""create_deerflow_agent용 선언적 feature 플래그와 middleware 위치 지정.
 
-Pure data classes and decorators — no I/O, no side effects.
+순수 데이터 클래스와 decorator만 있다. I/O도 부수 효과도 없다.
 """
 
 from __future__ import annotations
@@ -16,21 +16,22 @@ if TYPE_CHECKING:
 
 @dataclass
 class RuntimeFeatures:
-    """Declarative feature flags for ``create_deerflow_agent``.
+    """``create_deerflow_agent``용 선언적 feature 플래그.
 
-    Most features accept:
-    - ``True``: use the built-in default middleware
-    - ``False``: disable
-    - An ``AgentMiddleware`` instance: use this custom implementation instead
+    대부분의 feature는 다음을 받는다.
 
-    ``summarization`` and ``guardrail`` have no built-in default — they only
-    accept ``False`` (disable) or an ``AgentMiddleware`` instance (custom).
+    - ``True``: 내장 기본 middleware를 쓴다.
+    - ``False``: 비활성화한다.
+    - ``AgentMiddleware`` 인스턴스: 이 커스텀 구현으로 대체한다.
+
+    ``summarization``과 ``guardrail``은 내장 기본값이 없어 ``False``(비활성화) 또는
+    ``AgentMiddleware`` 인스턴스(커스텀)만 받는다.
     """
 
     sandbox: bool | AgentMiddleware = True
     memory: bool | AgentMiddleware = False
-    # Explicit memory config for direct create_deerflow_agent(features=...) callers.
-    # The lead-agent AppConfig path passes resolved_app_config.memory directly.
+    # create_deerflow_agent(features=...)를 직접 호출하는 쪽이 명시하는 memory config.
+    # lead-agent의 AppConfig 경로는 resolved_app_config.memory를 그대로 넘긴다.
     memory_config: MemoryConfig | None = None
     summarization: Literal[False] | AgentMiddleware = False
     subagent: bool | AgentMiddleware = False
@@ -42,12 +43,12 @@ class RuntimeFeatures:
 
 
 # ---------------------------------------------------------------------------
-# Middleware positioning decorators
+# middleware 위치 지정 decorator
 # ---------------------------------------------------------------------------
 
 
 def Next(anchor: type[AgentMiddleware]):
-    """Declare this middleware should be placed after *anchor* in the chain."""
+    """이 middleware를 chain에서 *anchor* 뒤에 놓도록 선언한다."""
     if not (isinstance(anchor, type) and issubclass(anchor, AgentMiddleware)):
         raise TypeError(f"@Next expects an AgentMiddleware subclass, got {anchor!r}")
 
@@ -59,7 +60,7 @@ def Next(anchor: type[AgentMiddleware]):
 
 
 def Prev(anchor: type[AgentMiddleware]):
-    """Declare this middleware should be placed before *anchor* in the chain."""
+    """이 middleware를 chain에서 *anchor* 앞에 놓도록 선언한다."""
     if not (isinstance(anchor, type) and issubclass(anchor, AgentMiddleware)):
         raise TypeError(f"@Prev expects an AgentMiddleware subclass, got {anchor!r}")
 

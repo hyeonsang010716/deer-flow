@@ -1,15 +1,14 @@
-"""Custom vLLM provider built on top of LangChain ChatOpenAI.
+"""LangChain ChatOpenAI 위에 만든 커스텀 vLLM provider.
 
-vLLM 0.19.0 exposes reasoning models through an OpenAI-compatible API, but
-LangChain's default OpenAI adapter drops the non-standard ``reasoning`` field
-from assistant messages and streaming deltas. That breaks interleaved
-thinking/tool-call flows because vLLM expects the assistant's prior reasoning to
-be echoed back on subsequent turns.
+vLLM 0.19.0은 OpenAI 호환 API로 reasoning 모델을 노출하지만, LangChain 기본 OpenAI adapter는
+assistant 메시지와 streaming delta에서 비표준 ``reasoning`` 필드를 버린다. vLLM은 이후 턴에서
+assistant의 이전 reasoning이 다시 전달되기를 기대하므로, 이 때문에 thinking과 tool call이
+교차하는 흐름이 깨진다.
 
-This provider preserves ``reasoning`` on:
-- non-streaming responses
-- streaming deltas
-- multi-turn request payloads
+이 provider는 다음에서 ``reasoning``을 보존한다:
+- 비streaming 응답
+- streaming delta
+- 멀티턴 request payload
 """
 
 from __future__ import annotations
@@ -45,13 +44,12 @@ _CUMULATIVE_USAGE_TRACKER_IDLE_SECONDS = 60 * 60
 
 
 def _normalize_vllm_chat_template_kwargs(payload: dict[str, Any]) -> None:
-    """Map DeerFlow's legacy ``thinking`` toggle to vLLM/Qwen's ``enable_thinking``.
+    """DeerFlow의 legacy ``thinking`` 토글을 vLLM/Qwen의 ``enable_thinking``으로 매핑한다.
 
-    DeerFlow originally documented ``extra_body.chat_template_kwargs.thinking``
-    for vLLM, but vLLM 0.19.0's Qwen reasoning parser reads
-    ``chat_template_kwargs.enable_thinking``. Normalize the payload just before
-    it is sent so existing configs keep working and flash mode can truly
-    disable reasoning.
+    DeerFlow는 원래 vLLM용으로 ``extra_body.chat_template_kwargs.thinking``을 문서화했지만,
+    vLLM 0.19.0의 Qwen reasoning parser는 ``chat_template_kwargs.enable_thinking``을 읽는다.
+    전송 직전에 payload를 정규화해서 기존 config가 계속 동작하고 flash 모드가 실제로
+    reasoning을 끌 수 있게 한다.
     """
     extra_body = payload.get("extra_body")
     if not isinstance(extra_body, dict):
@@ -71,7 +69,7 @@ def _normalize_vllm_chat_template_kwargs(payload: dict[str, Any]) -> None:
 
 
 def _reasoning_to_text(reasoning: Any) -> str:
-    """Best-effort extraction of readable reasoning text from vLLM payloads."""
+    """vLLM payload에서 읽을 수 있는 reasoning 텍스트를 best-effort로 추출한다."""
     if isinstance(reasoning, str):
         return reasoning
 
@@ -100,7 +98,7 @@ def _reasoning_to_text(reasoning: Any) -> str:
 
 
 def _convert_delta_to_message_chunk_with_reasoning(_dict: Mapping[str, Any], default_class: type[BaseMessageChunk]) -> BaseMessageChunk:
-    """Convert a streaming delta to a LangChain message chunk while preserving reasoning."""
+    """reasoning을 보존하면서 streaming delta를 LangChain message chunk로 변환한다."""
     id_ = _dict.get("id")
     role = cast(str, _dict.get("role"))
     content = cast(str, _dict.get("content") or "")
@@ -156,7 +154,7 @@ def _convert_delta_to_message_chunk_with_reasoning(_dict: Mapping[str, Any], def
 
 
 def _restore_reasoning_field(payload_msg: dict[str, Any], orig_msg: AIMessage) -> None:
-    """Re-inject vLLM reasoning onto outgoing assistant messages."""
+    """나가는 assistant 메시지에 vLLM reasoning을 다시 주입한다."""
     reasoning = orig_msg.additional_kwargs.get("reasoning")
     if reasoning is None:
         reasoning = orig_msg.additional_kwargs.get("reasoning_content")
@@ -165,7 +163,7 @@ def _restore_reasoning_field(payload_msg: dict[str, Any], orig_msg: AIMessage) -
 
 
 def _get_completion_id(chunk: Mapping[str, Any]) -> str | None:
-    """Return a stable completion id when the provider supplied one."""
+    """provider가 제공했다면 안정적인 completion id를 반환한다."""
     candidates = [chunk.get("id")]
     nested_chunk = chunk.get("chunk")
     if isinstance(nested_chunk, Mapping):
@@ -178,7 +176,7 @@ def _get_completion_id(chunk: Mapping[str, Any]) -> str | None:
 
 
 class VllmChatModel(ChatOpenAI):
-    """ChatOpenAI variant that preserves vLLM reasoning fields across turns."""
+    """턴 사이에 vLLM reasoning 필드를 보존하는 ChatOpenAI 변형."""
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -194,7 +192,7 @@ class VllmChatModel(ChatOpenAI):
         return "vllm-openai-compatible"
 
     def _usage_delta(self, completion_id: str, usage: UsageMetadata, *, terminal: bool) -> UsageMetadata:
-        """Convert a completion's cumulative usage snapshot into a delta."""
+        """completion의 누적 usage snapshot을 delta로 변환한다."""
         with self._cumulative_usage_lock:
             previous_snapshot = self._cumulative_usage_by_completion.get(completion_id)
             previous = previous_snapshot[0] if previous_snapshot is not None else None
@@ -213,7 +211,7 @@ class VllmChatModel(ChatOpenAI):
             return delta
 
     def _clear_usage_snapshot(self, completion_id: str) -> None:
-        """Forget a completed stream even when its terminal frame has no usage."""
+        """종료 frame에 usage가 없더라도 완료된 stream을 잊는다."""
         with self._cumulative_usage_lock:
             self._cumulative_usage_by_completion.pop(completion_id, None)
 
@@ -224,7 +222,7 @@ class VllmChatModel(ChatOpenAI):
         stop: list[str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Restore assistant reasoning in request payloads for interleaved thinking."""
+        """교차 thinking을 위해 request payload에 assistant reasoning을 복원한다."""
         original_messages = self._convert_input(input_).to_messages()
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         _normalize_vllm_chat_template_kwargs(payload)
@@ -243,7 +241,7 @@ class VllmChatModel(ChatOpenAI):
         return payload
 
     def _create_chat_result(self, response: dict | openai.BaseModel, generation_info: dict | None = None) -> ChatResult:
-        """Preserve vLLM reasoning on non-streaming responses."""
+        """비streaming 응답에서 vLLM reasoning을 보존한다."""
         result = super()._create_chat_result(response, generation_info=generation_info)
         response_dict = response if isinstance(response, dict) else response.model_dump()
 
@@ -269,7 +267,7 @@ class VllmChatModel(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: dict | None,
     ) -> ChatGenerationChunk | None:
-        """Preserve vLLM reasoning on streaming deltas."""
+        """streaming delta에서 vLLM reasoning을 보존한다."""
         if chunk.get("type") == "content.delta":
             return None
 

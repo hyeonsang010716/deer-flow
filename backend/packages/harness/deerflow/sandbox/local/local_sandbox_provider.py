@@ -9,69 +9,62 @@ from deerflow.sandbox.sandbox_provider import SandboxProvider
 
 logger = logging.getLogger(__name__)
 
-# Module-level alias kept for backward compatibility with older callers/tests
-# that reach into ``local_sandbox_provider._singleton`` directly. New code reads
-# the provider instance attributes (``_generic_sandbox`` / ``_thread_sandboxes``)
-# instead.
+# ``local_sandbox_provider._singleton``에 직접 접근하는 예전 caller/테스트와의 하위
+# 호환을 위해 남겨 둔 모듈 수준 alias. 새 코드는 provider 인스턴스 속성
+# (``_generic_sandbox`` / ``_thread_sandboxes``)을 읽는다.
 _singleton: LocalSandbox | None = None
 
-# Virtual prefixes that must be reserved by the per-thread mappings created in
-# ``acquire`` — custom mounts from ``config.yaml`` may not overlap with these.
+# ``acquire``에서 생성되는 per-thread mapping이 예약해야 하는 가상 prefix.
+# ``config.yaml``의 custom mount는 이들과 겹칠 수 없다.
 _USER_DATA_VIRTUAL_PREFIX = "/mnt/user-data"
 _ACP_WORKSPACE_VIRTUAL_PREFIX = "/mnt/acp-workspace"
 
-# Default upper bound on per-thread LocalSandbox instances retained in memory.
-# Each cached instance is cheap (a small Python object with a list of
-# PathMapping and a set of agent-written paths used for reverse resolve), but
-# in a long-running gateway the number of distinct thread_ids is unbounded.
-# When the cap is exceeded the least-recently-used entry is dropped; the next
-# ``acquire(thread_id)`` for that thread simply rebuilds the sandbox at the
-# cost of losing its accumulated ``_agent_written_paths`` (read_file falls
-# back to no reverse resolution, which is the same behaviour as a fresh run).
+# 메모리에 유지하는 per-thread LocalSandbox 인스턴스 수의 기본 상한.
+# 캐시된 인스턴스 하나는 저렴하지만(PathMapping 리스트와 reverse resolve에 쓰는
+# agent 작성 경로 집합을 가진 작은 Python 객체), 장수 gateway에서는 서로 다른
+# thread_id 수가 무한하다. 상한을 넘으면 least-recently-used 항목을 버린다. 해당
+# thread의 다음 ``acquire(thread_id)``는 sandbox를 다시 만들 뿐이며, 그 대가로 누적된
+# ``_agent_written_paths``를 잃는다(read_file은 reverse resolution 없이 동작하며,
+# 이는 새로 시작한 run과 동일한 동작이다).
 DEFAULT_MAX_CACHED_THREAD_SANDBOXES = 256
 
 
 class LocalSandboxProvider(SandboxProvider):
-    """Local-filesystem sandbox provider with per-thread path scoping.
+    """per-thread 경로 스코핑을 갖는 로컬 파일시스템 sandbox provider.
 
-    Earlier revisions of this provider returned a single process-wide
-    ``LocalSandbox`` keyed by the literal id ``"local"``. That singleton could
-    not honour the documented ``/mnt/user-data/...`` contract at the public
-    ``Sandbox`` API boundary because the corresponding host directory is
-    per-thread (``{base_dir}/users/{user_id}/threads/{thread_id}/user-data/``).
+    이전 버전의 이 provider는 리터럴 id ``"local"``로 식별되는 프로세스 전역
+    ``LocalSandbox`` 하나를 반환했다. 그 singleton은 공개 ``Sandbox`` API 경계에서
+    문서화된 ``/mnt/user-data/...`` 계약을 지킬 수 없었다. 대응하는 host 디렉터리가
+    thread별(``{base_dir}/users/{user_id}/threads/{thread_id}/user-data/``)이기 때문이다.
 
-    The provider now produces a fresh ``LocalSandbox`` per ``thread_id`` whose
-    ``path_mappings`` include thread-scoped entries for
-    ``/mnt/user-data/{workspace,uploads,outputs}`` and ``/mnt/acp-workspace``,
-    mirroring how :class:`AioSandboxProvider` bind-mounts those paths into its
-    docker container. The legacy ``acquire()`` / ``acquire(None)`` call still
-    returns a generic singleton with id ``"local"`` for callers (and tests)
-    that do not have a thread context.
+    이제 provider는 ``thread_id``마다 새 ``LocalSandbox``를 만들고, 그 ``path_mappings``에
+    ``/mnt/user-data/{workspace,uploads,outputs}``와 ``/mnt/acp-workspace``의 thread 스코프
+    항목을 포함한다. :class:`AioSandboxProvider`가 그 경로들을 docker 컨테이너에
+    bind-mount하는 방식과 같다. 레거시 ``acquire()`` / ``acquire(None)`` 호출은 thread
+    context가 없는 caller(및 테스트)를 위해 여전히 id ``"local"``인 일반 singleton을
+    반환한다.
 
-    Thread-safety: ``acquire``, ``get`` and ``reset`` may be invoked from
-    multiple threads (Gateway tool dispatch, subagent worker pools, the
-    background memory updater, …) so all cache state changes are serialised
-    through a provider-wide :class:`threading.Lock`. This matches the pattern
-    used by :class:`AioSandboxProvider`.
+    Thread-safety: ``acquire``, ``get``, ``reset``은 여러 thread에서 호출될 수 있으므로
+    (Gateway tool dispatch, subagent worker pool, 백그라운드 memory updater 등) 모든 cache
+    상태 변경은 provider 전역 :class:`threading.Lock`으로 직렬화한다.
+    :class:`AioSandboxProvider`와 같은 패턴이다.
 
-    Memory bound: ``_thread_sandboxes`` is an LRU cache capped at
-    ``max_cached_threads`` (default :data:`DEFAULT_MAX_CACHED_THREAD_SANDBOXES`).
-    When the cap is exceeded the least-recently-used entry is evicted on the
-    next ``acquire``; the evicted thread's next ``acquire`` rebuilds a fresh
-    sandbox (losing only its ``_agent_written_paths`` reverse-resolve hint,
-    which gracefully degrades read_file output).
+    메모리 상한: ``_thread_sandboxes``는 ``max_cached_threads``
+    (기본값 :data:`DEFAULT_MAX_CACHED_THREAD_SANDBOXES`)로 제한된 LRU cache다. 상한을
+    넘으면 다음 ``acquire``에서 least-recently-used 항목이 evict된다. evict된 thread의
+    다음 ``acquire``는 새 sandbox를 다시 만들며, 잃는 것은 ``_agent_written_paths``
+    reverse-resolve 힌트뿐이라 read_file 출력이 완만하게 degrade된다.
     """
 
     uses_thread_data_mounts = True
     needs_upload_permission_adjustment = False
 
     def __init__(self, max_cached_threads: int = DEFAULT_MAX_CACHED_THREAD_SANDBOXES):
-        """Initialize the local sandbox provider with static path mappings.
+        """정적 path mapping으로 로컬 sandbox provider를 초기화한다.
 
         Args:
-            max_cached_threads: Upper bound on per-thread sandboxes retained in
-                the LRU cache. When exceeded, the least-recently-used entry is
-                evicted on the next ``acquire``.
+            max_cached_threads: LRU cache에 유지하는 per-thread sandbox 수의 상한.
+                초과하면 다음 ``acquire``에서 least-recently-used 항목이 evict된다.
         """
         self._path_mappings = self._setup_path_mappings()
         self._generic_sandbox: LocalSandbox | None = None
@@ -80,22 +73,20 @@ class LocalSandboxProvider(SandboxProvider):
         self._lock = threading.Lock()
 
     def _setup_path_mappings(self) -> list[PathMapping]:
-        """
-        Setup static path mappings shared by every sandbox this provider yields.
+        """이 provider가 만드는 모든 sandbox가 공유하는 정적 path mapping을 구성한다.
 
-        Static mappings cover the **public** skills directory and any custom
-        mounts from ``config.yaml`` — both are process-wide and identical for
-        every thread.  Per-thread ``/mnt/user-data/...``, ``/mnt/acp-workspace``
-        and ``/mnt/skills/custom`` mappings are appended inside
-        :meth:`_build_thread_path_mappings` because they depend on
-        ``thread_id`` and the effective ``user_id``.
+        정적 mapping은 **public** skills 디렉터리와 ``config.yaml``의 custom mount를
+        다룬다. 둘 다 프로세스 전역이며 모든 thread에서 동일하다. thread별
+        ``/mnt/user-data/...``, ``/mnt/acp-workspace``, ``/mnt/skills/custom`` mapping은
+        ``thread_id``와 유효 ``user_id``에 의존하므로 :meth:`_build_thread_path_mappings`
+        안에서 추가한다.
 
         Returns:
-            List of static path mappings
+            정적 path mapping 리스트
         """
         mappings: list[PathMapping] = []
 
-        # Map skills: split mount for public + legacy + custom
+        # skills mapping: public + legacy + custom으로 나눠 mount한다
         try:
             from deerflow.config import get_app_config
 
@@ -103,7 +94,7 @@ class LocalSandboxProvider(SandboxProvider):
             container_path = config.skills.container_path
             projection = self._ensure_skills_projection()
 
-            # Public skills: global, read-only — static, shared by all threads
+            # public skills: 전역, read-only — 정적이며 모든 thread가 공유한다
             public_skills_path = projection.public
             if public_skills_path.exists():
                 mappings.append(
@@ -114,24 +105,21 @@ class LocalSandboxProvider(SandboxProvider):
                     )
                 )
 
-            # NOTE: Legacy skills mount is NOT included here because it must
-            # only be exposed to users who have no per-user custom skills yet
-            # (mirroring ``UserScopedSkillStorage._iter_skill_files`` which only
-            # surfaces SkillCategory.LEGACY to such users). Including it for
-            # every user would let users with per-user custom skills still
-            # ``read_file("/mnt/skills/legacy/<name>/SKILL.md")`` and read
-            # content the listing layer told them doesn't exist. See review
-            # feedback on PR #3889 — the legacy mount is now built in
-            # ``_build_thread_path_mappings`` after we know the user_id.
+            # NOTE: legacy skills mount는 여기 포함하지 않는다. 아직 per-user custom
+            # skill이 없는 사용자에게만 노출되어야 하기 때문이다(그런 사용자에게만
+            # SkillCategory.LEGACY를 노출하는 ``UserScopedSkillStorage._iter_skill_files``와
+            # 동일). 모든 사용자에게 포함하면 per-user custom skill이 있는 사용자도
+            # ``read_file("/mnt/skills/legacy/<name>/SKILL.md")``로 목록 계층이 없다고 한
+            # 내용을 읽을 수 있다. PR #3889 리뷰 피드백 참고 — legacy mount는 이제
+            # user_id를 알게 된 뒤 ``_build_thread_path_mappings``에서 만든다.
 
-            # NOTE: Custom skills mount is NOT included here because it is
-            # per-user and must be built dynamically per-thread inside
-            # ``_build_thread_path_mappings``.  The static mount that previously
-            # bound ``get_effective_user_id()`` at init time was incorrect:
-            # every subsequent user's sandbox would resolve
-            # ``/mnt/skills/custom`` to the init-time user's directory.
+            # NOTE: custom skills mount도 여기 포함하지 않는다. per-user이므로
+            # ``_build_thread_path_mappings`` 안에서 thread마다 동적으로 만들어야 한다.
+            # 이전에 init 시점의 ``get_effective_user_id()``를 묶어 두던 정적 mount는
+            # 잘못이었다. 이후 모든 사용자의 sandbox가 ``/mnt/skills/custom``을 init 시점
+            # 사용자의 디렉터리로 resolve하게 되기 때문이다.
 
-            # Map custom mounts from sandbox config
+            # sandbox config의 custom mount 매핑
             _RESERVED_CONTAINER_PREFIXES = [
                 f"{container_path}/public",
                 f"{container_path}/custom",
@@ -162,24 +150,22 @@ class LocalSandboxProvider(SandboxProvider):
                         )
                         continue
 
-                    # Reject mounts that conflict with reserved container paths
+                    # 예약된 container 경로와 충돌하는 mount는 거부한다
                     if any(container_path == p or container_path.startswith(p + "/") for p in _RESERVED_CONTAINER_PREFIXES):
                         logger.warning(
                             "Mount container_path conflicts with reserved prefix, skipping: %s",
                             mount.container_path,
                         )
                         continue
-                    # Ensure the host path exists before adding mapping.
+                    # mapping을 추가하기 전에 host 경로가 존재하는지 확인한다.
                     #
-                    # ``host_path`` is resolved against the filesystem of the
-                    # process running this provider — for ``make dev`` that is
-                    # the host machine, but for ``make up`` it is the
-                    # ``deer-flow-gateway`` container, so any host path that
-                    # isn't bind-mounted into the gateway image will be missing
-                    # here. Skipping silently makes this a high-cost-to-debug
-                    # silent failure (sandbox skill / tool reads an empty dir
-                    # instead of the configured mount), so escalate to ERROR
-                    # and include actionable guidance. See #3244.
+                    # ``host_path``는 이 provider를 실행하는 프로세스의 파일시스템을
+                    # 기준으로 resolve된다. ``make dev``에서는 host 머신이지만
+                    # ``make up``에서는 ``deer-flow-gateway`` 컨테이너이므로, gateway
+                    # 이미지에 bind-mount되지 않은 host 경로는 여기서 존재하지 않는다.
+                    # 조용히 건너뛰면 디버깅 비용이 큰 silent failure가 된다(sandbox
+                    # skill/tool이 설정된 mount 대신 빈 디렉터리를 읽는다). 그래서
+                    # ERROR로 올리고 조치 가능한 안내를 함께 남긴다. #3244 참고.
                     if host_path.exists():
                         mappings.append(
                             PathMapping(
@@ -201,7 +187,7 @@ class LocalSandboxProvider(SandboxProvider):
                             mount.host_path,
                         )
         except Exception as e:
-            # Log but don't fail if config loading fails
+            # config 로딩이 실패해도 실패시키지 않고 로그만 남긴다
             logger.warning("Could not setup path mappings: %s", e, exc_info=True)
 
         return mappings
@@ -218,13 +204,12 @@ class LocalSandboxProvider(SandboxProvider):
 
     @staticmethod
     def _ensure_skills_projection(user_id: str | None = None):
-        """Best-effort: a projection failure must not fail sandbox acquire.
+        """Best-effort: projection 실패가 sandbox acquire를 실패시켜서는 안 된다.
 
-        Mirrors the surrounding skill-mount setup, which has always logged
-        and continued rather than failing the whole acquire (e.g. missing
-        config.yaml in a test double). Callers see ``None`` and skip the
-        skill mounts for this acquire; the projection self-heals on a later
-        acquire once the underlying condition clears.
+        주변 skill-mount 설정과 동일한 방식이다. 그쪽도 acquire 전체를 실패시키는 대신
+        늘 로그를 남기고 계속 진행해 왔다(예: test double에 config.yaml이 없는 경우).
+        caller는 ``None``을 받고 이번 acquire의 skill mount를 건너뛴다. 근본 조건이
+        해소되면 이후 acquire에서 projection이 스스로 복구된다.
         """
         from deerflow.config import get_app_config
         from deerflow.skills.projection import ensure_skill_projections
@@ -278,13 +263,13 @@ class LocalSandboxProvider(SandboxProvider):
 
     @staticmethod
     def _build_thread_path_mappings(thread_id: str, *, user_id: str | None = None, skill_projection=None) -> list[PathMapping]:
-        """Build per-thread path mappings for /mnt/user-data, /mnt/acp-workspace,
-        and /mnt/skills/custom.
+        """/mnt/user-data, /mnt/acp-workspace, /mnt/skills/custom에 대한 per-thread path
+        mapping을 만든다.
 
-        Uses the explicitly resolved user id when provided, falling back to
-        :func:`get_effective_user_id` for legacy callers.  Custom skills are
-        mounted per-user (read-only) because agent writes custom skills via
-        ``skill_manage_tool`` on the host filesystem, not inside the sandbox.
+        명시적으로 resolve된 user id가 주어지면 그것을 쓰고, 레거시 caller에 대해서는
+        :func:`get_effective_user_id`로 폴백한다. custom skills는 사용자별로 read-only
+        mount한다. agent가 custom skill을 sandbox 안이 아니라 host 파일시스템에서
+        ``skill_manage_tool``로 작성하기 때문이다.
         """
         from deerflow.config import get_app_config
         from deerflow.config.paths import get_paths
@@ -294,11 +279,11 @@ class LocalSandboxProvider(SandboxProvider):
         paths.ensure_thread_dirs(thread_id, user_id=effective_user_id)
 
         mappings = [
-            # Aggregate parent mapping so ``ls /mnt/user-data`` and other
-            # parent-level operations behave the same as inside AIO (where the
-            # parent directory is real and contains the three subdirs). Longer
-            # subpath mappings below still win for ``/mnt/user-data/workspace/...``
-            # because ``_find_path_mapping`` sorts by container_path length.
+            # 부모 디렉터리를 묶는 mapping. ``ls /mnt/user-data`` 등 부모 수준 작업이
+            # AIO 안에서와 똑같이 동작하게 한다(AIO에서는 부모 디렉터리가 실제로
+            # 존재하고 세 개의 하위 디렉터리를 담는다). ``_find_path_mapping``이
+            # container_path 길이로 정렬하므로 ``/mnt/user-data/workspace/...``에는
+            # 아래의 더 긴 하위 경로 mapping이 여전히 우선한다.
             PathMapping(
                 container_path=_USER_DATA_VIRTUAL_PREFIX,
                 local_path=str(paths.sandbox_user_data_dir(thread_id, user_id=effective_user_id)),
@@ -326,8 +311,8 @@ class LocalSandboxProvider(SandboxProvider):
             ),
         ]
 
-        # Per-user category mounts stay present for the sandbox lifetime. Their
-        # enabled-only contents change beneath these stable roots.
+        # per-user 카테고리 mount는 sandbox 수명 내내 유지된다. 활성화된 항목만 담은
+        # 내용물이 이 안정적인 root 아래에서 바뀐다.
         try:
             config = get_app_config()
             skills_container_path = config.skills.container_path
@@ -359,17 +344,16 @@ class LocalSandboxProvider(SandboxProvider):
         return mappings
 
     def acquire(self, thread_id: str | None = None, *, user_id: str | None = None) -> str:
-        """Return a sandbox id scoped to *thread_id* (or the generic singleton).
+        """*thread_id*로 스코프된 sandbox id(또는 일반 singleton)를 반환한다.
 
-        - ``thread_id=None`` keeps the legacy singleton with id ``"local"`` for
-          callers that have no thread context (e.g. legacy tests, scripts).
-        - ``thread_id="abc"`` yields a per-thread ``LocalSandbox`` with id
-          ``"local:abc"`` whose ``path_mappings`` resolve ``/mnt/user-data/...``
-          to that thread's host directories.
+        - ``thread_id=None``은 thread context가 없는 caller(예: 레거시 테스트, 스크립트)를
+          위해 id ``"local"``인 레거시 singleton을 유지한다.
+        - ``thread_id="abc"``는 id가 ``"local:abc"``이고 ``path_mappings``가
+          ``/mnt/user-data/...``를 그 thread의 host 디렉터리로 resolve하는 per-thread
+          ``LocalSandbox``를 만든다.
 
-        Thread-safe under concurrent invocation: the cache check + insert is
-        guarded by ``self._lock`` so two callers racing on the same
-        ``thread_id`` always observe the same LocalSandbox instance.
+        동시 호출에서도 thread-safe하다. cache 확인과 삽입을 ``self._lock``으로 보호하므로
+        같은 ``thread_id``로 경쟁하는 두 caller는 항상 같은 LocalSandbox 인스턴스를 본다.
         """
         global _singleton
 
@@ -384,27 +368,25 @@ class LocalSandboxProvider(SandboxProvider):
                 return self._generic_sandbox.id
 
         effective_user_id = self._effective_acquire_user_id(user_id)
-        # Runs on every acquire, including cache hits, to self-heal drift —
-        # cheap (~3-4 ms metadata walk) when the manifest is fresh. If another
-        # worker mutated this user's skills since the last check, this
-        # triggers a full rebuild (~400 ms measured locally) under the
-        # cross-process projection lock, serializing concurrent acquires and
-        # mutations for that user. Acceptable for an editing-frequency event.
+        # drift를 자가 복구하기 위해 cache hit를 포함한 모든 acquire에서 실행한다.
+        # manifest가 최신이면 저렴하다(메타데이터 순회 약 3-4 ms). 마지막 확인 이후 다른
+        # worker가 이 사용자의 skill을 변경했다면 cross-process projection lock 아래에서
+        # 전체 rebuild가 발생하고(로컬 측정 약 400 ms), 그 사용자의 동시 acquire와 변경이
+        # 직렬화된다. 편집 빈도의 이벤트라면 감수할 만하다.
         skill_projection = self._ensure_skills_projection(effective_user_id)
         key = self._thread_key(thread_id, effective_user_id)
 
-        # Fast path under lock.
+        # lock 아래의 fast path.
         with self._lock:
             cached = self._thread_sandboxes.get(key)
             if cached is not None:
-                # Mark as most-recently used so frequently-touched threads
-                # survive eviction.
+                # 자주 쓰는 thread가 eviction을 견디도록 most-recently used로 표시한다.
                 self._thread_sandboxes.move_to_end(key)
         if cached is not None:
             return cached.id
 
-        # ``_build_thread_path_mappings`` touches the filesystem
-        # (``ensure_thread_dirs``); release the lock during I/O.
+        # ``_build_thread_path_mappings``는 파일시스템을 건드리므로
+        # (``ensure_thread_dirs``) I/O 동안에는 lock을 놓는다.
         new_mappings = list(self._path_mappings)
         self._append_public_skill_mapping(new_mappings, skill_projection)
         new_mappings += self._build_thread_path_mappings(
@@ -414,8 +396,8 @@ class LocalSandboxProvider(SandboxProvider):
         )
 
         with self._lock:
-            # Re-check after the lock-free I/O: another caller may have
-            # populated the cache while we were computing mappings.
+            # lock 없이 I/O를 한 뒤 재확인한다. mapping을 계산하는 동안 다른 caller가
+            # cache를 채웠을 수 있다.
             cached = self._thread_sandboxes.get(key)
             if cached is None:
                 cached = LocalSandbox(self._sandbox_id_for_thread(thread_id, effective_user_id), path_mappings=new_mappings)
@@ -426,9 +408,9 @@ class LocalSandboxProvider(SandboxProvider):
             return cached.id
 
     def _evict_until_within_cap_locked(self) -> None:
-        """LRU-evict cached thread sandboxes once the cap is exceeded.
+        """상한을 넘으면 캐시된 thread sandbox를 LRU 순서로 evict한다.
 
-        Caller MUST hold ``self._lock``.
+        caller는 반드시 ``self._lock``을 잡고 있어야 한다.
         """
         while len(self._thread_sandboxes) > self._max_cached_threads:
             evicted_key, _ = self._thread_sandboxes.popitem(last=False)
@@ -455,31 +437,29 @@ class LocalSandboxProvider(SandboxProvider):
             with self._lock:
                 cached = self._thread_sandboxes.get(key)
                 if cached is not None:
-                    # Touching a thread via ``get`` (used by tools.py to look
-                    # up the sandbox once per tool call) promotes it in LRU
-                    # order so an active thread isn't evicted under load.
+                    # ``get``으로 thread를 건드리면(tools.py가 tool call마다 sandbox를
+                    # 조회할 때 사용) LRU 순서에서 승격되므로, 부하 상황에서도 활성
+                    # thread가 evict되지 않는다.
                     self._thread_sandboxes.move_to_end(key)
                 return cached
         return None
 
     def release(self, sandbox_id: str) -> None:
-        # LocalSandbox has no resources to release; keep the cached instance so
-        # that ``_agent_written_paths`` (used to reverse-resolve agent-authored
-        # file contents on read) survives between turns. LRU eviction in
-        # ``acquire`` and explicit ``reset()`` / ``shutdown()`` are the only
-        # paths that drop cached entries.
+        # LocalSandbox에는 해제할 자원이 없다. 캐시된 인스턴스를 유지해
+        # ``_agent_written_paths``(읽기 시 agent가 작성한 파일 내용을 reverse-resolve하는
+        # 데 사용)가 턴 사이에 살아남게 한다. 캐시 항목을 버리는 경로는 ``acquire``의
+        # LRU eviction과 명시적인 ``reset()`` / ``shutdown()``뿐이다.
         #
-        # Note: This method is intentionally not called by SandboxMiddleware
-        # to allow sandbox reuse across multiple turns in a thread.
+        # 참고: 이 메서드는 thread 안에서 여러 턴에 걸쳐 sandbox를 재사용할 수 있도록
+        # SandboxMiddleware가 의도적으로 호출하지 않는다.
         pass
 
     def reset(self) -> None:
-        """Drop all cached LocalSandbox instances.
+        """캐시된 LocalSandbox 인스턴스를 전부 버린다.
 
-        ``reset_sandbox_provider()`` calls this to ensure config / mount
-        changes take effect on the next ``acquire()``. We also reset the
-        module-level ``_singleton`` alias so older callers/tests that reach
-        # into it see a fresh state.
+        ``reset_sandbox_provider()``가 이를 호출해 config / mount 변경이 다음
+        ``acquire()``에 반영되게 한다. 모듈 수준 ``_singleton`` alias도 함께 리셋해,
+        거기에 접근하는 예전 caller/테스트가 새 상태를 보게 한다.
         """
         global _singleton
         with self._lock:
@@ -488,7 +468,6 @@ class LocalSandboxProvider(SandboxProvider):
             _singleton = None
 
     def shutdown(self) -> None:
-        # LocalSandboxProvider has no extra resources beyond the cached
-        # ``LocalSandbox`` instances, so shutdown uses the same cleanup path
-        # as ``reset``.
+        # LocalSandboxProvider는 캐시된 ``LocalSandbox`` 인스턴스 외에 추가 자원이 없으므로
+        # shutdown은 ``reset``과 같은 정리 경로를 쓴다.
         self.reset()

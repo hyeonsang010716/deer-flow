@@ -1,4 +1,4 @@
-"""Report finalization and localized Markdown rendering."""
+"""report 확정과 언어별 Markdown 렌더링."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def build_static_report(
     reviewer_model: str = "deterministic-review-core",
     completed_at: str | None = None,
 ) -> dict[str, Any]:
-    """Create a valid review-report.v1 with deterministic facts only."""
+    """결정적 fact만으로 유효한 review-report.v1을 만든다."""
     scope = scope or ["all"]
     readiness = readiness_from_facts(facts, scope=scope)
     issues = [

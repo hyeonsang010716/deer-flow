@@ -1,4 +1,4 @@
-"""Atomic Redis Hash ledger for deployment-wide E2B capacity."""
+"""배포 전체 E2B capacity를 관리하는 원자적 Redis Hash ledger."""
 
 from __future__ import annotations
 
@@ -155,7 +155,7 @@ return 'APPLIED'
 
 
 class CapacityBackendError(RuntimeError):
-    """Redis could not return a definitive capacity decision."""
+    """Redis가 확정적인 capacity 판정을 돌려주지 못했다."""
 
 
 class ReserveStatus(enum.StrEnum):
@@ -169,7 +169,7 @@ def _text(value: object) -> str:
 
 
 class RedisE2BCapacityStore:
-    """One capacity scope stored in one Redis Hash."""
+    """하나의 capacity scope를 하나의 Redis Hash에 저장한다."""
 
     def __init__(
         self,
@@ -183,7 +183,7 @@ class RedisE2BCapacityStore:
         try:
             from redis import Redis
             from redis.exceptions import RedisError
-        except ImportError:  # pragma: no cover - optional extra
+        except ImportError:  # pragma: no cover - 선택적 extra
             raise ImportError("Redis E2B capacity requires: cd backend && uv sync --extra redis") from None
 
         self._hard_limit = hard_limit
@@ -257,7 +257,7 @@ class RedisE2BCapacityStore:
     def close(self) -> None:
         try:
             self._redis.close()
-        except Exception as error:  # pragma: no cover - teardown best effort
+        except Exception as error:  # pragma: no cover - teardown은 best-effort
             logger.warning("Error closing E2B capacity Redis client: %s", error)
 
 
@@ -266,7 +266,7 @@ def make_e2b_capacity_store(
     *,
     hard_limit: int,
 ) -> RedisE2BCapacityStore | None:
-    """Enable the shared ledger only with Redis ownership."""
+    """Redis ownership일 때만 공유 ledger를 활성화한다."""
     if ownership.type == "memory":
         return None
     if ownership.type != "redis":

@@ -1,4 +1,4 @@
-"""Redis-backed deployment-wide E2B capacity."""
+"""Redis 기반의 배포 전체 E2B 정원 관리."""
 
 from .redis import CapacityBackendError as CapacityBackendError
 from .redis import RedisE2BCapacityStore as RedisE2BCapacityStore

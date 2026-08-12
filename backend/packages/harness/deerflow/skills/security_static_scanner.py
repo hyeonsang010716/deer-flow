@@ -1,4 +1,4 @@
-"""Compatibility exports for the native SkillScan implementation."""
+"""네이티브 SkillScan 구현을 위한 하위 호환 export."""
 
 from deerflow.skills.skillscan import (
     SecurityFinding as StaticFinding,

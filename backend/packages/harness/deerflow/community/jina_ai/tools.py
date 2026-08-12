@@ -43,14 +43,14 @@ def _coerce_proxy(value: object) -> str | None:
 
 @tool("web_fetch", parse_docstring=True)
 async def web_fetch_tool(url: str) -> str:
-    """Fetch the contents of a web page at a given URL.
-    Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
-    This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
-    Do NOT add www. to URLs that do NOT have them.
-    URLs must include the schema: https://example.com is a valid URL while example.com is an invalid URL.
+    """지정된 URL의 웹 페이지 내용을 가져온다.
+    사용자가 직접 제공했거나 web_search, web_fetch 도구의 결과로 반환된 URL만 정확히 그대로 가져와라.
+    이 도구는 비공개 Google Docs나 로그인 뒤에 있는 페이지처럼 인증이 필요한 콘텐츠에는 접근할 수 없다.
+    www.가 없는 URL에 www.를 붙이지 마라.
+    URL에는 반드시 schema가 포함되어야 한다: https://example.com은 유효한 URL이지만 example.com은 유효하지 않다.
 
     Args:
-        url: The URL to fetch the contents of.
+        url: 내용을 가져올 URL.
     """
     jina_client = JinaClient()
     timeout = 10

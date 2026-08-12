@@ -1,4 +1,4 @@
-"""thread operation kind.
+"""thread operation kind 컬럼을 추가한다.
 
 Revision ID: 0008_thread_operation_kind
 Revises: 0007_scheduled_run_active_index

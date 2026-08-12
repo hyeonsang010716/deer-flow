@@ -1,4 +1,4 @@
-"""Canonical package digest for review snapshots."""
+"""review snapshot의 표준 package digest."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from deerflow.skills.review.models import normalize_relative_path
 
 
 def compute_package_digest(snapshot: dict[str, Any]) -> str:
-    """Return a host-path-independent SHA-256 digest for a package snapshot."""
+    """package snapshot에 대해 host 경로와 무관한 SHA-256 digest를 반환한다."""
     records: list[bytes] = []
     for file_entry in snapshot.get("files", []):
         path = normalize_relative_path(str(file_entry["path"]))

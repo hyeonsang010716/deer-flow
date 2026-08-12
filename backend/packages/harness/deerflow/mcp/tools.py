@@ -1,4 +1,4 @@
-"""Load MCP tools using langchain-mcp-adapters with stdio session pooling."""
+"""langchain-mcp-adapters로 MCP 도구를 로드하고 stdio session pooling을 적용한다."""
 
 from __future__ import annotations
 
@@ -28,46 +28,39 @@ from deerflow.tools.types import Runtime
 
 logger = logging.getLogger(__name__)
 
-# MCP tool names arrive verbatim from external (potentially hostile/compromised)
-# servers. A tool name is only ever a function identifier: the provider's
-# function-calling API validates it against this same charset at bind time. But
-# deferred (tool_search) MCP tools are withheld from binding, so that provider
-# check never runs on their names — they only ever live in the system-prompt
-# string, where a crafted name (newlines, markdown, angle brackets) could forge
-# framework prompt structure. Canonicalizing at the load boundary constrains
-# both bound and deferred names to the same safe identifier charset, mirroring
-# the load-time validation skill names get (skills/storage/skill_storage.py).
+# MCP tool 이름은 외부(잠재적으로 적대적이거나 침해된) 서버에서 그대로 전달된다. tool 이름은
+# 어디까지나 함수 식별자이므로, provider의 function-calling API가 bind 시점에 동일한 문자
+# 집합으로 검증한다. 하지만 deferred(tool_search) MCP tool은 bind에서 제외되므로 그 이름에는
+# provider 검증이 전혀 돌지 않는다 — system prompt 문자열 안에만 존재하기 때문에, 조작된
+# 이름(개행, markdown, 꺾쇠 괄호)이 framework prompt 구조를 위조할 수 있다. 로드 경계에서
+# 정규화하면 bind된 이름과 deferred 이름이 모두 같은 안전한 식별자 문자 집합으로 제한되며,
+# 이는 skill 이름이 받는 로드 시점 검증(skills/storage/skill_storage.py)과 같은 방식이다.
 _VALID_MCP_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# Subdirectory under the thread's workspace used as the temp dir for stdio MCP
-# subprocesses. Pinning the process temp dir here (alongside its cwd) makes
-# tools that write to ``os.tmpdir()`` / ``tempfile.gettempdir()`` land inside
-# the mounted user-data tree, where their output is resolvable by the
-# sandbox/artifact API — instead of on an unreachable host temp path.
+# stdio MCP subprocess의 temp dir로 쓰는 thread workspace 하위 디렉터리. 프로세스 temp dir을
+# (cwd와 함께) 여기에 고정하면 ``os.tmpdir()`` / ``tempfile.gettempdir()``에 쓰는 도구의 출력이
+# 도달할 수 없는 host temp 경로가 아니라, sandbox/artifact API가 해석할 수 있는 mount된
+# user-data 트리 안에 떨어진다.
 _MCP_TMP_SUBDIR = ".mcp/tmp"
 
-# Matches local-file references embedded in free text returned by an MCP server.
-# Some servers (notably Playwright's ``browser_take_screenshot``) report saved
-# files only as text/markdown links rather than ``ResourceLink`` blocks. Those
-# references may be absolute paths, ``file://`` URIs, or paths relative to the
-# server process cwd (e.g. ``temp/page.yml``, ``./shot.png``). Each match is
-# only rewritten when it resolves to an existing file inside the thread's
-# user-data tree, so an over-eager match is harmless (left untouched).
+# MCP 서버가 반환한 자유 텍스트에 포함된 로컬 파일 참조를 매칭한다. 일부 서버(특히 Playwright의
+# ``browser_take_screenshot``)는 저장한 파일을 ``ResourceLink`` 블록이 아니라 text/markdown
+# 링크로만 알려준다. 그 참조는 절대 경로, ``file://`` URI, 또는 서버 프로세스 cwd 기준 상대
+# 경로(예: ``temp/page.yml``, ``./shot.png``)일 수 있다. 각 매치는 thread의 user-data 트리 안에
+# 실재하는 파일로 해석될 때만 재작성되므로, 과하게 잡힌 매치는 무해하다(그대로 둔다).
 _LOCAL_PATH_IN_TEXT_RE = re.compile(r"(?:file://)?/[^\s'\"<>|*?]+|(?:\.{0,2}/|[\w.-]+/)[^\s'\"<>|*?]+")
 
-# Trailing characters that are punctuation/markup rather than part of a path.
+# 경로의 일부가 아니라 문장 부호/마크업에 해당하는 후행 문자들.
 _TEXT_PATH_TRAILING_CHARS = ".,;:!?)]}>\"'`"
 
 _FILE_SNAPSHOT = dict[Path, tuple[int, int]]
 
 
 def _local_path_from_uri(uri: str, *, base_dir: Path | None = None) -> Path | None:
-    """Return an absolute local filesystem ``Path`` if *uri* points to a local
-    file, otherwise ``None``.
+    """*uri*가 로컬 파일을 가리키면 절대 경로 ``Path``를, 아니면 ``None``을 반환한다.
 
-    Accepts bare paths and ``file://`` URIs. Remote URIs
-    (``http``/``https``/``data``/...) return ``None`` so the caller leaves them
-    untouched. Relative paths are resolved only when *base_dir* is supplied.
+    맨 경로와 ``file://`` URI를 받는다. 원격 URI(``http``/``https``/``data``/...)는 ``None``을
+    반환해 호출자가 그대로 두게 한다. 상대 경로는 *base_dir*가 주어졌을 때만 해석한다.
     """
     if not uri:
         return None
@@ -98,19 +91,17 @@ def _local_uri_to_virtual_path(
     user_id: str,
     source_base_dir: Path | None = None,
 ) -> str | None:
-    """Translate a local file reference into its ``/mnt/user-data/...`` virtual path.
+    """로컬 파일 참조를 ``/mnt/user-data/...`` virtual path로 변환한다.
 
-    Stdio MCP servers run with their cwd and temp dir pinned inside the thread's
-    mounted user-data tree (see :func:`_make_session_pool_tool`), so the files
-    they produce already live somewhere the sandbox/artifact API can serve — the
-    only thing missing is the virtual prefix the rest of DeerFlow addresses them
-    by. This performs that purely deterministic host→virtual mapping: no copy, no
-    trusted-root list, and no exposure of files outside the thread's own tree.
+    stdio MCP 서버는 cwd와 temp dir이 thread의 mount된 user-data 트리 안에 고정된 채로
+    실행되므로(:func:`_make_session_pool_tool` 참고), 서버가 만든 파일은 이미
+    sandbox/artifact API가 서빙할 수 있는 위치에 있다 — 빠진 것은 DeerFlow의 나머지가 파일을
+    지칭하는 virtual prefix뿐이다. 여기서는 그 host→virtual 매핑만 결정적으로 수행한다. 복사도,
+    신뢰 루트 목록도 없고, thread 자기 트리 바깥의 파일을 노출하지도 않는다.
 
-    Returns ``None`` (so the caller leaves the reference untouched) when the URI
-    is remote, cannot be resolved, points outside this thread's user-data tree,
-    or does not name an existing file. Relative references are resolved against
-    *source_base_dir* (the server's cwd).
+    URI가 원격이거나, 해석할 수 없거나, 이 thread의 user-data 트리 바깥을 가리키거나, 실재하지
+    않는 파일이면 ``None``을 반환해 호출자가 참조를 그대로 두게 한다. 상대 참조는
+    *source_base_dir*(서버의 cwd) 기준으로 해석한다.
     """
     src = _local_path_from_uri(uri, base_dir=source_base_dir)
     if src is None:
@@ -131,8 +122,8 @@ def _local_uri_to_virtual_path(
     try:
         relative = real.relative_to(user_data_root)
     except ValueError:
-        # The file lives outside this thread's user-data mount; we cannot
-        # express it as a virtual path, so leave the original reference as-is.
+        # 파일이 이 thread의 user-data mount 바깥에 있어 virtual path로 표현할 수 없으므로
+        # 원래 참조를 그대로 둔다.
         logger.debug("MCP path rewrite skipped outside user-data tree: %s", real)
         return None
 
@@ -142,7 +133,7 @@ def _local_uri_to_virtual_path(
 
 
 def _snapshot_workspace_files(root: Path) -> _FILE_SNAPSHOT:
-    """Return a lightweight snapshot of regular files under *root*."""
+    """*root* 아래 일반 파일들의 가벼운 snapshot을 반환한다."""
     snapshot: _FILE_SNAPSHOT = {}
     if not root.exists():
         return snapshot
@@ -162,18 +153,17 @@ def _snapshot_workspace_files(root: Path) -> _FILE_SNAPSHOT:
 
 
 def _changed_workspace_files(root: Path, before: _FILE_SNAPSHOT) -> list[Path]:
-    """Return files under *root* that were created or modified since *before*."""
+    """*before* 이후 *root* 아래에서 생성되거나 수정된 파일들을 반환한다."""
     after = _snapshot_workspace_files(root)
     return [path for path, signature in after.items() if before.get(path) != signature]
 
 
 def _prepare_stdio_workspace(paths: Paths, *, thread_id: str, user_id: str) -> tuple[Path, Path, _FILE_SNAPSHOT]:
-    """Prepare the thread workspace for a pinned stdio MCP subprocess.
+    """고정된 stdio MCP subprocess를 위해 thread workspace를 준비한다.
 
-    Bundles all the synchronous filesystem work (dir creation, temp-dir prep,
-    and the pre-call snapshot) into one helper so the caller can run it off the
-    event loop via :func:`asyncio.to_thread`. Returns the workspace cwd, the
-    pinned temp dir, and the pre-call file snapshot.
+    동기 파일시스템 작업(디렉터리 생성, temp dir 준비, 호출 전 snapshot)을 한 헬퍼로 묶어
+    호출자가 :func:`asyncio.to_thread`로 event loop 바깥에서 돌릴 수 있게 한다. workspace cwd,
+    고정된 temp dir, 호출 전 파일 snapshot을 반환한다.
     """
     paths.ensure_thread_dirs(thread_id, user_id=user_id)
     source_base_dir = paths.sandbox_work_dir(thread_id, user_id=user_id)
@@ -188,11 +178,10 @@ def _prepare_stdio_workspace(paths: Paths, *, thread_id: str, user_id: str) -> t
 
 
 def _result_has_text_content(call_tool_result: Any) -> bool:
-    """Return ``True`` when the MCP result carries any text content.
+    """MCP 결과에 text content가 하나라도 있으면 ``True``를 반환한다.
 
-    The after-call snapshot diff only feeds bare-filename correlation in free
-    text. When the result has no text blocks there is nothing to rewrite, so the
-    caller can skip the second recursive walk entirely.
+    호출 후 snapshot diff는 자유 텍스트 안의 맨 파일명 대조에만 쓰인다. 결과에 text 블록이 없으면
+    재작성할 것도 없으므로 호출자는 두 번째 재귀 순회를 통째로 건너뛸 수 있다.
     """
     from mcp.types import EmbeddedResource, TextContent, TextResourceContents
 
@@ -215,12 +204,11 @@ def _rewrite_unique_bare_filenames(
     user_id: str,
     source_base_dir: Path | None = None,
 ) -> str:
-    """Rewrite bare filenames only when this call produced a unique match.
+    """이번 호출이 유일한 매치를 만들어 냈을 때만 맨 파일명을 재작성한다.
 
-    A response like ``Saved as page-2026.yml`` is not structurally a path. The
-    only safe way to interpret it is to correlate the filename with files
-    created/modified by this exact tool call, and rewrite only when the basename
-    maps to exactly one file inside this thread's mounted user-data tree.
+    ``Saved as page-2026.yml`` 같은 응답은 구조적으로 경로가 아니다. 안전하게 해석하는 유일한
+    방법은 그 파일명을 바로 이 tool call이 생성/수정한 파일들과 대조해서, basename이 이 thread의
+    mount된 user-data 트리 안 파일 정확히 하나에 대응할 때만 재작성하는 것이다.
     """
     candidates: dict[str, list[str]] = {}
     for path in changed_files:
@@ -244,8 +232,8 @@ def _rewrite_unique_bare_filenames(
 
     rewritten = text
     for name in sorted(unique, key=len, reverse=True):
-        # Do not rewrite inside longer paths/words. A final sentence period is
-        # allowed, but ".bak" or another path segment is not.
+        # 더 긴 경로/단어 안에서는 재작성하지 않는다. 문장 끝 마침표는 허용하지만 ".bak"이나
+        # 다른 경로 세그먼트는 허용하지 않는다.
         pattern = re.compile(rf"(?<![\w./-]){re.escape(name)}(?!(?:[\w/-]|\.[\w]))")
         rewritten_text, count = pattern.subn(unique[name], rewritten)
         if count:
@@ -262,23 +250,21 @@ def _rewrite_local_paths_in_text(
     source_base_dir: Path | None = None,
     changed_files: Iterable[Path] | None = None,
 ) -> str:
-    """Best-effort rewrite of local file references found in free text.
+    """자유 텍스트에서 발견된 로컬 파일 참조를 best-effort로 재작성한다.
 
-    Some MCP servers (notably Playwright's ``browser_take_screenshot``) report
-    the saved file only as free text — e.g. ``Took the screenshot and saved it
-    as temp/page-2026.png`` — instead of a ``ResourceLink``. Free text is not a
-    reliable protocol, so this is deliberately conservative: every candidate
-    token is handed to :func:`_local_uri_to_virtual_path`, which only rewrites
-    it when it resolves to an existing file inside this thread's user-data tree.
-    Tokens that are not real paths (or point elsewhere) are left exactly as they
-    were, so an over-eager regex match has no harmful effect.
+    일부 MCP 서버(특히 Playwright의 ``browser_take_screenshot``)는 저장한 파일을
+    ``ResourceLink``가 아니라 자유 텍스트로만 알려준다 — 예: ``Took the screenshot and saved it
+    as temp/page-2026.png``. 자유 텍스트는 신뢰할 만한 protocol이 아니므로 일부러 보수적으로
+    처리한다. 모든 후보 토큰을 :func:`_local_uri_to_virtual_path`에 넘기고, 그 함수는 이
+    thread의 user-data 트리 안 실재 파일로 해석될 때만 재작성한다. 실제 경로가 아니거나 다른 곳을
+    가리키는 토큰은 그대로 두므로, 과하게 잡힌 regex 매치도 해를 끼치지 않는다.
     """
     translated_by_source: dict[str, str | None] = {}
 
     def _replace(match: re.Match[str]) -> str:
         token = match.group(0)
-        # A path can end a sentence ("saved as temp/a.png."); strip trailing
-        # punctuation and restore it after the (possibly rewritten) path.
+        # 경로가 문장 끝에 올 수 있으므로("saved as temp/a.png.") 후행 문장 부호를 떼어 두었다가
+        # (재작성됐을 수도 있는) 경로 뒤에 다시 붙인다.
         stripped = token.rstrip(_TEXT_PATH_TRAILING_CHARS)
         trailing = token[len(stripped) :]
         if stripped not in translated_by_source:
@@ -306,7 +292,7 @@ def _rewrite_local_paths_in_text(
 
 
 def _extract_thread_id(runtime: Runtime | None) -> str:
-    """Extract thread_id from the injected tool runtime or LangGraph config."""
+    """주입된 tool runtime 또는 LangGraph config에서 thread_id를 추출한다."""
     if runtime is not None:
         tid = runtime.context.get("thread_id") if runtime.context else None
         if tid is not None:
@@ -331,37 +317,35 @@ def _convert_call_tool_result(
     source_base_dir: Path | None = None,
     changed_files: Iterable[Path] | None = None,
 ) -> Any:
-    """Convert an MCP CallToolResult to the LangChain ``content_and_artifact`` format.
+    """MCP CallToolResult를 LangChain ``content_and_artifact`` 형식으로 변환한다.
 
-    Implements the same conversion logic as the adapter without relying on
-    the private ``langchain_mcp_adapters.tools._convert_call_tool_result`` symbol.
+    private 심볼 ``langchain_mcp_adapters.tools._convert_call_tool_result``에 의존하지 않고
+    adapter와 동일한 변환 로직을 구현한다.
 
-    When ``thread_id`` and ``user_id`` are provided, local files referenced by
-    ``ResourceLink`` blocks or plain text (e.g. screenshots saved by Playwright
-    MCP) have their references translated from the host path to the
-    ``/mnt/user-data/...`` virtual path so they can be resolved by the sandbox
-    and artifact API. The files themselves are not copied — stdio servers run
-    with their cwd/temp pinned inside the mounted tree, so they already live in
-    a servable location. Remote URIs and files outside the thread's user-data
-    tree are left untouched.
+    ``thread_id``와 ``user_id``가 주어지면, ``ResourceLink`` 블록이나 평문 텍스트가 참조하는
+    로컬 파일(예: Playwright MCP가 저장한 스크린샷)의 참조를 host 경로에서
+    ``/mnt/user-data/...`` virtual path로 변환해 sandbox와 artifact API가 해석할 수 있게 한다.
+    파일 자체는 복사하지 않는다 — stdio 서버는 cwd/temp가 mount된 트리 안에 고정된 채로
+    실행되므로 이미 서빙 가능한 위치에 있다. 원격 URI와 thread의 user-data 트리 바깥 파일은
+    그대로 둔다.
     """
     from langchain_core.messages import ToolMessage
     from langchain_core.messages.content import create_file_block, create_image_block, create_text_block
     from langchain_core.tools import ToolException
     from mcp.types import EmbeddedResource, ImageContent, ResourceLink, TextContent, TextResourceContents
 
-    # Pass ToolMessage through directly (interceptor short-circuit).
+    # ToolMessage는 그대로 통과시킨다(interceptor short-circuit).
     if isinstance(call_tool_result, ToolMessage):
         return call_tool_result, None
 
-    # Pass LangGraph Command through directly when langgraph is installed.
+    # langgraph가 설치돼 있으면 LangGraph Command도 그대로 통과시킨다.
     try:
         from langgraph.types import Command
 
         if isinstance(call_tool_result, Command):
             return call_tool_result, None
     except ImportError:
-        # langgraph is optional; if unavailable, continue with standard MCP content conversion.
+        # langgraph는 선택 의존성이다. 없으면 표준 MCP content 변환을 그대로 진행한다.
         pass
 
     def _resolve_link_url(uri: str) -> str:
@@ -371,9 +355,9 @@ def _convert_call_tool_result(
         return rewritten if rewritten is not None else uri
 
     def _resolve_text(text: str) -> str:
-        # Servers like Playwright report saved files only as plain text, with no
-        # ResourceLink to hook into. Scan the text for local paths and translate
-        # them so the produced files are readable through the sandbox/artifact API.
+        # Playwright 같은 서버는 저장한 파일을 평문 텍스트로만 알려주고 붙잡을 ResourceLink를
+        # 주지 않는다. 텍스트에서 로컬 경로를 찾아 변환해, 생성된 파일을 sandbox/artifact API로
+        # 읽을 수 있게 한다.
         if thread_id is None or user_id is None:
             return text
         return _rewrite_local_paths_in_text(
@@ -384,7 +368,7 @@ def _convert_call_tool_result(
             changed_files=changed_files,
         )
 
-    # Convert MCP content blocks to LangChain content blocks.
+    # MCP content 블록을 LangChain content 블록으로 변환한다.
     lc_content = []
     for item in call_tool_result.content:
         if isinstance(item, TextContent):
@@ -427,13 +411,12 @@ def _convert_call_tool_result(
 
 
 def _resolve_session_init_timeout(server_cfg: Any) -> float | None:
-    """Return the effective session-init timeout for *server_cfg*.
+    """*server_cfg*에 적용될 실제 session-init timeout을 반환한다.
 
-    ``None`` (an explicit opt-out) stays ``None``. Any other non-numeric value
-    falls back to the default rather than being passed to ``asyncio.wait_for``
-    (which would raise on it) or silently disabling the bound: pydantic
-    guarantees a float for real configs, but configs built with mocks in tests
-    can supply anything, and the fallback keeps the hang-protection in place.
+    ``None``(명시적 opt-out)은 ``None``으로 유지한다. 그 외 숫자가 아닌 값은 ``asyncio.wait_for``에
+    그대로 넘기거나(예외가 난다) 조용히 상한을 없애는 대신 기본값으로 되돌린다. 실제 config는
+    pydantic이 float를 보장하지만 테스트에서 mock으로 만든 config는 무엇이든 줄 수 있고, 이
+    fallback이 hang 방지를 유지한다.
     """
     value = server_cfg.session_init_timeout if server_cfg is not None else DEFAULT_MCP_SESSION_INIT_TIMEOUT
     if value is None:
@@ -452,18 +435,17 @@ def _make_session_pool_tool(
     session_init_timeout: float | None = None,
     tool_name_prefix: bool = True,
 ) -> BaseTool:
-    """Wrap an MCP tool so it reuses a persistent session from the pool.
+    """MCP tool을 감싸서 pool의 persistent session을 재사용하게 한다.
 
-    Replaces the per-call session creation with pool-managed sessions scoped
-    by ``(server_name, user_id:thread_id)``.  This ensures stateful MCP servers
-    (e.g. Playwright) keep their state across tool calls within the same thread
-    while staying isolated per user.
+    호출마다 session을 만드는 대신 ``(server_name, user_id:thread_id)`` 범위로 pool이 관리하는
+    session을 쓴다. 덕분에 stateful MCP 서버(예: Playwright)는 같은 thread 안의 tool call들
+    사이에서 state를 유지하면서도 사용자별로 격리된다.
 
-    The configured ``tool_interceptors`` (OAuth, custom) are preserved and
-    applied on every call before invoking the pooled session.
+    설정된 ``tool_interceptors``(OAuth, custom)는 그대로 보존되어, pool session을 호출하기 전에
+    매 호출마다 적용된다.
     """
-    # Strip only prefixes added by the adapter. An unprefixed server may expose
-    # a tool whose own name happens to start with ``<server_name>_``.
+    # adapter가 붙인 prefix만 떼어낸다. prefix를 쓰지 않는 서버가 이름 자체가
+    # ``<server_name>_``로 시작하는 tool을 노출할 수도 있기 때문이다.
     original_name = tool.name
     prefix = f"{server_name}_"
     if tool_name_prefix and original_name.startswith(prefix):
@@ -477,58 +459,54 @@ def _make_session_pool_tool(
     ) -> Any:
         thread_id = _extract_thread_id(runtime)
         user_id = resolve_runtime_user_id(runtime)
-        # Scope the pooled session by user *and* thread. Filesystem isolation is
-        # per-(user_id, thread_id), so a thread_id alone could otherwise let two
-        # users with a colliding thread_id share one stateful MCP session.
+        # pool session의 범위를 user *와* thread로 잡는다. 파일시스템 격리가
+        # (user_id, thread_id) 단위이므로, thread_id만 쓰면 thread_id가 겹치는 두 사용자가 하나의
+        # stateful MCP session을 공유하게 된다.
         scope_key = f"{user_id}:{thread_id}"
         session_connection = dict(connection)
-        # cwd/temp pinning and the workspace snapshot only matter for stdio
-        # servers, which run as local subprocesses writing to a real filesystem.
-        # SSE/HTTP servers have no local cwd to pin, so skip the filesystem work
-        # entirely for them (avoids needless dir creation and recursive walks).
+        # cwd/temp 고정과 workspace snapshot은 실제 파일시스템에 쓰는 로컬 subprocess로 도는
+        # stdio 서버에만 의미가 있다. SSE/HTTP 서버는 고정할 로컬 cwd가 없으므로 파일시스템
+        # 작업을 통째로 건너뛴다(불필요한 디렉터리 생성과 재귀 순회를 피한다).
         is_stdio = session_connection.get("transport", "stdio") == "stdio"
         source_base_dir: Path | None = None
         process_cwd: Path | None = None
         before_files: _FILE_SNAPSHOT | None = None
         if is_stdio:
             paths = get_paths()
-            # Bundle the synchronous filesystem prep (dir creation, temp-dir
-            # setup, pre-call snapshot) and run it off the event loop — the
-            # snapshot walks the whole workspace and would otherwise block.
+            # 동기 파일시스템 준비(디렉터리 생성, temp dir 설정, 호출 전 snapshot)를 묶어
+            # event loop 바깥에서 실행한다 — snapshot이 workspace 전체를 순회하므로 그대로 두면
+            # event loop를 막는다.
             source_base_dir, tmp_dir, before_files = await asyncio.to_thread(_prepare_stdio_workspace, paths, thread_id=thread_id, user_id=user_id)
-            # Stdio MCP servers resolve relative output links against their
-            # process cwd. Keep that cwd inside the thread's mounted user-data
-            # tree so files produced by tools like Playwright land where the
-            # sandbox/artifact API can serve them and their references can be
-            # translated to virtual paths.
+            # stdio MCP 서버는 상대 출력 링크를 자기 프로세스 cwd 기준으로 해석한다. 그 cwd를
+            # thread의 mount된 user-data 트리 안에 두어야 Playwright 같은 도구가 만든 파일이
+            # sandbox/artifact API가 서빙할 수 있는 위치에 떨어지고, 그 참조도 virtual path로
+            # 변환할 수 있다.
             configured_cwd = session_connection.get("cwd", str(source_base_dir))
             session_connection["cwd"] = str(configured_cwd)
             process_cwd = Path(configured_cwd)
-            # Pin the subprocess temp dir under the same mounted tree. Tools that
-            # default to the OS temp dir (Node's os.tmpdir(), Python's tempfile,
-            # many CLIs) then write inside user-data instead of an unreachable
-            # host path — the tool-agnostic counterpart to fixing the cwd. Merge
-            # rather than replace any operator-provided env.
+            # subprocess temp dir도 같은 mount 트리 아래로 고정한다. 그러면 OS temp dir을
+            # 기본으로 쓰는 도구들(Node의 os.tmpdir(), Python의 tempfile, 다수의 CLI)이 도달할 수
+            # 없는 host 경로 대신 user-data 안에 쓴다 — cwd 고정의 도구 비의존적 대응물이다.
+            # 운영자가 준 env는 교체하지 않고 병합한다.
             session_env = dict(session_connection.get("env") or {})
             session_env.setdefault("TMPDIR", str(tmp_dir))
             session_env.setdefault("TMP", str(tmp_dir))
             session_env.setdefault("TEMP", str(tmp_dir))
             session_connection["env"] = session_env
         if session_init_timeout is not None:
-            # Cancellation here is safe: MCPSessionPool.get_session owns the
-            # teardown of a session stuck mid-creation (it signals close and
-            # waits for the owner task's __aexit__ to run in its own task),
-            # so a hung server cannot leak a session or block the turn.
+            # 여기서의 취소는 안전하다. 생성 도중 멈춘 session의 teardown은
+            # MCPSessionPool.get_session이 책임진다(close를 알리고 owner task의 __aexit__이 자기
+            # task에서 실행되기를 기다린다). 따라서 멈춘 서버가 session을 누수시키거나 turn을
+            # 막을 수 없다.
             try:
                 session = await asyncio.wait_for(
                     pool.get_session(server_name, scope_key, session_connection),
                     timeout=session_init_timeout,
                 )
             except TimeoutError:
-                # Surface the timeout at the same log level as discovery
-                # timeouts: the tool call still fails with a TimeoutError the
-                # model can react to, but operators need the WARNING to
-                # diagnose tool-call failures caused by hung MCP sessions.
+                # discovery timeout과 같은 로그 레벨로 노출한다. tool call은 여전히 모델이
+                # 반응할 수 있는 TimeoutError로 실패하지만, 운영자는 멈춘 MCP session 때문에
+                # 생긴 tool call 실패를 진단하려면 WARNING이 필요하다.
                 logger.warning(
                     "MCP session initialization for server '%s' timed out after %.1fs",
                     server_name,
@@ -538,8 +516,8 @@ def _make_session_pool_tool(
         else:
             session = await pool.get_session(server_name, scope_key, session_connection)
 
-        # Build common call_tool kwargs once — only add keys when needed so
-        # existing call-sites that assert on exact arguments are not affected.
+        # 공통 call_tool kwargs를 한 번만 만든다. 필요할 때만 키를 추가해서, 정확한 인자를
+        # 검증하는 기존 호출부가 영향을 받지 않게 한다.
         call_kwargs: dict[str, Any] = {}
         if tool_call_timeout:
             call_kwargs["read_timeout_seconds"] = timedelta(seconds=tool_call_timeout)
@@ -548,8 +526,8 @@ def _make_session_pool_tool(
             from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 
             async def base_handler(request: MCPToolCallRequest) -> Any:
-                # Preserve interceptor-injected headers for stdio MCP calls by
-                # forwarding them through MCP call meta.
+                # interceptor가 주입한 header를 MCP call meta로 전달해 stdio MCP 호출에서도
+                # 보존한다.
                 kwargs = dict(call_kwargs)
                 if request.headers:
                     if isinstance(request.headers, Mapping):
@@ -585,11 +563,9 @@ def _make_session_pool_tool(
                 **call_kwargs,
             )
 
-        # The after-call snapshot diff only feeds bare-filename correlation in
-        # free text, so skip the second recursive walk when there is no text
-        # content to rewrite. Both the diff and the per-token path resolution
-        # inside _convert_call_tool_result touch the filesystem, so run them off
-        # the event loop.
+        # 호출 후 snapshot diff는 자유 텍스트 안의 맨 파일명 대조에만 쓰이므로, 재작성할 text
+        # content가 없으면 두 번째 재귀 순회를 건너뛴다. diff와 _convert_call_tool_result 안의
+        # 토큰별 경로 해석 모두 파일시스템을 건드리므로 event loop 바깥에서 실행한다.
         changed_files: list[Path] | None = None
         if is_stdio and before_files is not None and _result_has_text_content(call_tool_result):
             changed_files = await asyncio.to_thread(_changed_workspace_files, source_base_dir, before_files)
@@ -613,15 +589,14 @@ def _make_session_pool_tool(
 
 
 async def get_mcp_tools() -> list[BaseTool]:
-    """Get all tools from enabled MCP servers.
+    """활성화된 모든 MCP 서버의 tool을 가져온다.
 
-    Tools using stdio transport are wrapped with persistent-session logic so
-    consecutive calls within the same thread reuse the same MCP session.
-    HTTP/SSE tools are returned unwrapped to avoid cross-task TaskGroup
-    cleanup errors.
+    stdio transport를 쓰는 tool은 persistent-session 로직으로 감싸서, 같은 thread 안의 연속 호출이
+    동일한 MCP session을 재사용하게 한다. HTTP/SSE tool은 task 간 TaskGroup 정리 오류를 피하려고
+    감싸지 않고 그대로 반환한다.
 
     Returns:
-        List of LangChain tools from all enabled MCP servers.
+        활성화된 모든 MCP 서버에서 온 LangChain tool 목록.
     """
     try:
         from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -630,10 +605,9 @@ async def get_mcp_tools() -> list[BaseTool]:
         logger.warning("langchain-mcp-adapters not installed. Install it to enable MCP tools: pip install langchain-mcp-adapters")
         return []
 
-    # NOTE: We use ExtensionsConfig.from_file() instead of get_extensions_config()
-    # to always read the latest configuration from disk. This ensures that changes
-    # made through the Gateway API (which runs in a separate process) are immediately
-    # reflected when initializing MCP tools.
+    # NOTE: 항상 디스크에서 최신 설정을 읽으려고 get_extensions_config() 대신
+    # ExtensionsConfig.from_file()을 쓴다. 그래야 (별도 프로세스로 도는) Gateway API를 통한
+    # 변경이 MCP tool 초기화 시점에 즉시 반영된다.
     extensions_config = ExtensionsConfig.from_file()
     servers_config = build_servers_config(extensions_config)
 
@@ -642,10 +616,10 @@ async def get_mcp_tools() -> list[BaseTool]:
         return []
 
     try:
-        # Create the multi-server MCP client
+        # multi-server MCP client를 만든다
         logger.info(f"Initializing MCP client with {len(servers_config)} server(s)")
 
-        # Inject initial OAuth headers for server connections (tool discovery/session init)
+        # 서버 연결(tool discovery / session init)에 쓸 초기 OAuth header를 주입한다
         initial_oauth_headers = await get_initial_oauth_headers(extensions_config)
         for server_name, auth_header in initial_oauth_headers.items():
             if server_name not in servers_config:
@@ -660,8 +634,8 @@ async def get_mcp_tools() -> list[BaseTool]:
         if oauth_interceptor is not None:
             tool_interceptors.append(oauth_interceptor)
 
-        # Load custom interceptors declared in extensions_config.json
-        # Format: "mcpInterceptors": ["pkg.module:builder_func", ...]
+        # extensions_config.json에 선언된 custom interceptor를 로드한다.
+        # 형식: "mcpInterceptors": ["pkg.module:builder_func", ...]
         raw_interceptor_paths = (extensions_config.model_extra or {}).get("mcpInterceptors")
         if isinstance(raw_interceptor_paths, str):
             raw_interceptor_paths = [raw_interceptor_paths]
@@ -707,30 +681,25 @@ async def get_mcp_tools() -> list[BaseTool]:
                         tool_name_prefix=False,
                     )
                 if session_init_timeout is not None:
-                    # Timeout tool discovery (subprocess spawn + initialize +
-                    # tools/list) so a hung stdio server cannot block agent
-                    # construction indefinitely. Per-server because the gather
-                    # below runs each server independently — one slow server
-                    # must not prevent the others from contributing tools.
+                    # tool discovery(subprocess 생성 + initialize + tools/list)에 timeout을
+                    # 걸어, 멈춘 stdio 서버가 agent 생성을 무한정 막지 못하게 한다. 아래 gather가
+                    # 서버마다 독립적으로 실행되므로 서버 단위로 건다 — 느린 서버 하나가 다른
+                    # 서버들의 tool 기여를 막아서는 안 된다.
                     #
-                    # Cancellation here is safe: discovery runs inside the
-                    # adapter's nested async context managers (load_mcp_tools →
-                    # create_session → _create_stdio_session → stdio_client),
-                    # and wait_for's CancelledError unwinds them. stdio_client's
-                    # finally closes stdin, waits for a graceful exit, then
-                    # escalates to _terminate_process_tree (SIGTERM→SIGKILL on
-                    # POSIX, process-tree termination on Windows), so the npx
-                    # subprocess and any children it spawned are reaped — no
-                    # orphan processes accumulate across repeated timeouts.
+                    # 여기서의 취소는 안전하다. discovery는 adapter의 중첩된 async context
+                    # manager(load_mcp_tools → create_session → _create_stdio_session →
+                    # stdio_client) 안에서 실행되고, wait_for의 CancelledError가 그것들을 풀어
+                    # 준다. stdio_client의 finally는 stdin을 닫고 정상 종료를 기다린 뒤
+                    # _terminate_process_tree(POSIX는 SIGTERM→SIGKILL, Windows는 프로세스 트리
+                    # 종료)로 확대하므로, npx subprocess와 그것이 만든 자식들이 모두 회수된다 —
+                    # timeout이 반복돼도 고아 프로세스가 쌓이지 않는다.
                     try:
                         return await asyncio.wait_for(discovery, timeout=session_init_timeout)
                     except TimeoutError:
-                        # Only our own bound is logged as "timed out": the
-                        # branch condition guarantees the value is not None, so
-                        # the %.1f format cannot fail. A TimeoutError raised by
-                        # discovery itself (e.g. an internal SDK timeout on the
-                        # opted-out path) falls through to the generic failure
-                        # handler below instead.
+                        # "timed out"으로 로깅하는 것은 우리가 건 상한뿐이다. 분기 조건이 값이
+                        # None이 아님을 보장하므로 %.1f 포맷이 실패할 수 없다. discovery 자체가
+                        # 던진 TimeoutError(예: opt-out 경로에서 SDK 내부 timeout)는 대신 아래
+                        # 일반 실패 handler로 흘러간다.
                         logger.warning(
                             "Skipping MCP server '%s' after tool discovery timed out (%.1fs)",
                             server_name,
@@ -745,23 +714,23 @@ async def get_mcp_tools() -> list[BaseTool]:
                 )
                 return []
 
-        # Get tools from each server independently so one broken MCP server does
-        # not prevent healthy servers from contributing their tools.
+        # 서버마다 독립적으로 tool을 가져와, 망가진 MCP 서버 하나가 정상 서버들의 tool 기여를
+        # 막지 못하게 한다.
         tools_by_server = await asyncio.gather(*(load_server_tools(name) for name in servers_config))
         tools = [tool for server_tools in tools_by_server for tool in server_tools]
         logger.info(f"Successfully loaded {len(tools)} tool(s) from MCP servers")
 
-        # Wrap each tool with persistent-session logic.
-        # Only pool stdio sessions. HTTP/SSE transports use anyio TaskGroups
-        # internally which cannot be closed from a different async task, so
-        # pooling them causes RuntimeError on cleanup (see #3203).
+        # 각 tool을 persistent-session 로직으로 감싼다.
+        # pool에 넣는 것은 stdio session뿐이다. HTTP/SSE transport는 내부적으로 anyio
+        # TaskGroup을 쓰는데 다른 async task에서 닫을 수 없어서, pool에 넣으면 정리 시
+        # RuntimeError가 난다(#3203 참고).
         wrapped_tools: list[BaseTool] = []
-        # Route each tool by the server that actually produced it: tools_by_server[i]
-        # corresponds to the i-th server in servers_config. Inferring the source server by
-        # scanning servers_config for a name prefix is ambiguous when one server name is a
-        # prefix of another (e.g. "web" vs "web_scraper" → "web_scraper_search".startswith(
-        # "web_") matches "web" first), which pools the tool under the wrong server. Using the
-        # source grouping makes routing exact even when a server opts out of name prefixing.
+        # 각 tool을 실제로 만들어 낸 서버 기준으로 라우팅한다. tools_by_server[i]는
+        # servers_config의 i번째 서버에 대응한다. servers_config에서 이름 prefix를 훑어 출처
+        # 서버를 추정하면, 한 서버 이름이 다른 서버 이름의 prefix일 때 모호해진다(예: "web" vs
+        # "web_scraper" → "web_scraper_search".startswith("web_")가 "web"에 먼저 걸린다). 그러면
+        # tool이 엉뚱한 서버 아래 pool된다. 출처 그룹핑을 쓰면 서버가 이름 prefix를 끄더라도
+        # 라우팅이 정확하다.
         for source_name, server_tools in zip(servers_config.keys(), tools_by_server, strict=True):
             transport = servers_config[source_name].get("transport", "stdio")
             server_cfg = extensions_config.mcp_servers.get(source_name)
@@ -804,7 +773,7 @@ async def get_mcp_tools() -> list[BaseTool]:
                         )
                     wrapped_tools.append(tool)
 
-        # Patch tools to support sync invocation, as deerflow client streams synchronously
+        # deerflow client가 동기적으로 stream하므로, tool이 sync 호출도 지원하도록 패치한다
         for tool in wrapped_tools:
             if getattr(tool, "func", None) is None and getattr(tool, "coroutine", None) is not None:
                 tool.func = make_sync_tool_wrapper(tool.coroutine, tool.name)

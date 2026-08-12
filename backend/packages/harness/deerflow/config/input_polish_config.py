@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class InputPolishConfig(BaseModel):
-    """Configuration for pre-send input polishing."""
+    """전송 전 입력 다듬기(input polishing) 설정."""
 
     enabled: bool = Field(default=True, description="Whether to enable pre-send input polishing in the composer")
     max_chars: int = Field(default=4000, ge=1, description="Maximum number of draft characters accepted by the input polishing endpoint")

@@ -1,78 +1,70 @@
-"""Hybrid schema bootstrap for DeerFlow's application tables.
+"""DeerFlow 애플리케이션 테이블용 하이브리드 schema bootstrap.
 
-Replaces the unconditional ``Base.metadata.create_all`` at Gateway startup.
-Combines two ideas:
+Gateway 시작 시 무조건 실행하던 ``Base.metadata.create_all``을 대체한다.
+두 가지 아이디어를 결합한다:
 
-1. ``create_all`` stays the empty-DB fast path -- it renders ``Base.metadata``
-   faithfully across SQLite and Postgres dialects (JSON vs JSONB, server
-   defaults, index/FK names, type affinity) without anyone having to hand-keep
-   a mirror baseline in sync with the models.
-2. **Alembic owns every change from baseline onward.** Any new ORM column /
-   table / index must ship as a revision under ``migrations/versions/``.
+1. ``create_all``은 빈 DB용 빠른 경로로 남는다 -- 누구도 baseline 사본을 모델과
+   손으로 맞춰둘 필요 없이 SQLite와 Postgres dialect 양쪽(JSON vs JSONB, server
+   default, index/FK 이름, 타입 affinity)에 ``Base.metadata``를 충실히 렌더링한다.
+2. **baseline 이후의 모든 변경은 Alembic이 소유한다.** 새 ORM 컬럼 / 테이블 /
+   index는 반드시 ``migrations/versions/`` 아래의 revision으로 나와야 한다.
 
-Three-branch decision (see ``_decide_state``)
+세 갈래 판정 (``_decide_state`` 참고)
 ---------------------------------------------
 
-| DB state                              | Action                                  |
+| DB 상태                                | 동작                                    |
 |---------------------------------------|-----------------------------------------|
-| empty (no DeerFlow tables)            | ``create_all`` + ``alembic stamp head`` |
-| legacy (DeerFlow tables, no alembic)  | ``create_all`` (baseline tables only, as backfill) + ``stamp 0001_baseline`` + ``upgrade head`` |
-| versioned (``alembic_version`` row)   | ``alembic upgrade head``                |
+| empty (DeerFlow 테이블 없음)           | ``create_all`` + ``alembic stamp head`` |
+| legacy (DeerFlow 테이블 있고 alembic 없음) | ``create_all`` (baseline 테이블만 backfill) + ``stamp 0001_baseline`` + ``upgrade head`` |
+| versioned (``alembic_version`` row 존재) | ``alembic upgrade head``                |
 
-The legacy branch handles pre-alembic databases that already have at least one
-DeerFlow-owned table. ``create_all`` runs first because stamping at
-``0001_baseline`` makes alembic skip the baseline's own ``create_table`` DDL on
-the subsequent upgrade -- so any baseline table introduced into
-``Base.metadata`` after the user's DB was first provisioned (e.g. the
-``channel_*`` tables from PR #1930 for users upgrading across multiple
-releases) would otherwise never be created, and the first request hitting that
-table would 500 with ``no such table``. The backfill is **restricted to
-``_BASELINE_TABLE_NAMES``** so it does not also create tables that future
-revisions introduce -- those revisions' own ``op.create_table`` would then
-fail with ``relation already exists``. A guard test pins the restriction
-set against ``0001_baseline.upgrade()``'s actual output.
+legacy 분기는 DeerFlow 소유 테이블이 이미 하나 이상 있는 alembic 이전 데이터베이스를
+다룬다. ``create_all``을 먼저 돌리는 이유는, ``0001_baseline``에 stamp하면 이후 upgrade
+에서 alembic이 baseline 자신의 ``create_table`` DDL을 건너뛰기 때문이다 -- 즉 사용자의
+DB가 처음 프로비저닝된 뒤 ``Base.metadata``에 추가된 baseline 테이블(예: 여러 릴리스를
+건너뛰어 업그레이드하는 사용자의 PR #1930발 ``channel_*`` 테이블)은 그대로 두면 영영
+생성되지 않고, 그 테이블을 건드리는 첫 요청이 ``no such table``로 500이 난다. 이
+backfill은 **``_BASELINE_TABLE_NAMES``로 제한**되어 있어 미래 revision이 도입하는
+테이블까지 만들지는 않는다 -- 그랬다면 해당 revision의 ``op.create_table``이
+``relation already exists``로 실패한다. guard 테스트가 이 제한 집합을
+``0001_baseline.upgrade()``의 실제 출력과 대조해 고정한다.
 
-Column-level shape (the pre-#3658 vs post-#3658 vs manual-ALTER cases for
-``token_usage_by_model``) is answered by each ``versions/*.py`` revision via
-the idempotent helpers in ``migrations/_helpers.py`` (``safe_add_column``
-no-ops when the column is already present and ``logger.warning``s on
-shape drift). Future schema additions therefore plug in by writing a new
-revision file -- **no edit to this module is required** *unless* the new
-revision creates a new baseline table, in which case ``_BASELINE_TABLE_NAMES``
-must be updated to match (the guard test fires otherwise).
+컬럼 수준의 형태(``token_usage_by_model``의 #3658 이전 / 이후 / 수동 ALTER 케이스)는
+``migrations/_helpers.py``의 멱등 헬퍼를 통해 각 ``versions/*.py`` revision이 스스로
+답한다(``safe_add_column``은 컬럼이 이미 있으면 아무 일도 하지 않고, 형태가 어긋나면
+``logger.warning``을 남긴다). 따라서 앞으로의 schema 추가는 새 revision 파일을 쓰는
+것으로 끝나며 -- 새 revision이 새 baseline 테이블을 만드는 경우가 아니라면
+**이 모듈은 수정할 필요가 없다**. 그 경우에는 ``_BASELINE_TABLE_NAMES``를 맞춰
+갱신해야 한다(안 그러면 guard 테스트가 터진다).
 
-Concurrency safety
+동시성 안전성
 ------------------
 
-Layered, with different guarantees per backend. Postgres has true
-cross-process serialisation. SQLite is single-process safe and cross-process
-best-effort; multi-instance deployments should use Postgres.
+계층적으로 보장하되 backend마다 보장 수준이 다르다. Postgres는 진짜 프로세스 간
+직렬화를 제공한다. SQLite는 단일 프로세스에서는 안전하고 프로세스 간에는 best-effort다.
+다중 인스턴스 배포는 Postgres를 써야 한다.
 
-* **Postgres -- true cross-process serialisation.** ``pg_advisory_lock`` runs
-  the whole reflect-and-act sequence under an exclusive lock that survives
-  cross-process. Concurrent Gateway instances queue cleanly and the second
-  one observes head as a no-op.
+* **Postgres -- 진짜 프로세스 간 직렬화.** ``pg_advisory_lock``이 reflect 후 실행하는
+  전체 시퀀스를 프로세스 경계를 넘어 유지되는 배타 lock 아래에서 돌린다. 동시에 뜬
+  Gateway 인스턴스들은 깔끔하게 줄을 서고, 두 번째 인스턴스는 head를 관측해 no-op이 된다.
 
-* **SQLite -- single-process serialisation, best-effort cross-process.**
-  SQLite is single-node by deployment, so the realistic concurrency case is
-  multiple async tasks inside one Gateway process (tests, lifespan re-entry).
-  A per-engine ``asyncio.Lock`` serialises those. For the rare cross-process
-  case (e.g. two ``make dev`` workers on the same DB file), we rely on
-  SQLite's own file-level write lock plus a 30s ``PRAGMA busy_timeout`` --
-  the latter is set on **both** the production engine
-  (``persistence/engine.py``) and the alembic-spawned engine
-  (``migrations/env.py``) so any writer waits up to 30s for the file lock
-  instead of failing fast. This is best-effort, not a true mutex: under
-  pathological overlap a process can still see ``database is locked`` after
-  30s. The fallback line of defence -- idempotent revisions -- guarantees
-  correctness anyway.
+* **SQLite -- 단일 프로세스 직렬화, 프로세스 간은 best-effort.**
+  SQLite는 배포상 단일 노드이므로 현실적인 동시성은 하나의 Gateway 프로세스 안의 여러
+  async task(테스트, lifespan 재진입)다. engine별 ``asyncio.Lock``이 이를 직렬화한다.
+  드문 프로세스 간 케이스(예: 같은 DB 파일에 붙은 두 개의 ``make dev`` worker)는
+  SQLite 자체의 파일 수준 쓰기 lock과 30초 ``PRAGMA busy_timeout``에 의존한다 --
+  후자는 production engine(``persistence/engine.py``)과 alembic이 띄우는
+  engine(``migrations/env.py``) **양쪽**에 설정되어 있어, 어느 writer든 즉시 실패하는
+  대신 파일 lock을 최대 30초 기다린다. 이는 best-effort이지 진짜 mutex가 아니다.
+  병적으로 겹치면 30초 뒤에도 ``database is locked``를 볼 수 있다. 마지막 방어선인
+  멱등 revision이 어차피 정확성을 보장한다.
 
-* **Idempotent revisions -- retry fallback.** Column revisions use the helpers
-  in ``migrations/_helpers.py`` so repeated post-baseline changes, manual
-  ALTERs, or retries after SQLite lock contention do not duplicate work.
+* **멱등 revision -- 재시도 fallback.** 컬럼 revision은 ``migrations/_helpers.py``의
+  헬퍼를 쓰므로 baseline 이후의 반복 변경, 수동 ALTER, SQLite lock 경합 후 재시도가
+  작업을 중복 수행하지 않는다.
 
-``alembic upgrade head`` on a DB already at head is a no-op by alembic's own
-semantics, so the second-N-th actor simply observes head and exits.
+이미 head인 DB에 대한 ``alembic upgrade head``는 alembic 자체 의미상 no-op이므로,
+두 번째 이후의 주체는 head를 관측하고 그냥 종료한다.
 """
 
 from __future__ import annotations
@@ -94,37 +86,35 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 logger = logging.getLogger(__name__)
 
 
-# Where the alembic environment lives, relative to this file.
+# 이 파일 기준으로 alembic 환경이 있는 위치.
 _MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
-# Cached migration head, computed once per process from the disk script tree.
+# 캐시된 migration head. 디스크의 script 트리에서 프로세스당 한 번 계산한다.
 _HEAD_REVISION: str | None = None
 
-# Baseline (stamp target for legacy DBs). Pinned here so the bootstrap layer
-# fails loudly if the baseline revision is ever renamed without updating the
-# stamp call. ``tests/test_persistence_bootstrap.py`` asserts this string is a
-# real revision id in the script tree.
+# baseline(legacy DB의 stamp 대상). 여기에 고정해두어, baseline revision 이름이 stamp
+# 호출을 갱신하지 않은 채 바뀌면 bootstrap 계층이 크게 실패하도록 한다.
+# ``tests/test_persistence_bootstrap.py``가 이 문자열이 script 트리에 실재하는
+# revision id인지 검증한다.
 _BASELINE_REVISION = "0001_baseline"
 
-# Stable advisory-lock key for Postgres. Two random 32-bit halves picked once
-# so we never collide with any other application's advisory locks. Do not
-# change without coordinating a one-time migration (a key change effectively
-# releases the prior lock).
+# Postgres용 고정 advisory lock 키. 다른 애플리케이션의 advisory lock과 절대 충돌하지
+# 않도록 32비트 난수 두 개를 한 번 골라 쓴다. 일회성 migration을 함께 준비하지 않고는
+# 바꾸지 말 것(키를 바꾸면 사실상 이전 lock을 놓아버리는 셈이다).
 _PG_LOCK_KEY = 0x0DEE_12F1_0BEE_3682
 
 
-# Tables created by ``0001_baseline.upgrade()``. The legacy branch restricts
-# its ``create_all`` backfill to this set so it does NOT pre-empt later
-# ``op.create_table`` revisions for models added after baseline -- those
-# revisions would otherwise fail with ``relation already exists`` if
-# ``create_all`` had created their table first. (Column revisions are
-# already safe via the idempotent helpers in ``migrations/_helpers.py``;
-# there is no analogous ``safe_create_table`` yet, so we keep table-level
-# safety at this layer instead of pushing it onto every future revision.)
+# ``0001_baseline.upgrade()``가 만드는 테이블들. legacy 분기는 ``create_all`` backfill을
+# 이 집합으로 제한해서, baseline 이후 추가된 모델의 ``op.create_table`` revision을
+# 미리 가로채지 않게 한다 -- ``create_all``이 먼저 그 테이블을 만들었다면 해당
+# revision이 ``relation already exists``로 실패한다. (컬럼 revision은
+# ``migrations/_helpers.py``의 멱등 헬퍼로 이미 안전하다. 아직 대응하는
+# ``safe_create_table``은 없으므로, 테이블 수준 안전성은 모든 미래 revision에
+# 떠넘기는 대신 이 계층에서 유지한다.)
 #
-# ``test_baseline_table_names_constant_matches_0001`` pins this set against
-# what 0001 actually creates -- editing 0001 without updating this constant
-# (or vice versa) fires that test.
+# ``test_baseline_table_names_constant_matches_0001``이 이 집합을 0001이 실제로 만드는
+# 것과 대조해 고정한다 -- 이 상수를 갱신하지 않고 0001을 수정하면(혹은 그 반대) 그
+# 테스트가 터진다.
 _BASELINE_TABLE_NAMES: frozenset[str] = frozenset(
     {
         "channel_connections",
@@ -139,9 +129,9 @@ _BASELINE_TABLE_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# ``test_baseline_index_names_constant_matches_0001`` pins this set against
-# what 0001 actually creates -- editing 0001 without updating this constant
-# (or vice versa) fires that test.
+# ``test_baseline_index_names_constant_matches_0001``이 이 집합을 0001이 실제로 만드는
+# 것과 대조해 고정한다 -- 이 상수를 갱신하지 않고 0001을 수정하면(혹은 그 반대) 그
+# 테스트가 터진다.
 _BASELINE_INDEX_NAMES: frozenset[str] = frozenset(
     {
         # channel_connections
@@ -179,20 +169,19 @@ _BASELINE_INDEX_NAMES: frozenset[str] = frozenset(
 )
 
 
-# Per-engine SQLite bootstrap locks. Per-engine (not module-global) so each
-# engine instance pairs with a lock bound to the event loop that uses that
-# engine -- necessary because ``asyncio.Lock`` binds to the first loop it sees,
-# and pytest gives each async test its own loop. Production uses one engine
-# per process so this dict collapses to a single entry in practice.
+# engine별 SQLite bootstrap lock. 모듈 전역이 아니라 engine별인 이유는 각 engine
+# 인스턴스가 그 engine을 쓰는 event loop에 묶인 lock과 짝을 이뤄야 하기 때문이다 --
+# ``asyncio.Lock``은 처음 본 loop에 바인딩되고 pytest는 async 테스트마다 자체 loop를
+# 주므로 필요하다. production은 프로세스당 engine 하나를 쓰므로 실제로 이 dict는
+# 항목 하나로 수렴한다.
 #
-# Keyed by the engine object itself via ``WeakKeyDictionary`` rather than
-# ``id(engine)``: CPython recycles addresses after GC, so a stale ``id`` →
-# ``Lock`` entry from a dead engine could be returned to a new engine that
-# happened to land on the same address. The returned lock would still be bound
-# to the dead engine's event loop and ``async with`` would raise
-# ``RuntimeError: ... bound to a different event loop``. Hashing the engine
-# itself also drops entries automatically when the engine is collected, so this
-# dict never grows past the live engine count.
+# ``id(engine)``이 아니라 ``WeakKeyDictionary``로 engine 객체 자체를 키로 쓴다.
+# CPython은 GC 후 주소를 재활용하므로, 죽은 engine의 낡은 ``id`` → ``Lock`` 항목이
+# 우연히 같은 주소에 자리 잡은 새 engine에 반환될 수 있다. 그 lock은 여전히 죽은
+# engine의 event loop에 묶여 있어 ``async with``에서
+# ``RuntimeError: ... bound to a different event loop``가 난다. engine 자체를 해싱하면
+# engine이 수거될 때 항목도 자동으로 사라지므로, 이 dict는 살아 있는 engine 수를
+# 넘어 커지지 않는다.
 _SQLITE_LOCKS: weakref.WeakKeyDictionary[AsyncEngine, asyncio.Lock] = weakref.WeakKeyDictionary()
 
 
@@ -205,48 +194,46 @@ def _get_sqlite_local_lock(engine: AsyncEngine) -> asyncio.Lock:
 
 
 def _escape_url_for_alembic(url: str) -> str:
-    """Double literal ``%`` so ``ConfigParser`` interpolation leaves the URL intact.
+    """리터럴 ``%``를 두 번 써서 ``ConfigParser`` interpolation이 URL을 건드리지 않게 한다.
 
-    ``alembic.config.Config.set_main_option`` forwards to ``ConfigParser.set``,
-    which performs ``%(name)s``-style interpolation on the value. A URL-encoded
-    password like ``p%40ss`` (``@`` escaped to ``%40``) would otherwise raise
-    ``InterpolationSyntaxError``. Doubling every literal ``%`` makes
-    ConfigParser unescape it back to one. Shared with
-    ``scripts/_autogen_revision.py`` so the round-trip rule lives in one place.
+    ``alembic.config.Config.set_main_option``은 ``ConfigParser.set``으로 넘기고, 이는
+    값에 ``%(name)s`` 스타일 interpolation을 수행한다. 그대로 두면 ``p%40ss``처럼
+    URL 인코딩된 비밀번호(``@``가 ``%40``으로 이스케이프됨)가
+    ``InterpolationSyntaxError``를 일으킨다. 모든 리터럴 ``%``를 두 번 쓰면
+    ConfigParser가 다시 하나로 되돌린다. round-trip 규칙이 한 곳에 있도록
+    ``scripts/_autogen_revision.py``와 공유한다.
     """
     return url.replace("%", "%%")
 
 
 def _alembic_safe_url(engine: AsyncEngine) -> str:
-    """Render *engine*'s URL in a form alembic ``set_main_option`` accepts.
+    """*engine*의 URL을 alembic ``set_main_option``이 받아들이는 형태로 렌더링한다.
 
-    Two pitfalls handled:
+    두 가지 함정을 처리한다:
 
-    1. ``str(engine.url)`` (and ``URL.render_as_string()`` without args) masks
-       the password as ``***`` -- so alembic's stamp/upgrade would open its own
-       connection with garbage credentials and fail at runtime, even though
-       the live engine connects fine. Fix: ``render_as_string(hide_password=False)``.
-    2. ConfigParser interpolation on ``%`` -- delegated to
-       ``_escape_url_for_alembic`` so the rule is shared with the autogen
-       script.
+    1. ``str(engine.url)``(및 인자 없는 ``URL.render_as_string()``)은 비밀번호를
+       ``***``로 가린다 -- 그러면 실제 engine은 멀쩡히 접속하는데도 alembic의
+       stamp/upgrade는 쓰레기 자격 증명으로 자기 connection을 열어 runtime에서
+       실패한다. 해결: ``render_as_string(hide_password=False)``.
+    2. ``%``에 대한 ConfigParser interpolation -- 규칙을 autogen 스크립트와 공유하도록
+       ``_escape_url_for_alembic``에 위임한다.
     """
     rendered = engine.url.render_as_string(hide_password=False)
     return _escape_url_for_alembic(rendered)
 
 
 def _get_alembic_config(engine: AsyncEngine, *, postgres_schema: str = "") -> AlembicConfig:
-    """Build an in-process alembic config pointing at our migrations dir.
+    """migrations 디렉터리를 가리키는 in-process alembic config를 만든다.
 
-    Avoids reading ``alembic.ini`` from disk so the production runtime doesn't
-    depend on a working-directory-relative file lookup. The ``script_location``
-    is anchored at the package path on disk.
+    production runtime이 작업 디렉터리 상대 경로 조회에 의존하지 않도록 디스크에서
+    ``alembic.ini``를 읽지 않는다. ``script_location``은 디스크상의 패키지 경로에
+    고정한다.
 
-    When *postgres_schema* is set it is forwarded as the ``deerflow_pg_schema``
-    main option so ``env.py`` can pin its alembic-spawned engine's
-    ``search_path`` to the same schema the app engine uses. Without it,
-    alembic's own engine -- built from the bare URL -- would create
-    ``alembic_version`` and all migration DDL in the default (``public``)
-    schema while the app tables land in the custom schema.
+    *postgres_schema*가 설정되면 ``deerflow_pg_schema`` main option으로 전달해서,
+    ``env.py``가 alembic이 띄우는 engine의 ``search_path``를 app engine이 쓰는 것과
+    같은 schema로 고정할 수 있게 한다. 이것이 없으면 alembic 자체 engine은 -- 맨
+    URL로 만들어지므로 -- app 테이블이 커스텀 schema에 생기는 동안
+    ``alembic_version``과 모든 migration DDL을 기본(``public``) schema에 만든다.
     """
     cfg = AlembicConfig()
     cfg.set_main_option("script_location", str(_MIGRATIONS_DIR))
@@ -257,7 +244,7 @@ def _get_alembic_config(engine: AsyncEngine, *, postgres_schema: str = "") -> Al
 
 
 def _get_head_revision() -> str:
-    """Return the head revision id from ``versions/``, cached per process."""
+    """``versions/``의 head revision id를 반환한다. 프로세스당 캐시된다."""
     global _HEAD_REVISION
     if _HEAD_REVISION is None:
         cfg = AlembicConfig()
@@ -271,18 +258,18 @@ def _get_head_revision() -> str:
 
 
 def _reflect_state(sync_conn: Any) -> dict[str, bool]:
-    """Inspect *sync_conn* (sync connection inside ``run_sync``) and return:
+    """*sync_conn*(``run_sync`` 안의 sync connection)을 조사해 다음을 반환한다:
 
     - ``has_alembic_version``: bool
-    - ``has_deerflow_tables``: True iff at least one table that ``Base.metadata``
-      knows about is present in the DB. Computed as ``reflected ∩ metadata`` so
-      the bootstrap layer never hardcodes a specific table or column name --
-      adding a new ORM model only changes ``Base.metadata``, not this module.
+    - ``has_deerflow_tables``: ``Base.metadata``가 아는 테이블이 DB에 하나라도 있으면
+      True. ``reflected ∩ metadata``로 계산하므로 bootstrap 계층은 특정 테이블이나
+      컬럼 이름을 하드코딩하지 않는다 -- 새 ORM 모델을 추가해도 바뀌는 것은
+      ``Base.metadata``뿐이고 이 모듈은 그대로다.
     """
     from deerflow.persistence.base import Base
 
-    # Make sure every ORM model is imported, otherwise ``Base.metadata.tables``
-    # may miss tables registered by submodules that haven't been imported yet.
+    # 모든 ORM 모델이 import되었는지 확인한다. 그러지 않으면 아직 import되지 않은
+    # 서브모듈이 등록하는 테이블을 ``Base.metadata.tables``가 놓칠 수 있다.
     try:
         import deerflow.persistence.models  # noqa: F401
     except ImportError:
@@ -298,26 +285,25 @@ def _reflect_state(sync_conn: Any) -> dict[str, bool]:
 
 
 def _decide_state(state: dict[str, bool]) -> str:
-    """Map a reflected DB state to one of three branch labels.
+    """reflect한 DB 상태를 세 갈래 라벨 중 하나로 매핑한다.
 
-    The legacy branch covers every pre-alembic DB uniformly -- whether the
-    columns added by later revisions are present or not is a question each
-    revision answers for itself via the idempotent helpers in
-    ``migrations/_helpers.py``.
+    legacy 분기는 alembic 이전의 모든 DB를 동일하게 다룬다 -- 이후 revision이 추가한
+    컬럼이 있는지 없는지는 각 revision이 ``migrations/_helpers.py``의 멱등 헬퍼로
+    스스로 답할 문제다.
     """
     if state["has_alembic_version"]:
         return "versioned"
     if not state["has_deerflow_tables"]:
-        # Either a brand-new DB or a DB containing only tables we don't own
-        # (e.g. LangGraph's checkpointer tables on a fresh deployment). The
-        # empty branch provisions the tables alembic owns, then stamps head.
+        # 완전히 새 DB이거나, 우리가 소유하지 않은 테이블만 있는 DB다(예: 새로 배포한
+        # 환경의 LangGraph checkpointer 테이블). empty 분기는 alembic이 소유하는
+        # 테이블을 프로비저닝한 뒤 head를 stamp한다.
         return "empty"
     return "legacy"
 
 
 def _run_create_all_sync(sync_conn: Any) -> None:
-    """Create all DeerFlow-owned tables on *sync_conn*."""
-    # Import here to ensure all model classes are registered with Base.metadata.
+    """*sync_conn*에 DeerFlow 소유 테이블을 모두 생성한다."""
+    # 모든 모델 클래스가 Base.metadata에 등록되도록 여기서 import한다.
     from deerflow.persistence.base import Base
 
     try:
@@ -329,13 +315,12 @@ def _run_create_all_sync(sync_conn: Any) -> None:
 
 
 def _run_baseline_create_all_sync(sync_conn: Any) -> None:
-    """Create only the baseline tables on *sync_conn* (idempotent via checkfirst).
+    """*sync_conn*에 baseline 테이블만 생성한다(checkfirst로 멱등).
 
-    Used by the legacy branch to backfill baseline-era tables missing from
-    the user's DB. Restricting the table list to ``_BASELINE_TABLE_NAMES``
-    is the safety property: an unrestricted ``create_all`` would also create
-    tables introduced by later revisions, which would then collide with
-    those revisions' ``op.create_table`` calls when alembic ran upgrade.
+    legacy 분기가 사용자 DB에 빠진 baseline 시절 테이블을 backfill할 때 쓴다. 테이블
+    목록을 ``_BASELINE_TABLE_NAMES``로 제한하는 것이 안전성의 핵심이다. 제한 없는
+    ``create_all``은 이후 revision이 도입한 테이블까지 만들고, 그러면 alembic이
+    upgrade를 돌릴 때 해당 revision의 ``op.create_table`` 호출과 충돌한다.
     """
     from deerflow.persistence.base import Base
 
@@ -347,28 +332,24 @@ def _run_baseline_create_all_sync(sync_conn: Any) -> None:
     baseline_tables = [Base.metadata.tables[name] for name in _BASELINE_TABLE_NAMES if name in Base.metadata.tables]
     Base.metadata.create_all(sync_conn, tables=baseline_tables, checkfirst=True)
 
-    # ``create_all`` with ``checkfirst=True`` skips a table and all its
-    # subordinate ``Index`` objects when the table already exists.  An index
-    # that was added to the ORM model after the table was first provisioned
-    # would therefore never be created, and because the legacy branch stamps
-    # ``0001_baseline`` before running upgrade, alembic's own
-    # ``batch_op.create_index`` for baseline-era indexes is skipped too.
-    # Explicitly creating every baseline-era ``Index`` on every baseline table
-    # (each with its own ``checkfirst=True``) guarantees each index exists
-    # regardless of whether its parent table was just created or already
-    # present.
+    # ``checkfirst=True``인 ``create_all``은 테이블이 이미 있으면 그 테이블과 하위
+    # ``Index`` 객체를 전부 건너뛴다. 따라서 테이블이 처음 프로비저닝된 뒤 ORM 모델에
+    # 추가된 index는 영영 생성되지 않고, legacy 분기는 upgrade 전에
+    # ``0001_baseline``을 stamp하므로 baseline 시절 index에 대한 alembic 자체의
+    # ``batch_op.create_index``도 건너뛴다. 모든 baseline 테이블의 baseline 시절
+    # ``Index``를 각각 ``checkfirst=True``로 명시적으로 생성하면, 부모 테이블이 방금
+    # 만들어졌든 이미 있었든 상관없이 각 index의 존재가 보장된다.
     #
-    # **Scope**: Only indexes in ``_BASELINE_INDEX_NAMES`` are created.
-    # ``table.indexes`` is the *current* ORM model's full index set, which
-    # includes post-baseline indexes added by later revisions (e.g.
-    # ``uq_runs_thread_active`` from 0004).  Creating those prematurely would
-    # collide with their owning revision's data prerequisites (dedup steps,
-    # column migrations) and raise ``IntegrityError`` on legacy DBs.
+    # **범위**: ``_BASELINE_INDEX_NAMES``에 있는 index만 생성한다.
+    # ``table.indexes``는 *현재* ORM 모델의 전체 index 집합이라, 이후 revision이 추가한
+    # baseline 이후 index(예: 0004의 ``uq_runs_thread_active``)도 포함한다. 그것들을
+    # 미리 만들면 소유 revision의 데이터 전제조건(dedup 단계, 컬럼 migration)과
+    # 충돌해 legacy DB에서 ``IntegrityError``가 난다.
     #
-    # Post-baseline revisions that add an index to a baseline table must use
-    # the existing ``sa.inspect(bind).get_indexes(...)`` + ``if name not in
-    # existing`` guard pattern (see 0004_run_ownership.py:99-103), or a future
-    # ``safe_create_index`` helper -- mirroring ``safe_add_column``.
+    # baseline 테이블에 index를 추가하는 baseline 이후 revision은 기존
+    # ``sa.inspect(bind).get_indexes(...)`` + ``if name not in existing`` guard 패턴을
+    # 쓰거나(0004_run_ownership.py:99-103 참고), ``safe_add_column``에 대응하는 미래의
+    # ``safe_create_index`` 헬퍼를 써야 한다.
     for table in baseline_tables:
         for idx in table.indexes:
             if idx.name not in _BASELINE_INDEX_NAMES:
@@ -384,48 +365,45 @@ def _run_baseline_create_all_sync(sync_conn: Any) -> None:
 
 
 def _stamp(cfg: AlembicConfig, revision: str) -> None:
-    """Synchronous alembic stamp; callers must wrap in ``asyncio.to_thread``."""
+    """동기 alembic stamp. 호출자는 ``asyncio.to_thread``로 감싸야 한다."""
     alembic_command.stamp(cfg, revision)
 
 
 def _upgrade(cfg: AlembicConfig, revision: str) -> None:
-    """Synchronous alembic upgrade; callers must wrap in ``asyncio.to_thread``."""
+    """동기 alembic upgrade. 호출자는 ``asyncio.to_thread``로 감싸야 한다."""
     alembic_command.upgrade(cfg, revision)
 
 
 # ---------------------------------------------------------------------------
-# Cross-process locking
+# 프로세스 간 locking
 # ---------------------------------------------------------------------------
 
 
 @asynccontextmanager
 async def _postgres_lock(engine: AsyncEngine):
-    """Hold a Postgres session-level advisory lock for the body of the block.
+    """블록 본문 동안 Postgres session 수준 advisory lock을 유지한다.
 
-    Session-level (not transaction-level) so the lock outlives implicit
-    transactions opened by alembic during ``stamp`` / ``upgrade``. The lock
-    is released explicitly on the way out and -- as a safety net -- when the
-    backing session disconnects (process crash, kill -9).
+    transaction 수준이 아니라 session 수준이므로, alembic이 ``stamp`` / ``upgrade``
+    중에 여는 암시적 transaction보다 lock이 오래 산다. lock은 빠져나갈 때 명시적으로
+    해제하며, 안전망으로 뒷단 session이 끊길 때(프로세스 크래시, kill -9)도 해제된다.
 
-    Idle-in-transaction protection
+    idle-in-transaction 보호
     ------------------------------
 
-    ``engine.connect()`` auto-begins a transaction on the first ``execute``,
-    and this connection then sits idle while ``asyncio.to_thread(_upgrade,
-    ...)`` runs alembic on a *different* pooled connection. Managed Postgres
-    (RDS, Cloud SQL, Supabase) ships with ``idle_in_transaction_session_
-    timeout`` set to 1-10 minutes by default; if alembic takes longer than
-    that, the host kills this idle-in-transaction session, and because
-    advisory locks are session-scoped, the lock is **silently released**.
-    A second Gateway then acquires it and runs DDL concurrently with the
-    first -- defeating the whole purpose of the lock.
+    ``engine.connect()``는 첫 ``execute``에서 transaction을 자동으로 시작하고, 이
+    connection은 ``asyncio.to_thread(_upgrade, ...)``가 *다른* pooled connection에서
+    alembic을 돌리는 동안 유휴 상태로 남는다. 관리형 Postgres(RDS, Cloud SQL,
+    Supabase)는 기본적으로 ``idle_in_transaction_session_timeout``이 1-10분으로
+    설정되어 있다. alembic이 그보다 오래 걸리면 호스트가 이 idle-in-transaction
+    session을 죽이고, advisory lock은 session 범위이므로 lock이 **조용히 해제된다.**
+    그러면 두 번째 Gateway가 lock을 획득해 첫 번째와 동시에 DDL을 돌리게 되어 lock의
+    목적 자체가 무의미해진다.
 
-    Defence: ``SET LOCAL idle_in_transaction_session_timeout = 0`` disables
-    the kill **for this transaction only** (no global / role-level effect).
-    Self-hosted Postgres usually ships with the timeout off, so this is a
-    no-op there; on managed PG it is what keeps the lock alive while DDL
-    runs. Must execute *before* ``pg_advisory_lock`` so a slow lock acquire
-    on a heavily-contended cluster is itself protected.
+    방어책: ``SET LOCAL idle_in_transaction_session_timeout = 0``으로 **이 transaction
+    에 한해서만** 강제 종료를 끈다(전역/role 수준 영향 없음). 자체 호스팅 Postgres는
+    보통 이 timeout이 꺼져 있어 no-op이고, 관리형 PG에서는 DDL이 도는 동안 lock을
+    살려두는 역할을 한다. 경합이 심한 클러스터에서 lock 획득이 느린 경우도 보호받도록
+    반드시 ``pg_advisory_lock`` *이전*에 실행해야 한다.
     """
     async with engine.connect() as conn:
         await conn.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
@@ -442,24 +420,22 @@ async def _postgres_lock(engine: AsyncEngine):
 
 @asynccontextmanager
 async def _sqlite_lock(engine: AsyncEngine):
-    """Serialise SQLite bootstrap inside one process; cross-process is
-    best-effort via SQLite's own file lock + ``PRAGMA busy_timeout``.
+    """SQLite bootstrap을 한 프로세스 안에서 직렬화한다. 프로세스 간에는 SQLite 자체
+    파일 lock과 ``PRAGMA busy_timeout``으로 best-effort 처리한다.
 
-    Why not ``BEGIN IMMEDIATE`` on a sentinel connection? SQLite is
-    single-writer per file. If we held a write lock on one connection,
-    alembic's own connection (opened inside ``stamp`` / ``upgrade``) would
-    deadlock against us.
+    sentinel connection에 ``BEGIN IMMEDIATE``를 쓰지 않는 이유는? SQLite는 파일당
+    writer가 하나다. 한 connection에서 쓰기 lock을 잡고 있으면, alembic 자신의
+    connection(``stamp`` / ``upgrade`` 안에서 열린다)이 우리와 deadlock에 빠진다.
 
-    Why not a cross-process OS file lock? It would work, but it adds a hard
-    dependency on platform-specific ``fcntl`` / ``msvcrt`` calls for a
-    deployment shape (multi-process SQLite) that's already discouraged for
-    DeerFlow. The 30s ``busy_timeout`` plus idempotent revisions cover the
-    realistic case; truly multi-instance deployments should use Postgres.
+    프로세스 간 OS 파일 lock을 쓰지 않는 이유는? 동작은 하지만, DeerFlow에서 이미
+    권장하지 않는 배포 형태(다중 프로세스 SQLite)를 위해 플랫폼별 ``fcntl`` /
+    ``msvcrt`` 호출에 강한 의존을 추가하게 된다. 30초 ``busy_timeout``과 멱등
+    revision이 현실적인 경우를 덮으며, 진짜 다중 인스턴스 배포는 Postgres를 써야 한다.
 
-    Note: the 30s ``busy_timeout`` is set by the engine event hooks in
-    ``persistence/engine.py`` (production) and ``migrations/env.py``
-    (alembic-spawned). This function relies on those PRAGMAs being in place
-    rather than setting one on a probe connection that wouldn't propagate.
+    참고: 30초 ``busy_timeout``은 ``persistence/engine.py``(production)와
+    ``migrations/env.py``(alembic이 띄우는 쪽)의 engine 이벤트 hook이 설정한다. 이
+    함수는 전파되지도 않을 probe connection에 PRAGMA를 거는 대신, 그 PRAGMA들이 이미
+    자리 잡고 있다는 사실에 의존한다.
     """
     async with _get_sqlite_local_lock(engine):
         logger.info("bootstrap: acquired sqlite in-process lock")
@@ -475,25 +451,25 @@ def _bootstrap_lock(engine: AsyncEngine, *, backend: str):
 
 
 # ---------------------------------------------------------------------------
-# Top-level entry point
+# 최상위 진입점
 # ---------------------------------------------------------------------------
 
 
 async def bootstrap_schema(engine: AsyncEngine, *, backend: str, postgres_schema: str = "") -> None:
-    """Bring the DB schema to head.
+    """DB schema를 head까지 올린다.
 
-    Postgres calls are serialised across processes with an advisory lock.
-    SQLite calls are serialised inside one process and are best-effort across
-    processes via SQLite's file lock and ``busy_timeout``.
+    Postgres 호출은 advisory lock으로 프로세스 간 직렬화된다. SQLite 호출은 한 프로세스
+    안에서 직렬화되고, 프로세스 간에는 SQLite의 파일 lock과 ``busy_timeout``으로
+    best-effort 처리된다.
 
-    Branch dispatch is documented at module top. ``alembic.command.stamp`` and
-    ``alembic.command.upgrade`` are synchronous and would block the event
-    loop; both are wrapped in ``asyncio.to_thread``.
+    분기 dispatch는 모듈 상단에 문서화되어 있다. ``alembic.command.stamp``와
+    ``alembic.command.upgrade``는 동기이고 event loop를 막으므로 둘 다
+    ``asyncio.to_thread``로 감싼다.
 
-    *postgres_schema*, when set, is forwarded to the alembic config so the
-    alembic-spawned engine pins its ``search_path`` to that schema. The target
-    schema must already exist (``init_engine`` issues ``CREATE SCHEMA`` before
-    calling this). Ignored for non-postgres backends.
+    *postgres_schema*가 설정되면 alembic config로 전달해서, alembic이 띄우는 engine이
+    ``search_path``를 그 schema로 고정하게 한다. 대상 schema는 이미 존재해야 한다
+    (``init_engine``이 이 함수를 호출하기 전에 ``CREATE SCHEMA``를 실행한다).
+    postgres가 아닌 backend에서는 무시된다.
     """
     head = _get_head_revision()
     cfg = _get_alembic_config(engine, postgres_schema=postgres_schema if backend == "postgres" else "")
@@ -515,16 +491,14 @@ async def bootstrap_schema(engine: AsyncEngine, *, backend: str, postgres_schema
                 _BASELINE_REVISION,
                 head,
             )
-            # ``_run_baseline_create_all_sync`` is restricted to
-            # ``_BASELINE_TABLE_NAMES`` -- a plain ``Base.metadata.create_all``
-            # would also create tables introduced by later revisions and
-            # collide with their ``op.create_table`` on the subsequent
-            # upgrade. With the restriction, missing baseline tables are
-            # backfilled and post-baseline ``create_table`` revisions run
-            # against a DB where their tables genuinely do not yet exist.
-            # The post-create_all column-add revisions still no-op via
-            # ``safe_add_column`` because baseline-era tables now have the
-            # columns those revisions would add.
+            # ``_run_baseline_create_all_sync``는 ``_BASELINE_TABLE_NAMES``로
+            # 제한된다 -- 평범한 ``Base.metadata.create_all``은 이후 revision이
+            # 도입한 테이블까지 만들어, 다음 upgrade에서 그 revision의
+            # ``op.create_table``과 충돌한다. 제한을 두면 빠진 baseline 테이블만
+            # backfill되고, baseline 이후의 ``create_table`` revision은 자기 테이블이
+            # 정말로 아직 없는 DB를 상대로 실행된다. create_all 이후의 컬럼 추가
+            # revision은 baseline 시절 테이블이 이제 그 컬럼을 갖고 있으므로
+            # ``safe_add_column``을 통해 여전히 no-op이 된다.
             async with engine.begin() as conn:
                 await conn.run_sync(_run_baseline_create_all_sync)
             await asyncio.to_thread(_stamp, cfg, _BASELINE_REVISION)
@@ -534,7 +508,7 @@ async def bootstrap_schema(engine: AsyncEngine, *, backend: str, postgres_schema
             logger.info("bootstrap: branch=versioned -> upgrade head (%s)", head)
             await asyncio.to_thread(_upgrade, cfg, "head")
 
-        else:  # pragma: no cover -- defensive
+        else:  # pragma: no cover -- 방어적 처리
             raise RuntimeError(f"bootstrap: unhandled decision {decision!r}")
 
     logger.info("bootstrap: complete (backend=%s)", backend)

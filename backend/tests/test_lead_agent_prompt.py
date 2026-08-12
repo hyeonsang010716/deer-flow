@@ -232,12 +232,12 @@ def test_apply_prompt_template_includes_subagent_total_limit(monkeypatch):
         app_config=explicit_config,
     )
 
-    assert "MAXIMUM 3 `task` CALLS PER RESPONSE" in prompt
-    assert "MAXIMUM 5 `task` CALLS PER RUN" in prompt
-    assert "Default to direct execution" in prompt
-    assert "DELEGATION CHECK" in prompt
-    assert "expected benefit from real parallel latency" in prompt
-    assert "HARD LIMITS ARE NON-NEGOTIABLE" in prompt
+    assert "응답당 `task` 호출은 최대 3개" in prompt
+    assert "run당 `task` 호출은 최대 5개" in prompt
+    assert "직접 실행을 기본으로 하라" in prompt
+    assert "위임 점검" in prompt
+    assert "실제 병렬 지연 단축" in prompt
+    assert "한계는 협상 불가다" in prompt
 
 
 def test_apply_prompt_template_clamps_subagent_limits_to_enforced_bounds(monkeypatch):
@@ -265,8 +265,8 @@ def test_apply_prompt_template_clamps_subagent_limits_to_enforced_bounds(monkeyp
         app_config=explicit_config,
     )
 
-    assert "MAXIMUM 4 `task` CALLS PER RESPONSE" in prompt
-    assert "MAXIMUM 50 `task` CALLS PER RUN" in prompt
+    assert "응답당 `task` 호출은 최대 4개" in prompt
+    assert "run당 `task` 호출은 최대 50개" in prompt
 
 
 def test_apply_prompt_template_single_subagent_limit_matches_middleware(monkeypatch):
@@ -307,13 +307,13 @@ def test_apply_prompt_template_single_subagent_limit_matches_middleware(monkeypa
         app_config=explicit_config,
     )
 
-    assert f"MAXIMUM {enforced} `task` CALLS PER RESPONSE" in prompt
-    assert f"HARD LIMITS ARE NON-NEGOTIABLE: max {enforced} `task` calls per response" in prompt
-    assert "Expected benefit = specialist capability + context isolation" in prompt
-    assert "delegate only for material specialist or context-isolation benefit" in prompt
-    assert "expected benefit from real parallel latency" not in prompt
-    assert "material within-batch parallel savings" not in prompt
-    assert "Multi-batch example" not in prompt
+    assert f"응답당 `task` 호출은 최대 {enforced}개" in prompt
+    assert f"한계는 협상 불가다: 응답당 `task` 호출 최대 {enforced}회" in prompt
+    assert "기대 이득 = 전문성 + context 격리" in prompt
+    assert "실질적인 전문성 이득이나 context 격리 이득이 있을 때만 위임하라" in prompt
+    assert "실제 병렬 지연 단축" not in prompt
+    assert "batch 내부의 실질적인 병렬 절감" not in prompt
+    assert "다중 batch 예시" not in prompt
 
 
 def test_build_acp_section_uses_explicit_app_config_without_global_config(monkeypatch):

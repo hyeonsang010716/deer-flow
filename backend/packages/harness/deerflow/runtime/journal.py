@@ -1,18 +1,17 @@
-"""Run event capture via LangChain callbacks.
+"""LangChain callback을 통한 run event 수집.
 
-RunJournal sits between LangChain's callback mechanism and the pluggable
-RunEventStore. It standardizes callback data into RunEvent records and
-handles token usage accumulation.
+RunJournal은 LangChain의 callback 메커니즘과 교체 가능한 RunEventStore 사이에 놓인다. callback
+데이터를 RunEvent 레코드로 표준화하고 token usage 누적을 처리한다.
 
-Key design decisions:
-- on_llm_new_token is NOT implemented -- only complete messages via on_llm_end
-- on_chat_model_start captures the first user-visible prompt as llm.human.input and
-  extracts the first human message for run.input, because it is more reliable than
-  on_chain_start (fires on every node) — messages here are fully structured.
-- on_chain_start with parent_run_id=None emits a run.start trace marking root invocation.
-- on_llm_end emits llm.ai.response in checkpoint-aligned AIMessage.model_dump() format
-- Token usage accumulated in memory, written to RunRow on run completion
-- Caller identification via tags injection (lead_agent / subagent:{name} / middleware:{name})
+핵심 설계 결정:
+- on_llm_new_token은 구현하지 않는다 — on_llm_end로 완성된 메시지만 다룬다
+- on_chat_model_start가 사용자에게 보이는 첫 prompt를 llm.human.input으로 기록하고 run.input용
+  첫 human message를 추출한다. 모든 node에서 발생하는 on_chain_start보다 신뢰할 수 있고,
+  여기서는 메시지가 완전히 구조화돼 있기 때문이다.
+- parent_run_id=None인 on_chain_start는 root 호출을 표시하는 run.start trace를 발생시킨다.
+- on_llm_end는 checkpoint와 정렬된 AIMessage.model_dump() 형식으로 llm.ai.response를 낸다
+- token usage는 메모리에 누적했다가 run 완료 시 RunRow에 기록한다
+- 호출자 식별은 tag 주입으로 한다(lead_agent / subagent:{name} / middleware:{name})
 """
 
 from __future__ import annotations
@@ -65,15 +64,14 @@ def _should_persist_human_input_message(message: BaseMessage) -> bool:
 
 
 def _coerce_seed_message(message: Any) -> Any:
-    """Return ``message`` as a ``BaseMessage``, deserializing dict form if needed.
+    """``message``를 ``BaseMessage``로 반환하고, 필요하면 dict 형태를 역직렬화한다.
 
-    ``_checkpoint_messages`` (threads.py) returns whatever the snapshot holds,
-    and its sibling branch-matching helpers all handle a message being either a
-    ``BaseMessage`` or a ``model_dump()``-shaped dict (serde differences across
-    checkpoint backends/modes). The seed path must handle both too — otherwise a
-    dict-backed checkpoint seeds nothing and the branch silently reports
-    ``skipped_empty`` while history exists. Unparseable dicts fall through
-    unchanged and are dropped by the ``isinstance(BaseMessage)`` guard.
+    ``_checkpoint_messages``(threads.py)는 snapshot이 담고 있는 값을 그대로 반환하고, 형제격인
+    branch 매칭 헬퍼들은 메시지가 ``BaseMessage``이든 ``model_dump()`` 형태의 dict이든 모두
+    처리한다(checkpoint backend/mode마다 serde가 다르기 때문). seed 경로도 둘 다 처리해야 한다 —
+    그러지 않으면 dict 기반 checkpoint는 아무것도 seed하지 못하고, 히스토리가 있는데도 branch가
+    조용히 ``skipped_empty``를 보고한다. 파싱할 수 없는 dict는 그대로 통과해
+    ``isinstance(BaseMessage)`` 가드에서 걸러진다.
     """
     if isinstance(message, BaseMessage):
         return message
@@ -94,41 +92,34 @@ def _build_history_seed_events(
     run_id_prefix: str,
     seed_metadata: Mapping[str, Any],
 ) -> list[dict]:
-    """Serialize checkpoint messages into run-event rows.
+    """checkpoint 메시지를 run-event row로 직렬화한다.
 
-    Rows are grouped into one synthetic run per checkpoint turn
-    (``{run_id_prefix}-{n}``), a new turn starting at every persisted human
-    message — the same boundary a real run has, since a run begins with a
-    human input (including the allowlisted hidden ``ask_clarification``
-    reply, which resumes as its own run). ``run_id`` is a *turn* identity to
-    the feed's consumers, not merely a provenance tag: regenerating the last
-    inherited answer resolves that row's ``run_id`` as the superseded source
-    (``_find_target_run_id``) and ``GET /messages/page`` then drops **every**
-    row carrying it. One shared id for the whole seed therefore deleted the
-    complete inherited history on the branch's first regenerate (#4458); one
-    id per turn confines the drop to the turn actually regenerated.
+    row는 checkpoint turn 단위로 하나의 합성 run(``{run_id_prefix}-{n}``)으로 묶이며, 저장된 human
+    message마다 새 turn이 시작된다 — 실제 run과 같은 경계다. run은 human 입력으로 시작하기
+    때문이다(자기 run으로 재개되는, allowlist에 있는 숨김 ``ask_clarification`` 응답 포함).
+    ``run_id``는 feed 소비자에게 단순한 출처 tag가 아니라 *turn* 정체성이다. 마지막으로 상속받은
+    답변을 regenerate하면 그 row의 ``run_id``가 대체된 원본으로 해석되고
+    (``_find_target_run_id``), ``GET /messages/page``는 그 id를 가진 **모든** row를 버린다. 그래서
+    seed 전체에 id 하나를 공유하면 branch의 첫 regenerate에서 상속받은 히스토리 전체가
+    삭제됐다(#4458). turn마다 id를 따로 주면 삭제 범위가 실제로 regenerate된 turn으로 한정된다.
 
-    Mirrors RunJournal's message-event contract so seeded rows are
-    indistinguishable from journaled ones except by the supplied seed metadata:
-    same event types, ``category="message"``, ``content=message.model_dump()``,
-    the human-input persistence rule
-    (``_should_persist_human_input_message``), the original-user-text
-    restoration, and the same treatment of ``hide_from_ui`` AI/tool rows —
-    RunJournal persists them (``on_llm_end`` / ``_persist_tool_result_message``
-    do not filter) and the frontend hides them client-side, so the seed writes
-    them too rather than dropping them.
+    RunJournal의 message-event 계약을 그대로 따르므로, seed된 row는 주어진 seed metadata를 빼면
+    journal이 기록한 row와 구분되지 않는다. 동일한 event type, ``category="message"``,
+    ``content=message.model_dump()``, human 입력 저장 규칙
+    (``_should_persist_human_input_message``), 원본 사용자 텍스트 복원, 그리고 ``hide_from_ui``
+    AI/tool row에 대한 동일한 처리 — RunJournal은 이들을 저장하고(``on_llm_end`` /
+    ``_persist_tool_result_message``는 걸러 내지 않는다) frontend가 클라이언트 쪽에서 숨기므로,
+    seed도 버리지 않고 함께 기록한다.
 
-    The one deliberate divergence, because a checkpoint message carries no run
-    scope: AI rows omit RunJournal's run-scoped enrichment (``usage`` /
-    ``latency_ms`` / ``llm_call_index``), and ``caller`` is stamped
-    ``lead_agent`` rather than the message's original caller (unrecoverable
-    here). Neither is observable today — no consumer indexes those metadata
-    keys, and per-message ``caller`` drives no attribution (the ``by_caller``
-    usage panel is run-scoped, not fed from the message feed).
+    checkpoint 메시지에는 run 범위가 없어서 생기는 의도적인 차이 하나: AI row는 RunJournal의
+    run 범위 부가 정보(``usage`` / ``latency_ms`` / ``llm_call_index``)를 생략하고, ``caller``는
+    (여기서는 복원할 수 없는) 메시지의 원래 호출자 대신 ``lead_agent``로 찍는다. 현재로서는 둘 다
+    관측되지 않는다 — 그 metadata 키를 인덱싱하는 소비자가 없고, 메시지별 ``caller``는 어떤
+    귀속에도 쓰이지 않는다(``by_caller`` usage 패널은 run 범위이며 message feed에서 나오지 않는다).
     """
     events: list[dict] = []
     created_at = datetime.now(UTC).isoformat()
-    # Messages ahead of the first human turn (none in practice) stay in turn 0.
+    # 첫 human turn보다 앞선 메시지(실제로는 없다)는 turn 0에 남는다.
     turn_index = 0
     for raw_message in messages:
         message = _coerce_seed_message(raw_message)
@@ -150,7 +141,7 @@ def _build_history_seed_events(
             content = message.model_dump()
             metadata = dict(seed_metadata)
         else:
-            # System / remove / summary artifacts never enter the thread feed.
+            # system / remove / summary 산출물은 thread feed에 들어가지 않는다.
             continue
         events.append(
             {
@@ -173,7 +164,7 @@ def build_branch_history_seed_events(
     run_id_prefix: str,
     parent_thread_id: str,
 ) -> list[dict]:
-    """Serialize inherited branch history into the branch's empty event feed."""
+    """상속받은 branch 히스토리를 branch의 비어 있는 event feed로 직렬화한다."""
     return _build_history_seed_events(
         messages,
         thread_id=thread_id,
@@ -191,11 +182,10 @@ def build_checkpoint_history_seed_events(
     thread_id: str,
     run_id_prefix: str,
 ) -> list[dict]:
-    """Serialize legacy checkpoint history for a thread's empty event feed.
+    """thread의 비어 있는 event feed를 위해 레거시 checkpoint 히스토리를 직렬화한다.
 
-    Reuse the branch seed's message normalization and per-turn synthetic run
-    grouping, but stamp migration-specific metadata so these rows are not
-    misidentified as history inherited from another thread.
+    branch seed의 메시지 정규화와 turn별 합성 run 그룹핑을 재사용하되, migration 전용 metadata를
+    찍어서 이 row들이 다른 thread에서 상속받은 히스토리로 오인되지 않게 한다.
     """
     return _build_history_seed_events(
         messages,
@@ -206,18 +196,17 @@ def build_checkpoint_history_seed_events(
 
 
 class RunJournal(BaseCallbackHandler):
-    """LangChain callback handler that captures events to RunEventStore."""
+    """event를 RunEventStore에 기록하는 LangChain callback handler."""
 
-    # Subagents may execute on a persistent event loop in another thread. This
-    # handler owns loop-local tasks and a store/pool created for the parent run,
-    # so the isolated-loop context copier must not inherit it. LangGraph's own
-    # stream callbacks remain inheritable and keep child token frames flowing.
+    # subagent는 다른 thread의 persistent event loop에서 실행될 수 있다. 이 handler는 loop 지역
+    # task와 부모 run용으로 만든 store/pool을 소유하므로, 격리된 loop의 context 복사기가 이것을
+    # 상속해서는 안 된다. LangGraph 자체 stream callback은 상속 가능하게 남아 자식 token frame이
+    # 계속 흐르게 한다.
     deerflow_loop_bound = True
 
-    # Every callback only updates in-memory run state or schedules async IO.
-    # Keeping callbacks on the run's event-loop thread serializes mutations
-    # from parallel tool calls and prevents cancelled executor callbacks from
-    # racing terminal delivery recording and flush.
+    # 모든 callback은 메모리 상의 run state만 갱신하거나 async IO를 예약한다. callback을 run의
+    # event-loop thread에 두면 병렬 tool call에서 오는 변경이 직렬화되고, 취소된 executor
+    # callback이 terminal delivery 기록 및 flush와 경쟁하는 것을 막는다.
     run_inline = True
 
     def __init__(
@@ -240,7 +229,7 @@ class RunJournal(BaseCallbackHandler):
         self._progress_reporter = progress_reporter
         self._progress_flush_interval = progress_flush_interval
 
-        # Write buffer
+        # 쓰기 buffer
         self._buffer: list[dict] = []
         self._pending_flush_tasks: set[asyncio.Task[None]] = set()
         self._pending_progress_task: asyncio.Task[None] | None = None
@@ -248,61 +237,61 @@ class RunJournal(BaseCallbackHandler):
         self._progress_dirty = False
         self._last_progress_flush = 0.0
 
-        # Token accumulators
+        # token 누적기
         self._total_input_tokens = 0
         self._total_output_tokens = 0
         self._total_tokens = 0
         self._llm_call_count = 0
 
-        # Caller-bucketed token accumulators
+        # 호출자별 token 누적기
         self._lead_agent_tokens = 0
         self._subagent_tokens = 0
         self._middleware_tokens = 0
 
-        # Per-model token accumulator
+        # 모델별 token 누적기
         self._tokens_by_model: dict[str, dict[str, int]] = {}
 
-        # Dedup: LangChain may fire on_llm_end multiple times for the same run_id
+        # 중복 제거: LangChain은 같은 run_id에 대해 on_llm_end를 여러 번 발생시킬 수 있다
         self._counted_llm_run_ids: set[str] = set()
         self._counted_external_source_ids: set[str] = set()
         self._counted_message_llm_run_ids: set[str] = set()
         self._memory_context_recorded = False
 
-        # Convenience fields
+        # 편의 필드
         self._last_ai_msg: str | None = None
         self._first_human_msg: str | None = None
         self._msg_count = 0
         self._had_llm_error_fallback = False
         self._llm_error_fallback_message: str | None = None
 
-        # Latency tracking
-        self._llm_start_times: dict[str, float] = {}  # langchain run_id -> start time
+        # latency 추적
+        self._llm_start_times: dict[str, float] = {}  # langchain run_id -> 시작 시각
 
-        # LLM request/response tracking
+        # LLM 요청/응답 추적
         self._llm_call_index = 0
-        self._seen_llm_starts: set[str] = set()  # langchain run_ids that fired on_chat_model_start
+        self._seen_llm_starts: set[str] = set()  # on_chat_model_start가 발생한 langchain run_id들
         self._current_run_tool_call_names: dict[str, str] = {}
         self._persisted_tool_message_identities: set[str] = set()
 
-        # Artifact-production tracking for the terminal run.delivery event
-        # (#4272 slice 1). Deduped by (path, tool_name); insertion order kept.
+        # terminal run.delivery event를 위한 artifact 생성 추적(#4272 slice 1).
+        # (path, tool_name)으로 중복 제거하고 삽입 순서를 유지한다.
         self._produced_artifacts: list[tuple[str, str | None]] = []
         self._produced_artifact_keys: set[tuple[str, str | None]] = set()
 
-    # -- Lifecycle callbacks --
+    # -- lifecycle callback 처리 --
 
     @staticmethod
     def _message_text(message: BaseMessage) -> str:
-        """Extract displayable text from a message's mixed content shape."""
+        """메시지의 혼합 content 형태에서 표시 가능한 텍스트를 추출한다."""
         return message_to_text(message, text_attribute_fallback=True)
 
     def _record_message_summary(self, message: BaseMessage, *, caller: str | None = None) -> None:
-        """Update run-level convenience fields for persisted run rows."""
+        """저장될 run row를 위해 run 수준의 편의 필드를 갱신한다."""
         self._msg_count += 1
 
-        # ``last_ai_message`` should represent the lead agent's user-facing
-        # answer. Middleware/subagent model calls and empty tool-call-only
-        # AI messages must not overwrite the last useful assistant text.
+        # ``last_ai_message``는 lead agent가 사용자에게 보여 준 답변이어야 한다.
+        # middleware/subagent의 모델 호출이나 tool call만 있는 빈 AI 메시지가 마지막으로 쓸모
+        # 있는 assistant 텍스트를 덮어써서는 안 된다.
         is_ai_message = isinstance(message, AIMessage) or getattr(message, "type", None) == "ai"
         if is_ai_message and (caller is None or caller == "lead_agent"):
             text = self._message_text(message).strip()
@@ -322,7 +311,7 @@ class RunJournal(BaseCallbackHandler):
     ) -> None:
         caller = self._identify_caller(tags)
         if parent_run_id is None:
-            # Root graph invocation — emit a single trace event for the run start.
+            # root graph 호출 — run 시작에 대한 trace event를 하나만 낸다.
             chain_name = (serialized or {}).get("name", "unknown")
             self._put(
                 event_type=RUN_START_EVENT.event_type,
@@ -339,8 +328,8 @@ class RunJournal(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        # Nested chain ends fire for internal graph nodes; only the root chain
-        # represents the user-visible run lifecycle.
+        # 중첩된 chain 종료는 내부 graph node에서도 발생한다. 사용자에게 보이는 run
+        # lifecycle을 나타내는 것은 root chain뿐이다.
         if parent_run_id is not None:
             return
         self._reconcile_final_tool_messages(outputs)
@@ -361,7 +350,7 @@ class RunJournal(BaseCallbackHandler):
         )
         self._flush_sync()
 
-    # -- LLM callbacks --
+    # -- LLM callback 처리 --
 
     def on_chat_model_start(
         self,
@@ -372,11 +361,10 @@ class RunJournal(BaseCallbackHandler):
         tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Capture the first user-visible prompt as llm.human.input.
+        """사용자에게 보이는 첫 prompt를 llm.human.input으로 기록한다.
 
-        This is also the canonical place to extract the first human message:
-        messages are fully structured here, it fires only on real LLM calls,
-        and the content is never compressed by checkpoint trimming.
+        첫 human message를 추출하기에도 여기가 정석이다. 메시지가 완전히 구조화돼 있고, 실제 LLM
+        호출에서만 발생하며, content가 checkpoint trimming으로 압축되는 일이 없다.
         """
         rid = str(run_id)
         self._llm_start_times[rid] = time.monotonic()
@@ -391,7 +379,7 @@ class RunJournal(BaseCallbackHandler):
             [len(batch) for batch in messages],
         )
 
-        # Capture the first user message sent to the lead agent in this run.
+        # 이번 run에서 lead agent로 보내진 첫 사용자 메시지를 기록한다.
         caller = self._identify_caller(tags)
         if caller == "lead_agent" and not self._first_human_msg and messages:
             for batch in reversed(messages):
@@ -411,7 +399,7 @@ class RunJournal(BaseCallbackHandler):
                     break
 
     def on_llm_start(self, serialized: dict, prompts: list[str], *, run_id: UUID, parent_run_id: UUID | None = None, tags: list[str] | None = None, metadata: dict[str, Any] | None = None, **kwargs: Any) -> None:
-        # Fallback: on_chat_model_start is preferred. This just tracks latency.
+        # fallback 경로다. on_chat_model_start를 우선 쓰며, 여기서는 latency만 추적한다.
         self._llm_start_times[str(run_id)] = time.monotonic()
 
     def on_llm_end(
@@ -436,12 +424,12 @@ class RunJournal(BaseCallbackHandler):
             caller = self._identify_caller(tags)
             self._remember_current_run_tool_calls(message, caller=caller)
 
-            # Latency
+            # latency 계산
             rid = str(run_id)
             start = self._llm_start_times.pop(rid, None)
             latency_ms = int((time.monotonic() - start) * 1000) if start else None
 
-            # Token usage from message
+            # 메시지에서 얻은 token usage
             usage = getattr(message, "usage_metadata", None)
             usage_dict = dict(usage) if usage else {}
             additional_kwargs = getattr(message, "additional_kwargs", None) or {}
@@ -457,15 +445,15 @@ class RunJournal(BaseCallbackHandler):
                 elif fallback_text:
                     self._llm_error_fallback_message = fallback_text[:2000]
 
-            # Resolve call index
+            # 호출 index 결정
             call_index = self._llm_call_index
             if rid not in self._seen_llm_starts:
-                # Fallback: on_chat_model_start was not called
+                # fallback: on_chat_model_start가 호출되지 않은 경우
                 self._llm_call_index += 1
                 call_index = self._llm_call_index
                 self._seen_llm_starts.add(rid)
 
-            # Message event: checkpoint-aligned llm.ai.response payload.
+            # 메시지 event: checkpoint와 정렬된 llm.ai.response payload.
             self._put(
                 event_type=LLM_AI_RESPONSE_EVENT.event_type,
                 category=LLM_AI_RESPONSE_EVENT.category,
@@ -480,8 +468,8 @@ class RunJournal(BaseCallbackHandler):
             if rid not in self._counted_message_llm_run_ids:
                 self._record_message_summary(message, caller=caller)
 
-            # Token accumulation (dedup by langchain run_id to avoid double-counting
-            # when the callback fires more than once for the same response)
+            # token 누적(같은 응답에 대해 callback이 여러 번 발생해도 이중 집계되지 않도록
+            # langchain run_id로 중복 제거)
             if self._track_tokens:
                 input_tk = usage_dict.get("input_tokens", 0) or 0
                 output_tk = usage_dict.get("output_tokens", 0) or 0
@@ -502,7 +490,7 @@ class RunJournal(BaseCallbackHandler):
                     else:
                         self._lead_agent_tokens += total_tk
 
-                    # Per-model bucket
+                    # 모델별 bucket
                     response_metadata = getattr(message, "response_metadata", None) or {}
                     per_call_model: str | None = None
                     if isinstance(response_metadata, Mapping):
@@ -523,12 +511,12 @@ class RunJournal(BaseCallbackHandler):
         )
 
     def on_tool_start(self, serialized, input_str, *, run_id, parent_run_id=None, tags=None, metadata=None, inputs=None, **kwargs):
-        """Handle tool start event, cache tool call ID for later correlation"""
+        """tool 시작 event를 처리하고, 나중에 대조할 수 있게 tool call ID를 캐시한다"""
         tool_call_id = str(run_id)
         logger.debug("Tool start for node %s, tool_call_id=%s, tags=%s", run_id, tool_call_id, tags)
 
     def on_tool_end(self, output, *, run_id, parent_run_id=None, **kwargs):
-        """Handle tool end event, append message and clear node data"""
+        """tool 종료 event를 처리해 메시지를 추가하고 node 데이터를 정리한다"""
         try:
             if isinstance(output, ToolMessage):
                 msg = cast(ToolMessage, output)
@@ -536,10 +524,9 @@ class RunJournal(BaseCallbackHandler):
             elif isinstance(output, Command):
                 cmd = cast(Command, output)
                 messages = cmd.update.get("messages", [])
-                # A non-empty ``artifacts`` update is only produced on the
-                # success path (e.g. present_files returns an error ToolMessage
-                # without touching state when validation fails), so its
-                # presence is the artifact-production signal (#4272 slice 1).
+                # 비어 있지 않은 ``artifacts`` 갱신은 성공 경로에서만 나온다(예: 검증이 실패하면
+                # present_files는 state를 건드리지 않고 오류 ToolMessage를 반환한다). 따라서 그
+                # 존재 자체가 artifact 생성 신호다(#4272 slice 1).
                 artifacts = cmd.update.get("artifacts")
                 artifact_tool_names: set[str] = set()
                 for message in messages:
@@ -561,7 +548,7 @@ class RunJournal(BaseCallbackHandler):
         finally:
             logger.debug("Tool end for node %s", run_id)
 
-    # -- Internal methods --
+    # -- 내부 메서드 --
 
     @staticmethod
     def _message_identity(message: BaseMessage) -> str | None:
@@ -650,23 +637,22 @@ class RunJournal(BaseCallbackHandler):
             self._flush_sync()
 
     def _flush_sync(self) -> None:
-        """Best-effort flush of buffer to RunEventStore.
+        """buffer를 RunEventStore로 best-effort flush한다.
 
-        BaseCallbackHandler methods are synchronous.  If an event loop is
-        running we schedule an async ``put_batch``; otherwise the events
-        stay in the buffer and are flushed later by the async ``flush()``
-        call in the worker's ``finally`` block.
+        BaseCallbackHandler 메서드는 동기다. event loop가 돌고 있으면 async ``put_batch``를
+        예약하고, 아니면 event를 buffer에 남겨 두었다가 worker의 ``finally`` 블록에 있는 async
+        ``flush()`` 호출로 flush한다.
         """
         if not self._buffer:
             return
-        # Skip if a flush is already in flight — avoids concurrent writes
-        # to the same SQLite file from multiple fire-and-forget tasks.
+        # 이미 flush가 진행 중이면 건너뛴다 — 여러 fire-and-forget task가 같은 SQLite 파일에
+        # 동시에 쓰는 것을 피한다.
         if self._pending_flush_tasks:
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # No event loop — keep events in buffer for later async flush.
+            # event loop가 없으면 나중의 async flush를 위해 event를 buffer에 남긴다.
             return
         batch = self._buffer.copy()
         self._buffer.clear()
@@ -684,7 +670,7 @@ class RunJournal(BaseCallbackHandler):
                 self.run_id,
                 exc_info=True,
             )
-            # Return failed events to buffer for retry on next flush
+            # 실패한 event는 다음 flush에서 재시도하도록 buffer로 되돌린다
             self._buffer = batch + self._buffer
 
     def _on_flush_done(self, task: asyncio.Task) -> None:
@@ -700,9 +686,8 @@ class RunJournal(BaseCallbackHandler):
         for tag in _tags:
             if isinstance(tag, str) and (tag.startswith("subagent:") or tag.startswith("middleware:") or tag == "lead_agent"):
                 return tag
-        # Default to lead_agent: the main agent graph does not inject
-        # callback tags, while subagents and middleware explicitly tag
-        # themselves.
+        # 기본값은 lead_agent다. 메인 agent graph는 callback tag를 주입하지 않는 반면 subagent와
+        # middleware는 자기 자신을 명시적으로 tag하기 때문이다.
         return "lead_agent"
 
     def _record_model_usage(
@@ -713,16 +698,15 @@ class RunJournal(BaseCallbackHandler):
         total_tokens: int,
         cache_read_tokens: int = 0,
     ) -> None:
-        """Add a single LLM call's token usage to the per-model accumulator.
+        """LLM 호출 하나의 token usage를 모델별 누적기에 더한다.
 
-        Missing / empty ``model_name`` collapses into a shared ``"unknown"``
-        bucket so the breakdown stays usable when a provider doesn't surface
-        ``response_metadata.model_name``.
+        ``model_name``이 없거나 비어 있으면 공용 ``"unknown"`` bucket으로 합쳐서, provider가
+        ``response_metadata.model_name``을 주지 않아도 분해 집계를 쓸 수 있게 한다.
 
-        ``cache_read_tokens`` (prompt-cache hits, from
-        ``usage_metadata.input_token_details.cache_read``) is stored as a
-        sparse bucket key — only written when non-zero — so buckets from
-        providers without cache reporting keep their historical shape.
+        ``cache_read_tokens``(prompt-cache 적중,
+        ``usage_metadata.input_token_details.cache_read``에서 옴)는 sparse bucket 키로 저장한다 —
+        0이 아닐 때만 쓴다 — 그래서 cache를 보고하지 않는 provider의 bucket은 기존 형태를
+        유지한다.
         """
         if total_tokens <= 0:
             return
@@ -738,7 +722,7 @@ class RunJournal(BaseCallbackHandler):
 
     @staticmethod
     def _extract_cache_read(usage_dict: dict) -> int:
-        """Prompt-cache-hit input tokens from LangChain's normalized usage."""
+        """LangChain의 정규화된 usage에서 prompt-cache 적중 input token 수를 얻는다."""
         details = usage_dict.get("input_token_details") or {}
         if not isinstance(details, Mapping):
             return 0
@@ -747,23 +731,23 @@ class RunJournal(BaseCallbackHandler):
         except (TypeError, ValueError):
             return 0
 
-    # -- Public methods (called by worker) --
+    # -- 공개 메서드(worker가 호출) --
 
     def record_external_llm_usage_records(
         self,
         records: list[dict[str, int | str | None]],
     ) -> None:
-        """Record token usage from external sources (e.g., subagents).
+        """외부 소스(예: subagent)의 token usage를 기록한다.
 
-        Each record should contain:
-            source_run_id: Unique identifier to prevent double-counting
-            caller: Caller tag (e.g. "subagent:general-purpose")
-            model_name: Real per-call model name (str or None; falls back to
-                ``"unknown"`` bucket when missing)
-            input_tokens: Input token count
-            output_tokens: Output token count
-            total_tokens: Total token count (computed from input+output if 0/missing)
-            cache_read_tokens: Optional prompt-cache-hit input tokens
+        각 record는 다음을 담아야 한다:
+            source_run_id: 이중 집계를 막는 고유 식별자
+            caller: 호출자 tag (예: "subagent:general-purpose")
+            model_name: 호출별 실제 모델 이름(str 또는 None. 없으면 ``"unknown"`` bucket으로
+                되돌아간다)
+            input_tokens: input token 수
+            output_tokens: output token 수
+            total_tokens: 전체 token 수(0이거나 없으면 input+output으로 계산한다)
+            cache_read_tokens: 선택 항목인 prompt-cache 적중 input token 수
         """
         if not self._track_tokens:
             return
@@ -804,24 +788,23 @@ class RunJournal(BaseCallbackHandler):
             self._schedule_progress_flush()
 
     def set_first_human_message(self, content: str) -> None:
-        """Record the first human message for convenience fields."""
+        """편의 필드용으로 첫 human message를 기록한다."""
         self._first_human_msg = content[:2000] if content else None
 
     def record_middleware(self, tag: str, *, name: str, hook: str, action: str, changes: dict) -> None:
-        """Record a middleware state-change event.
+        """middleware의 state 변경 event를 기록한다.
 
-        Called by middleware implementations when they perform a meaningful
-        state change (e.g., title generation, summarization, HITL approval).
-        Pure-observation middleware should not call this.
+        middleware 구현이 의미 있는 state 변경(예: title 생성, 요약, HITL 승인)을 수행했을 때
+        호출한다. 관찰만 하는 middleware는 호출하면 안 된다.
 
         Args:
-            tag: Short identifier for the middleware (e.g., "title", "summarize",
-                 "guardrail"). Used to form event_type="middleware:{tag}" and
-                 limited by the persisted event-type column width.
-            name: Full middleware class name.
-            hook: Lifecycle hook that triggered the action (e.g., "after_model").
-            action: Specific action performed (e.g., "generate_title").
-            changes: Dict describing the state changes made.
+            tag: middleware의 짧은 식별자(예: "title", "summarize", "guardrail").
+                 event_type="middleware:{tag}"를 구성하는 데 쓰이며, 저장되는 event-type 컬럼
+                 폭에 의해 길이가 제한된다.
+            name: middleware 클래스의 전체 이름.
+            hook: 이 동작을 유발한 lifecycle hook(예: "after_model").
+            action: 수행한 구체적인 동작(예: "generate_title").
+            changes: 이루어진 state 변경을 설명하는 dict.
         """
         self._put(
             event_type=MIDDLEWARE_EVENT_PATTERN.event_type(tag),
@@ -830,12 +813,11 @@ class RunJournal(BaseCallbackHandler):
         )
 
     def record_memory_context(self, *, content_sha256: str) -> None:
-        """Record the effective hidden memory block for this run.
+        """이번 run에 적용된 숨김 memory 블록을 기록한다.
 
-        The full block already lives in checkpoint state and may contain user
-        data, so the event stores only its exact SHA-256 identity. Operators
-        consume it through the existing run-events debug API to compare the
-        effective memory used by different runs without copying that content.
+        블록 전체는 이미 checkpoint state에 있고 사용자 데이터를 담을 수 있으므로, event에는
+        정확한 SHA-256 정체성만 저장한다. 운영자는 기존 run-events 디버그 API로 이를 조회해,
+        내용을 복사하지 않고도 run별로 실제 사용된 memory를 비교한다.
         """
         if self._memory_context_recorded:
             return
@@ -847,7 +829,7 @@ class RunJournal(BaseCallbackHandler):
         self._memory_context_recorded = True
 
     def _record_produced_artifacts(self, artifacts: Any, tool_name: str | None) -> None:
-        """Accumulate produced artifact paths, deduped by (path, tool_name)."""
+        """생성된 artifact 경로를 (path, tool_name) 기준으로 중복 제거하며 누적한다."""
         if not isinstance(artifacts, list):
             return
         for path in artifacts:
@@ -859,10 +841,9 @@ class RunJournal(BaseCallbackHandler):
                 self._produced_artifacts.append(key)
 
     def get_delivery_content(self) -> dict[str, Any]:
-        """Return the terminal delivery fact accumulated for this run.
+        """이번 run에 대해 누적된 terminal delivery 사실을 반환한다.
 
-        This is a fact record, not a verdict: runs that produced no artifacts
-        emit ``presented: 0``.
+        이것은 판정이 아니라 사실 기록이다. artifact를 만들지 않은 run은 ``presented: 0``을 낸다.
         """
         by_tool: dict[str, list[str]] = {}
         paths: list[str] = []
@@ -873,10 +854,10 @@ class RunJournal(BaseCallbackHandler):
         return {"presented": len(paths), "paths": paths, "by_tool": by_tool}
 
     def record_delivery(self) -> None:
-        """Buffer the terminal ``run.delivery`` event for this run (#4272 slice 1).
+        """이번 run의 terminal ``run.delivery`` event를 buffer에 넣는다(#4272 slice 1).
 
-        Kept for direct journal users. The worker uses the event store's
-        idempotent singleton write so crash recovery can safely backfill it.
+        journal을 직접 쓰는 사용자를 위해 남겨 둔다. worker는 event store의 idempotent singleton
+        쓰기를 사용하므로, crash 복구가 이를 안전하게 backfill할 수 있다.
         """
         self._put(
             event_type="run.delivery",
@@ -885,7 +866,7 @@ class RunJournal(BaseCallbackHandler):
         )
 
     async def flush(self) -> None:
-        """Force flush remaining buffer. Called in worker's finally block."""
+        """남은 buffer를 강제로 flush한다. worker의 finally 블록에서 호출된다."""
         if self._pending_flush_tasks:
             await asyncio.gather(*tuple(self._pending_flush_tasks), return_exceptions=True)
         while self._pending_progress_task is not None and not self._pending_progress_task.done():
@@ -907,7 +888,7 @@ class RunJournal(BaseCallbackHandler):
                 raise
 
     def _schedule_progress_flush(self) -> None:
-        """Best-effort throttled progress snapshot for active run visibility."""
+        """진행 중인 run을 관측할 수 있도록 best-effort로 throttle된 progress snapshot을 예약한다."""
         if self._progress_reporter is None:
             return
         now = time.monotonic()
@@ -958,7 +939,7 @@ class RunJournal(BaseCallbackHandler):
             self._schedule_delayed_progress_flush(self._progress_flush_interval)
 
     def get_completion_data(self) -> dict:
-        """Return accumulated token and message data for run completion."""
+        """run 완료 시 사용할, 누적된 token 및 메시지 데이터를 반환한다."""
         return {
             "total_input_tokens": self._total_input_tokens,
             "total_output_tokens": self._total_output_tokens,

@@ -1,27 +1,23 @@
-"""Isolating extension middleware failures from the user's run.
+"""extension middleware의 실패를 사용자 run에서 격리한다.
 
-Extension middlewares execute inside LangChain's call chain, so an unhandled
-exception would abort the user's run. Every contributed middleware is wrapped
-so an observation failure degrades to a diagnostic and the call passes through.
-The downstream handler is tracked so isolation recovery never adds another
-model request or tool side effect: pre-handler extension failures invoke it
-once, post-handler failures return its captured result, and handler failures
-remain owned by the graph's error policy.
+extension middleware는 LangChain 호출 체인 안에서 실행되므로, 처리되지 않은 예외는 사용자
+run을 중단시킨다. 기여된 middleware는 모두 wrapping 되어, 관찰 실패가 diagnostic으로 격하되고
+호출은 그대로 통과한다. 격리 복구가 model 요청이나 tool 부작용을 한 번 더 만들지 않도록
+downstream handler를 추적한다. handler 이전에 발생한 extension 실패는 handler를 한 번
+호출하고, handler 이후 실패는 이미 잡아둔 결과를 반환하며, handler 자체의 실패는 graph의 error
+정책이 계속 담당한다.
 
-The wrapper must mirror the inner middleware's full interface, not just the
-four wrap-call hooks: LangChain discovers capabilities by inspecting the
-wrapper — hook participation via class-level identity checks
-(`m.__class__.before_model is not AgentMiddleware.before_model`), tools,
-state_schema and transformers via instance attributes. Lifecycle mirroring is
-exact in both directions. LangChain deliberately treats each sync/async wrap
-pair as one capability and wires both execution paths when either side exists,
-so the wrapper supplies a silent pass-through counterpart when the inner
-implements only one side; otherwise the base class raises
-``NotImplementedError`` before isolation can fail open.
+wrapper는 네 개의 wrap-call hook만이 아니라 inner middleware의 인터페이스 전체를 그대로
+반영해야 한다. LangChain은 wrapper를 들여다봐서 기능을 발견하기 때문이다. hook 참여 여부는
+class 레벨 identity 검사(`m.__class__.before_model is not AgentMiddleware.before_model`)로,
+tools/state_schema/transformers는 인스턴스 속성으로 확인한다. lifecycle 반영은 양방향 모두
+정확히 일치한다. LangChain은 sync/async wrap 쌍을 하나의 기능으로 취급해서 한쪽만 있어도 두
+실행 경로를 모두 연결하므로, inner가 한쪽만 구현했으면 wrapper가 조용한 pass-through 짝을
+공급한다. 그러지 않으면 격리가 fail open 하기도 전에 base class가 ``NotImplementedError``를
+raise 한다.
 
-All first-version contributions are observational, hence fail-open. A future
-intercepting (decision-making) contribution would need to fail closed and must
-opt out of this wrapper explicitly.
+첫 버전의 기여는 전부 관찰용이므로 fail-open이다. 앞으로 개입(결정)하는 기여가 생긴다면
+fail closed 해야 하며, 이 wrapper를 명시적으로 opt out 해야 한다.
 """
 
 from __future__ import annotations
@@ -44,7 +40,7 @@ _UNSAFE_GRAPH_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def graph_safe_middleware_name(value: str) -> str:
-    """Normalize a middleware identity for LangGraph node names."""
+    """LangGraph 노드 이름으로 쓸 수 있게 middleware identity를 정규화한다."""
     return _UNSAFE_GRAPH_NAME.sub("_", value)
 
 
@@ -66,9 +62,8 @@ _LIFECYCLE_HOOKS = (
 
 
 def _implemented_hooks(inner: AgentMiddleware) -> frozenset[str]:
-    """The hooks ``inner`` actually overrides, by LangChain's own class-level
-    identity check — instance-level attributes are invisible to the factory,
-    so they are invisible here too."""
+    """``inner``가 실제로 재정의한 hook을 LangChain 자신의 class 레벨 identity 검사로 판별한다.
+    인스턴스 레벨 속성은 factory에게 보이지 않으므로 여기서도 보이지 않는다."""
     return frozenset(hook for hook in (*_WRAP_HOOKS, *_LIFECYCLE_HOOKS) if getattr(type(inner), hook, None) is not getattr(AgentMiddleware, hook, None))
 
 
@@ -114,8 +109,8 @@ def _make_async_lifecycle_delegate(hook: str):
     return delegate
 
 
-# Async variants are named explicitly: startswith("a") would also catch the
-# sync after_model/after_agent.
+# async 변형은 명시적으로 판별한다. startswith("a")로 하면 sync after_model/after_agent까지
+# 걸리기 때문이다.
 _ASYNC_HOOKS = frozenset(hook for hook in (*_WRAP_HOOKS, *_LIFECYCLE_HOOKS) if hook[1:].startswith(("wrap", "before", "after")))
 
 
@@ -130,11 +125,11 @@ _subclass_cache_lock = threading.Lock()
 
 
 def _wrapper_subclass(hooks: frozenset[str]) -> type[IsolatedMiddleware]:
-    """A cached IsolatedMiddleware subclass defining ``hooks`` and required
-    wrap-hook pass-through counterparts.
+    """``hooks``와 필요한 wrap-hook pass-through 짝을 정의하는, 캐시된 IsolatedMiddleware
+    subclass를 반환한다.
 
-    Per hook set, not per middleware: every inner middleware with the same
-    implemented-hook combination shares one subclass.
+    middleware 단위가 아니라 hook 집합 단위다. 구현한 hook 조합이 같은 inner middleware는
+    subclass 하나를 공유한다.
     """
     with _subclass_cache_lock:
         subclass = _subclass_cache.get(hooks)
@@ -151,11 +146,11 @@ def _wrapper_subclass(hooks: frozenset[str]) -> type[IsolatedMiddleware]:
 
 
 class IsolatedMiddleware(AgentMiddleware):
-    """Wrap one extension middleware so its failures cannot break the run.
+    """extension middleware 하나를 감싸서 그 실패가 run을 망가뜨리지 못하게 한다.
 
-    Instantiation returns a cached subclass that defines exactly the hooks the
-    inner middleware implements, so LangChain's class-level capability checks
-    see the same interface on the wrapper as on the inner middleware itself.
+    인스턴스화하면 inner middleware가 구현한 hook만 정확히 정의한 캐시된 subclass가 반환된다.
+    그래서 LangChain의 class 레벨 기능 검사는 wrapper에서 inner middleware와 동일한 인터페이스를
+    본다.
     """
 
     def __new__(cls, inner: AgentMiddleware, source: str, on_error: Callable[[Diagnostic], None], *, name: str | None = None):
@@ -179,28 +174,27 @@ class IsolatedMiddleware(AgentMiddleware):
             inner_name = getattr(inner, "name", type(inner).__name__)
             name = f"extension:{source}:{inner_name}"
         self._name = graph_safe_middleware_name(name)
-        # Mirror the declared-contribution attributes LangChain reads off the
-        # middleware instance (factory.py: m.tools, m.state_schema,
-        # m.transformers). state_schema is a class attribute on the base but
-        # must be per-instance here: cached subclasses are shared across
-        # middlewares whose schemas differ.
+        # LangChain이 middleware 인스턴스에서 읽는 선언적 기여 속성을 그대로 반영한다
+        # (factory.py: m.tools, m.state_schema, m.transformers). state_schema는 base에서는
+        # class 속성이지만 여기서는 인스턴스별이어야 한다. 캐시된 subclass는 schema가 서로
+        # 다른 middleware들 사이에서 공유되기 때문이다.
         self.tools = getattr(inner, "tools", [])
         self.transformers = getattr(inner, "transformers", ())
         self.state_schema = getattr(inner, "state_schema", AgentMiddleware.state_schema)
 
     @property
     def name(self) -> str:
-        """Stable graph and trace identity for this isolated contribution."""
+        """이 격리된 기여의 안정적인 graph/trace identity."""
         return self._name
 
     @property
     def inner(self) -> AgentMiddleware:
-        """The wrapped middleware. Used by ordering checks and tests."""
+        """감싸진 middleware. 순서 검사와 테스트에서 쓴다."""
         return self._inner
 
     @property
     def source(self) -> str:
-        """Extension this middleware came from. Read by the provenance map."""
+        """이 middleware가 온 extension. provenance map이 읽는다."""
         return self._source
 
     def _report(self, hook: str, exc: Exception) -> None:
@@ -208,7 +202,7 @@ class IsolatedMiddleware(AgentMiddleware):
         logger.exception("Extension %s: %s", self._source, message)
         try:
             self._on_error(Diagnostic.error(self._source, message))
-        except Exception:  # pragma: no cover - reporting must never raise
+        except Exception:  # pragma: no cover - 보고는 절대 raise 하면 안 된다
             logger.exception("Extension %s: diagnostic reporting failed", self._source)
 
     def _invoke_sync(
@@ -237,9 +231,9 @@ class IsolatedMiddleware(AgentMiddleware):
             handler_error_traceback = None
             handler_succeeded = False
             try:
-                # The first contract slice is observational: a contributed
-                # wrapper may inspect the request but cannot substitute a new
-                # one after the host's policy/authorization layers have run.
+                # 계약의 첫 조각은 관찰용이다. 기여된 wrapper는 request를 들여다볼 수는 있지만,
+                # host의 policy/authorization 레이어가 실행된 뒤에 새 request로 갈아끼울 수는
+                # 없다.
                 handler_result = handler(request)
             except BaseException as exc:
                 handler_error = exc
@@ -344,8 +338,8 @@ class IsolatedMiddleware(AgentMiddleware):
             return await handler(request)
 
     def _invoke_lifecycle_sync(self, hook: str, state: Any, runtime: Any) -> Any:
-        """Lifecycle hooks have no handler to fall through to: the fail-open
-        degradation for a failed observation is applying no state update."""
+        """lifecycle hook에는 넘어갈 handler가 없다. 관찰이 실패했을 때의 fail-open 격하는
+        state를 아예 갱신하지 않는 것이다."""
         try:
             return getattr(self._inner, hook)(state, runtime)
         except GraphBubbleUp:

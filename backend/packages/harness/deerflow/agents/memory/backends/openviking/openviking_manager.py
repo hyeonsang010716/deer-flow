@@ -1,4 +1,4 @@
-"""OpenViking memory backend built on the maintained LangChain adapters."""
+"""유지보수되는 LangChain adapter 위에 올린 OpenViking memory 백엔드."""
 
 from __future__ import annotations
 
@@ -34,11 +34,10 @@ logger = logging.getLogger(__name__)
 
 
 class OpenVikingMemoryManager(MemoryManager):
-    """Single-user OpenViking backend using the official integration package.
+    """공식 통합 패키지를 쓰는 단일 사용자 OpenViking 백엔드.
 
-    DeerFlow continues to choose when capture and recall occur. The official
-    adapter owns SDK transport, message conversion, batching, commit retries,
-    and retrieval behavior.
+    capture와 recall의 시점은 여전히 DeerFlow가 결정한다. SDK transport, 메시지 변환,
+    배치, commit 재시도, 검색 동작은 공식 adapter가 담당한다.
     """
 
     supports_search: ClassVar[bool] = True
@@ -67,12 +66,12 @@ class OpenVikingMemoryManager(MemoryManager):
             url=self._config.base_url,
             api_key=self._config.api_key,
             timeout=self._config.timeout_seconds,
-            # An explicit mapping disables the SDK's ovcli.conf header fallback.
+            # 매핑을 명시하면 SDK의 ovcli.conf 헤더 fallback이 비활성화된다.
             extra_headers={},
             commit_policy=commit_policy,
         )
-        # The recorder owns one recovery-aware SDK client. Retrieval borrows the
-        # same handle, so this backend has one connection pool and one owner.
+        # recorder가 복구를 인지하는 SDK client 하나를 소유한다. 검색도 같은 핸들을
+        # 빌려 쓰므로 이 백엔드에는 connection pool도 소유자도 하나뿐이다.
         self._client = self._recorder.client
         self._retriever = integration["OpenVikingRetriever"](
             client=self._client,
@@ -126,8 +125,8 @@ class OpenVikingMemoryManager(MemoryManager):
         agent_name: str | None = None,
         user_id: str | None = None,
     ) -> None:
-        # Preserve DeerFlow's existing pre-compaction behavior. This backend
-        # commits every accepted capture, so add_nowait needs no separate mode.
+        # DeerFlow의 기존 compaction 직전 동작을 그대로 유지한다. 이 백엔드는 받아들인
+        # capture를 모두 commit하므로 add_nowait에 별도 모드가 필요 없다.
         self._write_conversation(
             thread_id,
             messages,
@@ -286,7 +285,7 @@ class OpenVikingMemoryManager(MemoryManager):
             self._end_operation()
 
     def shutdown_flush(self, timeout: float) -> bool:
-        """Stop new work, drain accepted calls, and close owned resources."""
+        """새 작업을 막고, 이미 받아들인 호출을 배출한 뒤, 소유한 리소스를 닫는다."""
 
         deadline = time.monotonic() + max(0.0, timeout)
         with self._lifecycle:
@@ -301,7 +300,7 @@ class OpenVikingMemoryManager(MemoryManager):
         return True
 
     def close(self) -> None:
-        """Request idempotent closure after any active operation finishes."""
+        """진행 중인 작업이 끝난 뒤 닫히도록 요청한다. 멱등하다."""
 
         with self._lifecycle:
             self._closed = True

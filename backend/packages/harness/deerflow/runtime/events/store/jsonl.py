@@ -1,23 +1,21 @@
-"""JSONL file-backed RunEventStore implementation.
+"""JSONL 파일 기반 RunEventStore 구현.
 
-Each run's events are stored in a single file:
+각 run의 event는 파일 하나에 저장된다:
 ``.deer-flow/threads/{thread_id}/runs/{run_id}.jsonl``
 
-All categories (message, trace, lifecycle) are in the same file.
-This backend is suitable for lightweight single-node deployments.
+모든 category(message, trace, lifecycle)가 같은 파일에 들어간다. 이 backend는 가벼운
+단일 노드 배포에 적합하다.
 
-**Single-process guarantee**: the in-memory seq counter is process-local.
-Multi-process deployments sharing the same directory will produce duplicate
-or non-monotonic seq values. Use ``DbRunEventStore`` for multi-process or
-high-concurrency deployments.
+**단일 프로세스 보장**: 메모리상의 seq counter는 프로세스 로컬이다. 같은 디렉터리를 공유하는
+멀티 프로세스 배포에서는 seq 값이 중복되거나 단조 증가하지 않는다. 멀티 프로세스나 고동시성
+배포에는 ``DbRunEventStore``를 쓴다.
 
-File I/O is offloaded to a thread pool via ``asyncio.to_thread`` so the
-event loop is never blocked. Per-thread ``asyncio.Lock`` objects serialise
-writes within a single process to prevent interleaved JSONL lines.
+파일 I/O는 ``asyncio.to_thread``로 thread pool에 offload하므로 event loop가 절대 막히지
+않는다. thread별 ``asyncio.Lock``이 한 프로세스 안의 write를 직렬화해 JSONL 줄이 섞이는 것을
+막는다.
 
-Known trade-off: ``list_messages()`` must scan all run files for a
-thread since messages from multiple runs need unified seq ordering.
-``list_events()`` reads only one file -- the fast path.
+알려진 trade-off: 여러 run의 message가 통합된 seq 순서를 필요로 하므로 ``list_messages()``는
+해당 thread의 모든 run 파일을 스캔해야 한다. ``list_events()``는 파일 하나만 읽는 fast path다.
 """
 
 from __future__ import annotations
@@ -42,8 +40,8 @@ _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_\-]+$")
 class JsonlRunEventStore(RunEventStore):
     def __init__(self, base_dir: str | Path | None = None):
         self._base_dir = Path(base_dir) if base_dir else Path(".deer-flow")
-        self._seq_counters: dict[str, int] = {}  # thread_id -> current max seq
-        # Per-thread asyncio.Lock — serialises concurrent writes within one process.
+        self._seq_counters: dict[str, int] = {}  # thread_id -> 현재 최대 seq
+        # thread별 asyncio.Lock — 한 프로세스 안의 동시 write를 직렬화한다.
         self._write_locks: dict[str, asyncio.Lock] = {}
 
     def _get_write_lock(self, thread_id: str) -> asyncio.Lock:
@@ -51,7 +49,7 @@ class JsonlRunEventStore(RunEventStore):
 
     @staticmethod
     def _validate_id(value: str, label: str) -> str:
-        """Validate that an ID is safe for use in filesystem paths."""
+        """ID를 파일시스템 경로에 써도 안전한지 검증한다."""
         if not value or not _SAFE_ID_PATTERN.match(value):
             raise ValueError(f"Invalid {label}: must be alphanumeric/dash/underscore, got {value!r}")
         return value
@@ -69,7 +67,7 @@ class JsonlRunEventStore(RunEventStore):
         return self._seq_counters[thread_id]
 
     def _compute_max_seq(self, thread_id: str) -> int:
-        """Scan all run files for a thread and return the current max seq (blocking I/O)."""
+        """thread의 모든 run 파일을 스캔해 현재 최대 seq를 반환한다(blocking I/O)."""
         max_seq = 0
         thread_dir = self._thread_dir(thread_id)
         if thread_dir.exists():
@@ -83,7 +81,7 @@ class JsonlRunEventStore(RunEventStore):
         return max_seq
 
     async def _ensure_seq_loaded(self, thread_id: str) -> None:
-        """Load max seq from existing files into the in-memory counter (non-blocking)."""
+        """기존 파일에서 최대 seq를 읽어 메모리 counter에 적재한다(non-blocking)."""
         if thread_id in self._seq_counters:
             return
         max_seq = await asyncio.to_thread(self._compute_max_seq, thread_id)
@@ -96,7 +94,7 @@ class JsonlRunEventStore(RunEventStore):
             f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
 
     def _read_thread_events(self, thread_id: str) -> list[dict]:
-        """Read all events for a thread, sorted by seq (blocking I/O)."""
+        """thread의 모든 event를 읽어 seq 순으로 정렬해 반환한다(blocking I/O)."""
         events = []
         thread_dir = self._thread_dir(thread_id)
         if not thread_dir.exists():
@@ -113,7 +111,7 @@ class JsonlRunEventStore(RunEventStore):
         return events
 
     def _read_run_events(self, thread_id: str, run_id: str) -> list[dict]:
-        """Read events for a specific run file (blocking I/O)."""
+        """특정 run 파일의 event를 읽는다(blocking I/O)."""
         path = self._run_file(thread_id, run_id)
         if not path.exists():
             return []
@@ -157,18 +155,17 @@ class JsonlRunEventStore(RunEventStore):
             return record
 
     async def put_batch(self, events):
-        """Persist a batch of events atomically per-thread.
+        """event batch를 thread 단위로 원자적으로 저장한다.
 
-        All seq numbers for the batch are reserved under a single per-thread
-        write lock and every record is appended in one file write so a
-        mid-batch failure cannot leave a partial set of records on disk that
-        a retry would then duplicate. Callers (e.g. worker.py's flush-retry
-        path) may safely re-buffer the entire batch on failure.
+        batch의 모든 seq 번호는 thread별 write lock 하나 아래에서 예약되고, 모든 record는 파일
+        write 한 번으로 append된다. 그래서 batch 도중 실패해도 디스크에 일부 record만 남아
+        retry가 이를 중복시키는 일이 없다. 호출자(예: worker.py의 flush-retry 경로)는 실패 시
+        batch 전체를 안전하게 다시 버퍼링할 수 있다.
         """
         if not events:
             return []
 
-        # Group by thread_id; each thread has its own write lock and seq counter.
+        # thread_id로 묶는다. 각 thread는 자체 write lock과 seq counter를 갖는다.
         by_thread: dict[str, list[dict[str, Any]]] = {}
         for ev in events:
             by_thread.setdefault(ev["thread_id"], []).append(ev)
@@ -227,8 +224,8 @@ class JsonlRunEventStore(RunEventStore):
                 }
                 records.append(record)
             path = self._run_file(thread_id, batch[0]["run_id"])
-            # Single append/write per thread. If this raises, no records were
-            # persisted; the caller's re-buffer reproduces no duplicates.
+            # thread당 append/write 한 번. 여기서 예외가 나면 저장된 record가 하나도 없으므로,
+            # 호출자가 다시 버퍼링해도 중복이 생기지 않는다.
             await asyncio.to_thread(self._append_records, path, records)
             return records
 
@@ -296,10 +293,10 @@ class JsonlRunEventStore(RunEventStore):
             count = len(all_events)
             await asyncio.to_thread(self._delete_thread_files, thread_id)
             self._seq_counters.pop(thread_id, None)
-            # Pop the lock inside the held scope to minimise the window where a new caller
-            # could obtain a fresh lock while a waiting coroutine still holds the old one.
-            # Note: coroutines that already acquired a reference to this lock before the
-            # delete will still proceed after we release — this is an accepted narrow race.
+            # lock을 잡고 있는 범위 안에서 pop한다. 대기 중인 coroutine이 아직 옛 lock을 쥔
+            # 상태에서 새 호출자가 새 lock을 얻는 구간을 최소화하기 위해서다.
+            # 참고: 삭제 전에 이미 이 lock의 참조를 획득한 coroutine은 우리가 해제한 뒤에도
+            # 그대로 진행한다. 이는 감수하는 좁은 race다.
             self._write_locks.pop(thread_id, None)
             return count
 

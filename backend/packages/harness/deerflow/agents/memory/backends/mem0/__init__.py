@@ -1,9 +1,9 @@
-"""mem0 memory backend -- HTTP client against the mem0 Platform API.
+"""mem0 memory backend — mem0 Platform API를 호출하는 HTTP client.
 
-Drop-in contract: folder name == backend name == ``manager_class: mem0``.
+Drop-in 규약: 폴더명 == 백엔드명 == ``manager_class: mem0``.
 """
 
 from .mem0_manager import Mem0Manager
 
-#: Discovered by the factory's ``_scan_backends`` under the folder name ``mem0``.
+#: 폴더명 ``mem0``으로 factory의 ``_scan_backends``가 발견한다.
 MANAGER_CLASS = Mem0Manager

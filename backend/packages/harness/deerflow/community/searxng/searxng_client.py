@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class SearxngClient:
-    """Client for SearXNG meta search engine API."""
+    """SearXNG 메타 검색 엔진 API 클라이언트."""
 
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
@@ -18,15 +18,15 @@ class SearxngClient:
         max_results: int = 5,
         categories: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Search the web using SearXNG.
+        """SearXNG로 웹을 검색한다.
 
         Args:
-            query: The search query.
-            max_results: Maximum number of results to return.
-            categories: Search categories to use.
+            query: 검색어.
+            max_results: 반환할 최대 결과 수.
+            categories: 사용할 검색 카테고리.
 
         Returns:
-            List of search result dictionaries.
+            검색 결과 dict의 리스트.
         """
         params: dict[str, Any] = {
             "q": query,

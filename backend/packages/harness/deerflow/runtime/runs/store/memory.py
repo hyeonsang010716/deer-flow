@@ -1,6 +1,6 @@
-"""In-memory RunStore. Used when database.backend=memory (default) and in tests.
+"""메모리 기반 RunStore. database.backend=memory(기본값)일 때와 테스트에서 쓴다.
 
-Equivalent to the original RunManager._runs dict behavior.
+원래의 RunManager._runs dict 동작과 동등하다.
 """
 
 from __future__ import annotations
@@ -14,18 +14,17 @@ from deerflow.runtime.runs.store.base import LeaseRenewal, RunStore, StatusFinal
 class MemoryRunStore(RunStore):
     def __init__(self) -> None:
         self._runs: dict[str, dict[str, Any]] = {}
-        # Secondary index: thread_id -> insertion-ordered run_id set (a dict is
-        # used as an ordered set), maintained in lockstep with ``_runs`` so
-        # per-thread queries avoid O(total in-memory runs) full scans. Mirrors
-        # the index ``RunManager`` keeps over its own in-memory records.
+        # 보조 index: thread_id -> 삽입 순서를 유지하는 run_id 집합(dict를 ordered set으로
+        # 쓴다). ``_runs``와 항상 함께 갱신되므로 thread 단위 조회가 메모리에 있는 전체 run을
+        # 훑지 않아도 된다. ``RunManager``가 자체 메모리 레코드에 두는 index와 같은 구조다.
         self._runs_by_thread: dict[str, dict[str, None]] = {}
 
     def _index_run(self, run_id: str, thread_id: str) -> None:
-        """Register *run_id* under *thread_id* in the secondary index."""
+        """보조 index에서 *run_id*를 *thread_id* 아래에 등록한다."""
         self._runs_by_thread.setdefault(thread_id, {})[run_id] = None
 
     def _unindex_run(self, run_id: str, thread_id: str) -> None:
-        """Drop *run_id* from the *thread_id* bucket, removing the bucket when empty."""
+        """*thread_id* bucket에서 *run_id*를 빼고, bucket이 비면 bucket도 제거한다."""
         bucket = self._runs_by_thread.get(thread_id)
         if bucket is not None:
             bucket.pop(run_id, None)
@@ -70,8 +69,8 @@ class MemoryRunStore(RunStore):
             "updated_at": now,
             "owner_worker_id": owner_worker_id,
             "lease_expires_at": lease_expires_at,
-            # ``put`` is an idempotent snapshot write. Preserve a cancellation
-            # request that may have raced a retry of an earlier snapshot.
+            # ``put``은 멱등한 snapshot 쓰기다. 이전 snapshot 재시도와 경합했을 수 있는
+            # 취소 요청을 보존한다.
             "cancel_action": existing.get("cancel_action") if existing else None,
             "cancel_requested_at": existing.get("cancel_requested_at") if existing else None,
         }
@@ -86,9 +85,9 @@ class MemoryRunStore(RunStore):
         return run
 
     async def list_by_thread(self, thread_id, *, user_id=None, limit=100):
-        # Use the thread index for an O(runs-in-thread) lookup instead of
-        # scanning every run. ``self._runs.get`` is defense-in-depth: it drops a
-        # stale id still in the index but already gone from ``_runs``.
+        # 전체 run을 훑는 대신 thread index로 O(thread 내 run 수) 조회를 한다.
+        # ``self._runs.get``은 방어책이다. index에는 남아 있지만 ``_runs``에서는 이미 사라진
+        # 낡은 id를 걸러낸다.
         run_ids = self._runs_by_thread.get(thread_id)
         if not run_ids:
             return []
@@ -134,8 +133,8 @@ class MemoryRunStore(RunStore):
         run = self._runs.get(run_id)
         if run is None:
             return False
-        # Guard: only transition rows that are still active. ``interrupted``
-        # is included for the rollback path (``interrupted → error`` finalize).
+        # 가드: 아직 활성인 row만 전이시킨다. rollback 경로(``interrupted → error`` 확정)를
+        # 위해 ``interrupted``도 포함한다.
         if run["status"] not in ("pending", "running", "interrupted"):
             return False
         run["status"] = status
@@ -202,8 +201,8 @@ class MemoryRunStore(RunStore):
 
     async def aggregate_tokens_by_thread(self, thread_id: str, *, include_active: bool = False) -> dict[str, Any]:
         statuses = ("success", "error", "running") if include_active else ("success", "error")
-        # Use the thread index for an O(runs-in-thread) lookup instead of
-        # scanning every run in the process (mirrors ``list_by_thread``).
+        # 프로세스 안의 모든 run을 훑는 대신 thread index로 O(thread 내 run 수) 조회를 한다
+        # (``list_by_thread``와 같은 방식).
         run_ids = self._runs_by_thread.get(thread_id) or ()
         completed = [run for run_id in run_ids if (run := self._runs.get(run_id)) is not None and run.get("operation_kind", "run") == "run" and run.get("status") in statuses]
         by_model: dict[str, dict] = {}
@@ -215,10 +214,9 @@ class MemoryRunStore(RunStore):
                     entry["tokens"] += usage.get("total_tokens", 0)
                     entry["runs"] += 1
             else:
-                # Fallback for rows written before per-model accounting landed:
-                # attribute the whole run to its single ``model_name``. Keeps
-                # the legacy lead-only behavior for old data instead of
-                # silently dropping it.
+                # 모델별 집계가 도입되기 전에 쓰인 row를 위한 폴백. run 전체를 단일
+                # ``model_name``에 귀속시킨다. 옛 데이터를 조용히 버리는 대신 레거시
+                # lead-only 동작을 유지한다.
                 model = r.get("model_name") or "unknown"
                 entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
                 entry["tokens"] += r.get("total_tokens", 0)
@@ -237,7 +235,7 @@ class MemoryRunStore(RunStore):
         }
 
     # ------------------------------------------------------------------
-    # Multi-worker run ownership methods
+    # multi-worker run ownership 메서드
     # ------------------------------------------------------------------
 
     async def update_lease(
@@ -266,8 +264,8 @@ class MemoryRunStore(RunStore):
         owner_worker_id: str,
         lease_expires_at: str,
     ) -> LeaseRenewal:
-        # Delegate through ``update_lease`` so lightweight subclasses and tests
-        # that override the legacy primitive keep the same behavior.
+        # ``update_lease``를 거쳐 위임한다. 그래야 레거시 primitive를 override 하는 가벼운
+        # subclass와 테스트가 같은 동작을 유지한다.
         renewed = await self.update_lease(
             run_id,
             owner_worker_id=owner_worker_id,
@@ -367,16 +365,14 @@ class MemoryRunStore(RunStore):
                 continue
             lease = r.get("lease_expires_at")
             if lease is None:
-                # Pre-ownership rows: no lease means orphaned
+                # ownership 도입 이전 row: lease가 없으면 orphan이다
                 results.append(r)
             else:
                 try:
                     lease_dt = datetime.fromisoformat(lease)
-                    # Treat naive values as UTC — same convention as
-                    # ``coerce_iso`` in the SQL store, so the comparison
-                    # against the aware ``cutoff`` does not raise
-                    # ``TypeError`` when heartbeat is enabled on SQLite
-                    # (which drops tzinfo on read).
+                    # naive 값은 UTC로 취급한다. SQL store의 ``coerce_iso``와 같은 규칙이며,
+                    # SQLite(읽을 때 tzinfo를 버린다)에서 heartbeat를 켰을 때 aware인
+                    # ``cutoff``와 비교하다 ``TypeError``가 나지 않게 한다.
                     if lease_dt.tzinfo is None:
                         lease_dt = lease_dt.replace(tzinfo=UTC)
                     if lease_dt < cutoff:
@@ -408,19 +404,17 @@ class MemoryRunStore(RunStore):
         now = datetime.now(UTC).isoformat()
         cutoff = datetime.now(UTC) - timedelta(seconds=grace_seconds)
 
-        # For reject: check if any active run exists
+        # reject 전략: 활성 run이 하나라도 있는지 확인한다
         if multitask_strategy == "reject":
             for r in self._runs.values():
                 if r["thread_id"] == thread_id and r["status"] in ("pending", "running"):
                     raise ConflictError(f"Thread {thread_id} already has an active run")
 
-        # For interrupt/rollback: claim inflight runs.
-        # Two-pass so the memory path mirrors the SQL store's transactional
-        # semantics — if any candidate is a live run owned by another worker
-        # we must raise ConflictError WITHOUT having already mutated earlier
-        # candidates. Mutating inline would leave the store in a half-
-        # interrupted state on raise, diverging from SQL where a raise rolls
-        # the whole transaction back.
+        # interrupt/rollback 전략: 진행 중인 run을 claim 한다.
+        # 메모리 경로가 SQL store의 트랜잭션 의미를 그대로 따르도록 2-pass로 처리한다. 후보 중
+        # 하나라도 다른 worker가 소유한 살아 있는 run이면, 앞선 후보를 이미 변경한 상태가 아닌
+        # 채로 ConflictError를 raise 해야 한다. 즉시 변경하면 raise 시점에 store가 절반만
+        # interrupt된 상태로 남아, raise가 트랜잭션 전체를 되돌리는 SQL과 달라진다.
         claimed = []
         if multitask_strategy in ("interrupt", "rollback"):
             candidates: list[dict[str, Any]] = []
@@ -434,19 +428,17 @@ class MemoryRunStore(RunStore):
                 if existing_lease is not None:
                     try:
                         lease_dt = datetime.fromisoformat(existing_lease)
-                        # Treat naive values as UTC — same convention as
-                        # the SQL store and ``coerce_iso``, so the
-                        # comparison against the aware ``cutoff`` does not
-                        # raise ``TypeError``.
+                        # naive 값은 UTC로 취급한다. SQL store 및 ``coerce_iso``와 같은
+                        # 규칙이며, aware인 ``cutoff``와 비교할 때 ``TypeError``가 나지
+                        # 않게 한다.
                         if lease_dt.tzinfo is None:
                             lease_dt = lease_dt.replace(tzinfo=UTC)
                         lease_expired = lease_dt < cutoff
                         if lease_dt >= cutoff and r.get("owner_worker_id") != owner_worker_id:
-                            # Live run owned by another worker — cannot
-                            # interrupt, and the partial unique index would
-                            # reject the INSERT anyway. Surface as ConflictError
-                            # so the caller gets a clean signal. Raise before
-                            # any mutation so the store is left untouched.
+                            # 다른 worker가 소유한 살아 있는 run이다. interrupt 할 수 없고,
+                            # partial unique index도 어차피 INSERT를 거부한다. 호출자가 깔끔한
+                            # 신호를 받도록 ConflictError로 노출한다. store가 그대로 남도록
+                            # 어떤 변경보다 먼저 raise 한다.
                             raise ConflictError(f"Thread {thread_id} already has an active run owned by another worker")
                     except (ValueError, TypeError):
                         pass

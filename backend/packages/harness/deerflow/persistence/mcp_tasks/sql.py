@@ -26,7 +26,7 @@ _TIMESTAMP_FIELDS = (
 
 
 class DuplicateMcpRemoteTaskError(RuntimeError):
-    """The current user already tracks this server's remote task handle."""
+    """현재 사용자가 이 server의 remote task handle을 이미 추적하고 있다."""
 
 
 def _is_remote_task_unique_conflict(exc: IntegrityError) -> bool:
@@ -39,7 +39,7 @@ def _is_remote_task_unique_conflict(exc: IntegrityError) -> bool:
 
 
 class McpTaskRepository:
-    """Durable source of truth for long-running MCP task lifecycle state."""
+    """장시간 실행 MCP task의 lifecycle state에 대한 영속적 단일 진실 공급원."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sf = session_factory

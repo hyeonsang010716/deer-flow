@@ -1,4 +1,4 @@
-"""Hooks fired before summarization removes messages from state."""
+"""summarization이 state에서 메시지를 제거하기 전에 발화하는 hook 모음."""
 
 from __future__ import annotations
 
@@ -9,12 +9,11 @@ from deerflow.runtime.user_context import resolve_runtime_user_id
 
 
 def memory_flush_hook(event: SummarizationEvent) -> None:
-    """Flush messages about to be summarized into the memory queue.
+    """요약 직전의 메시지를 memory 큐로 flush한다.
 
-    Thin, backend-agnostic entry: only the ``enabled`` + ``thread_id`` gate
-    and ``user_id`` resolution live here. The backend (via
-    ``manager.add_nowait``) does the filtering, human/AI validation, and
-    correction/reinforcement detection.
+    backend 중립적인 얇은 진입점이다. 여기에는 ``enabled`` + ``thread_id`` 게이트와
+    ``user_id`` 해석만 둔다. 필터링, human/AI 검증, correction/reinforcement 탐지는
+    backend가(``manager.add_nowait``를 통해) 담당한다.
     """
     if not get_memory_config().enabled or not event.thread_id:
         return

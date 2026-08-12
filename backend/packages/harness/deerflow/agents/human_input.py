@@ -1,4 +1,4 @@
-"""Structured human-input message metadata helpers."""
+"""구조화된 human-input 메시지 메타데이터 helper."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _non_empty_string(value: object) -> str | None:
 
 
 def read_human_input_response(additional_kwargs: Mapping[str, object] | None) -> HumanInputResponse | None:
-    """Read a valid human-input response payload from message metadata."""
+    """메시지 메타데이터에서 유효한 human-input 응답 payload를 읽는다."""
     if not additional_kwargs:
         return None
     raw = additional_kwargs.get(HUMAN_INPUT_RESPONSE_KEY)

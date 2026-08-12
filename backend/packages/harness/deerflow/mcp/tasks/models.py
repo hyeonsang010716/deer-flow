@@ -6,7 +6,7 @@ from typing import Any
 
 
 class TaskStatus(StrEnum):
-    """Protocol-neutral lifecycle states for long-running MCP work."""
+    """장시간 실행되는 MCP 작업의 protocol 중립 lifecycle state."""
 
     SUBMITTED = "submitted"
     WORKING = "working"
@@ -39,7 +39,7 @@ ATTENTION_TASK_STATUSES: frozenset[TaskStatus] = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class TaskSnapshot:
-    """One normalized status response returned by a task driver."""
+    """task driver가 반환하는 정규화된 상태 응답 하나."""
 
     status: TaskStatus
     result: Any | None = None
@@ -66,7 +66,7 @@ class TaskSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class TaskReference:
-    """Stable data a driver needs after the originating Agent run has ended."""
+    """작업을 시작한 Agent run이 끝난 뒤에도 driver가 필요로 하는 안정적인 데이터."""
 
     local_task_id: str
     user_id: str
@@ -89,7 +89,7 @@ class TaskReference:
 
 @dataclass(frozen=True, slots=True)
 class TaskSubmitRequest:
-    """Protocol-neutral request passed to a driver by an MCP tool wrapper."""
+    """MCP tool wrapper가 driver에 넘기는 protocol 중립 요청."""
 
     user_id: str
     thread_id: str
@@ -104,7 +104,7 @@ class TaskSubmitRequest:
 
 @dataclass(frozen=True, slots=True)
 class TaskSubmission:
-    """A durable remote handle plus its initial normalized state."""
+    """영속적인 remote handle과 그 초기 정규화 state."""
 
     remote_task_id: str
     snapshot: TaskSnapshot

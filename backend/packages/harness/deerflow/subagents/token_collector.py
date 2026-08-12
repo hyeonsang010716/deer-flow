@@ -1,8 +1,7 @@
-"""Callback handler that collects LLM token usage within a subagent.
+"""subagent 안에서 LLM token 사용량을 수집하는 callback handler.
 
-Each subagent execution creates its own collector. After the subagent
-finishes, the collected records are transferred to the parent RunJournal
-via :meth:`RunJournal.record_external_llm_usage_records`.
+subagent 실행마다 자체 collector를 만든다. subagent가 끝나면 수집된 레코드를
+:meth:`RunJournal.record_external_llm_usage_records`를 통해 부모 RunJournal로 넘긴다.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 
 class SubagentTokenCollector(BaseCallbackHandler):
-    """Lightweight callback handler that collects LLM token usage within a subagent."""
+    """subagent 안의 LLM token 사용량을 수집하는 가벼운 callback handler."""
 
     def __init__(self, caller: str):
         super().__init__()
@@ -47,7 +46,7 @@ class SubagentTokenCollector(BaseCallbackHandler):
                     total_tk = input_tk + output_tk
                 if total_tk <= 0:
                     continue
-                # Prompt-cache hits (needed for cache-aware cost accounting)
+                # prompt cache 적중(cache를 반영한 비용 계산에 필요하다)
                 details = usage_dict.get("input_token_details") or {}
                 cache_read_tk = 0
                 if isinstance(details, Mapping):
@@ -55,9 +54,8 @@ class SubagentTokenCollector(BaseCallbackHandler):
                         cache_read_tk = max(int(details.get("cache_read") or 0), 0)
                     except (TypeError, ValueError):
                         cache_read_tk = 0
-                # Capture the model that actually produced this response so the
-                # parent journal can bucket tokens by real model rather than the
-                # lead agent's resolved model
+                # 이 응답을 실제로 만든 모델을 기록한다. 그래야 부모 journal이 lead agent가
+                # 해석한 모델이 아니라 실제 모델 기준으로 token을 분류할 수 있다
                 response_metadata = getattr(gen.message, "response_metadata", None) or {}
                 model_name: str | None = None
                 if isinstance(response_metadata, Mapping):
@@ -71,13 +69,13 @@ class SubagentTokenCollector(BaseCallbackHandler):
                     "output_tokens": output_tk,
                     "total_tokens": total_tk,
                 }
-                # Sparse, matching the journal's per-model buckets: the key is
-                # only present when the provider actually reported cache hits.
+                # journal의 모델별 bucket과 같이 희소하게 둔다. provider가 실제로 cache 적중을
+                # 보고했을 때만 키가 존재한다.
                 if cache_read_tk > 0:
                     record["cache_read_tokens"] = cache_read_tk
                 self._records.append(record)
                 return
 
     def snapshot_records(self) -> list[dict[str, int | str | None]]:
-        """Return a copy of the accumulated usage records."""
+        """누적된 사용량 레코드의 복사본을 반환한다."""
         return list(self._records)

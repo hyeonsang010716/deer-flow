@@ -1,8 +1,7 @@
-"""Extension-facing projection of host policy.
+"""host policy를 extension용으로 투영한다.
 
-This module is intentionally independent of Gateway router and service
-plumbing: lead and subagent builders need the projection even when the
-Gateway-specific contribution points are not installed.
+Gateway router와 service 배선에 의존하지 않도록 의도적으로 분리했다. Gateway 전용
+기여 지점이 설치되지 않은 상태에서도 lead/subagent 빌더가 이 투영을 필요로 한다.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ def project_host_policy(
     token_budget_config: Any | None = None,
     max_subagents_per_run: int | None | object = _UNSET,
 ) -> HostPolicySnapshot:
-    """Project the host's enforced limits into the public extension contract."""
+    """host가 강제하는 한도를 공개 extension 계약 형태로 투영한다."""
     token_budget = token_budget_config if token_budget_config is not None else getattr(app_config, "token_budget", None)
     token_budget_enabled = bool(getattr(token_budget, "enabled", False))
     if max_subagents_per_run is _UNSET:

@@ -1,4 +1,4 @@
-"""Native deterministic safety scanner for DeerFlow skills."""
+"""DeerFlow skill용 네이티브 결정적 안전성 scanner."""
 
 from deerflow.skills.skillscan.models import (
     FindingSeverity,

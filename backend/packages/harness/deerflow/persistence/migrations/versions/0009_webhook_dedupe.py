@@ -1,4 +1,4 @@
-"""Cross-pod inbound webhook dedupe table (issue #4120).
+"""pod 간 inbound webhook 중복 제거 테이블(issue #4120).
 
 Revision ID: 0009_webhook_dedupe
 Revises: 0008_thread_operation_kind
@@ -22,9 +22,8 @@ def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     if inspector.has_table("webhook_deliveries"):
-        # Idempotent: a DB whose full-metadata create_all already provisioned
-        # the table (e.g. a fresh DB, or a legacy test seed) must not have it
-        # re-created here.
+        # 멱등성 보장: 전체 metadata create_all로 이미 테이블이 만들어진 DB(예: 새 DB나 legacy
+        # 테스트 seed)에서 여기서 다시 만들면 안 된다.
         return
     op.create_table(
         "webhook_deliveries",
@@ -38,10 +37,9 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        # Composite PK mirrors ChannelManager._inbound_dedupe_key exactly. A
-        # single joined surrogate key is deliberately avoided: the components
-        # can contain characters (e.g. NUL) that are illegal in a Postgres TEXT
-        # column, and a joined key would also risk length overflow.
+        # 복합 PK는 ChannelManager._inbound_dedupe_key와 정확히 같다. 문자열을 이어 붙인 대리
+        # 키는 의도적으로 피한다. 구성 요소에 Postgres TEXT 컬럼에 담을 수 없는 문자(예: NUL)가
+        # 들어갈 수 있고, 이어 붙인 키는 길이 초과 위험도 있다.
         sa.PrimaryKeyConstraint(
             "channel",
             "workspace_id",

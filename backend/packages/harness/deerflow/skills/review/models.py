@@ -1,4 +1,4 @@
-"""Shared contracts and deterministic helpers for skill review."""
+"""skill review의 공용 contract와 결정적 헬퍼."""
 
 from __future__ import annotations
 
@@ -48,12 +48,12 @@ DEFAULT_PACKAGE_LIMITS = PackageLimits()
 
 
 def stable_json_dumps(data: Any) -> str:
-    """Serialize review data in a byte-stable, path-independent form."""
+    """review 데이터를 바이트 단위로 안정적이고 경로에 무관한 형태로 직렬화한다."""
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def normalize_relative_path(path: str) -> str:
-    """Normalize a package-relative path and reject escape attempts."""
+    """package 상대 경로를 정규화하고, 바깥으로 벗어나려는 시도는 거부한다."""
     raw = path.replace("\\", "/").strip()
     if not raw:
         raise ValueError("path must not be empty")

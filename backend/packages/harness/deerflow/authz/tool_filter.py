@@ -1,8 +1,7 @@
-"""Convenience wrapper for Layer 1 tool authorization filtering.
+"""Layer 1 도구 authorization 필터링용 편의 wrapper.
 
-Combines provider resolution, Principal construction, and tool filtering into
-a single call so the three assembly paths (lead agent, subagent, embedded
-client) stay one-liners.
+provider 해석, Principal 생성, 도구 필터링을 한 번의 호출로 묶어서
+세 조립 경로(lead agent, subagent, embedded client)가 한 줄로 유지되게 한다.
 """
 
 from __future__ import annotations
@@ -26,33 +25,29 @@ def apply_tool_authorization(
     app_config: AppConfig,
     authorization_provider: AuthorizationProvider | None = None,
 ) -> tuple[list[BaseTool], AuthorizationProvider | None]:
-    """Apply Layer 1 tool authorization filtering.
+    """Layer 1 도구 authorization 필터링을 적용한다.
 
-    Resolves the provider (or reuses a caller-provided one so Layer 1 and
-    Layer 2 share a single instance), builds a Principal from *context*, and
-    filters *tools* in place by the provider's policy.
+    provider를 해석하고(또는 Layer 1과 Layer 2가 같은 인스턴스를 공유하도록 호출자가 넘긴 것을
+    재사용하고), *context*로 Principal을 만든 뒤, provider 정책으로 *tools*를 필터링한다.
 
-    When ``authorization.enabled`` is false, this is a no-op: returns the
-    original tools and ``None``.
+    ``authorization.enabled``가 false면 아무것도 하지 않고 원래 도구와 ``None``을 반환한다.
 
     Args:
-        tools: Candidate tools (already skill-filtered etc.).
-        context: Runtime context mapping (the merged ``cfg`` dict or an
-            equivalent dict assembled from ``self.*`` fields).
-        app_config: The resolved AppConfig (used for authorization settings).
-        authorization_provider: An already-resolved provider, or ``None`` to
-            resolve from ``app_config.authorization`` here.
+        tools: 후보 도구 목록(skill 필터링 등은 이미 끝난 상태).
+        context: runtime context mapping(병합된 ``cfg`` dict 또는 ``self.*`` 필드로
+            조립한 동등한 dict).
+        app_config: 해석된 AppConfig. authorization 설정에 쓴다.
+        authorization_provider: 이미 해석된 provider. ``None``이면 여기서
+            ``app_config.authorization``으로부터 해석한다.
 
     Returns:
-        ``(filtered_tools, provider)`` — the filtered tool list and the
-        provider instance (for passing to Layer 2 middleware wiring, or
-        ``None`` when authorization is disabled).
+        ``(filtered_tools, provider)`` — 필터링된 도구 목록과 provider 인스턴스
+        (Layer 2 middleware 연결에 넘기기 위한 값. authorization이 비활성이면 ``None``).
     """
     authz_config = app_config.authorization
-    # Guard against Mock objects in tests: MagicMock attribute access returns
-    # a truthy child mock for ``enabled``, which would trigger provider
-    # resolution on a non-string ``provider.use``. Real AuthorizationConfig
-    # has ``enabled: bool``; if it's not actually ``True``, skip.
+    # 테스트의 Mock 객체 방어: MagicMock은 ``enabled`` 속성 접근에 truthy한 자식 mock을 돌려주므로
+    # 문자열이 아닌 ``provider.use``로 provider 해석이 시작될 수 있다. 실제 AuthorizationConfig는
+    # ``enabled: bool``이므로 진짜 ``True``가 아니면 건너뛴다.
     if authz_config.enabled is not True:
         return tools, None
 

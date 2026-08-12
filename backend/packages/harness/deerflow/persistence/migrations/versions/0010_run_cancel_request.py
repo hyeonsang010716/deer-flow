@@ -1,4 +1,4 @@
-"""durable cross-worker run cancellation requests.
+"""worker 간 durable run 취소 요청 컬럼을 추가한다.
 
 Revision ID: 0010_run_cancel_request
 Revises: 0009_webhook_dedupe

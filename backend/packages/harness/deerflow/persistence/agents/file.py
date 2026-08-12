@@ -1,15 +1,14 @@
-"""Filesystem-backed agent store — today's per-user layout, behaviour-preserving.
+"""파일시스템 기반 agent store — 현재의 per-user 레이아웃을 동작 변경 없이 유지한다.
 
-The read methods are the pre-refactor bodies of ``load_agent_config`` /
-``load_agent_soul`` / ``list_custom_agents`` (so the free functions in
-:mod:`deerflow.config.agents_config` dispatch here without changing behaviour).
-Writes use a staged temp-file + atomic ``os.replace`` commit — the crash-safety
-the ``update_agent`` tool already had, applied uniformly to create/update.
+읽기 메서드는 리팩터링 이전의 ``load_agent_config`` / ``load_agent_soul`` /
+``list_custom_agents`` 본문 그대로다(:mod:`deerflow.config.agents_config`의 free function이
+동작 변경 없이 여기로 dispatch한다). 쓰기는 임시 파일에 staging한 뒤 원자적 ``os.replace``로
+commit한다 — ``update_agent`` 도구가 이미 갖고 있던 crash-safety를 create/update에 동일하게
+적용한 것이다.
 
-Path/user resolution is done through the :mod:`deerflow.config.agents_config`
-module object (``_ac.get_paths`` / ``_ac.get_effective_user_id``) rather than
-direct imports, so it honours the same monkeypatch seams the existing agent
-tests target.
+경로/사용자 해석은 직접 import 대신 :mod:`deerflow.config.agents_config` 모듈 객체
+(``_ac.get_paths`` / ``_ac.get_effective_user_id``)를 통해 수행한다. 기존 agent 테스트가
+노리는 monkeypatch 지점을 그대로 존중하기 위해서다.
 """
 
 from __future__ import annotations
@@ -66,11 +65,11 @@ class FileAgentStore(AgentStore):
     def get_soul(self, name: str, *, user_id: str | None = None) -> str | None:
         agent_dir = resolve_agent_dir(name, user_id=user_id)
         soul_path = agent_dir / SOUL_FILENAME
-        # resolve_agent_dir requires config.yaml; SOUL.md loading does not, so
-        # when the resolver fell back to its default path (no qualifying dir),
-        # check the per-user and legacy dirs directly (#4135). The config.yaml
-        # guard keeps this fallback from firing for a properly-resolved per-user
-        # agent that merely lacks SOUL.md (preserves per-user-shadows-legacy).
+        # resolve_agent_dir는 config.yaml을 요구하지만 SOUL.md 로딩은 그렇지 않다. 따라서
+        # resolver가 조건을 만족하는 디렉터리를 못 찾아 기본 경로로 fallback한 경우 per-user와
+        # legacy 디렉터리를 직접 확인한다(#4135). config.yaml 가드는 SOUL.md만 없는 정상
+        # per-user agent에서 이 fallback이 발동하지 않게 해서 per-user가 legacy를 가리는
+        # 동작을 유지한다.
         if not soul_path.exists() and not (agent_dir / "config.yaml").exists():
             paths = _ac.get_paths()
             effective_user = user_id or _ac.get_effective_user_id()
@@ -103,7 +102,7 @@ class FileAgentStore(AgentStore):
                 try:
                     agents.append(self.get(entry.name, user_id=effective_user))
                     seen.add(entry.name)
-                except Exception as e:  # noqa: BLE001 — one bad agent must not hide the rest
+                except Exception as e:  # noqa: BLE001 — agent 하나가 잘못돼도 나머지를 가리면 안 된다
                     logger.warning("Skipping agent '%s': %s", entry.name, e)
         agents.sort(key=lambda a: a.name)
         return agents
@@ -122,23 +121,23 @@ class FileAgentStore(AgentStore):
         paths = _ac.get_paths()
         effective_user = user_id or _ac.get_effective_user_id()
         agent_dir = paths.user_agent_dir(effective_user, name)
-        # Refuse if a per-user directory OR a legacy shared directory already
-        # owns the name — the agents router's 409 semantics (a legacy agent must
-        # not be shadowed; a per-user dir may be memory-only but still blocks).
+        # per-user 디렉터리나 legacy 공유 디렉터리가 이미 그 이름을 갖고 있으면 거부한다 —
+        # agents router의 409 의미(legacy agent는 가려지면 안 되고, per-user 디렉터리는
+        # memory 전용이더라도 여전히 이름을 막는다).
         if agent_dir.exists() or paths.agent_dir(name).exists():
             raise AgentExistsError(f"Agent '{name}' already exists for user '{effective_user}'")
         try:
             agent_dir.mkdir(parents=True, exist_ok=False)
         except FileExistsError as e:
-            # A concurrent create passed the existence check above and reached
-            # mkdir first. Surface the router's 409 (via AgentExistsError) rather
-            # than a generic 500 — mirrors SqlAgentStore's IntegrityError path.
+            # 동시에 실행된 create가 위 존재 확인을 통과하고 mkdir에 먼저 도달했다. 일반적인
+            # 500 대신 router의 409를 노출한다(AgentExistsError 경유) — SqlAgentStore의
+            # IntegrityError 경로와 동일하다.
             raise AgentExistsError(f"Agent '{name}' already exists for user '{effective_user}'") from e
         try:
             self._write(agent_dir, config, soul)
         except Exception:
-            # The directory was newly created for this call; a failed write
-            # must not leave an empty/partial agent dir behind.
+            # 이 호출에서 새로 만든 디렉터리이므로, 쓰기가 실패하면 비어 있거나 일부만 쓰인
+            # agent 디렉터리를 남기면 안 된다.
             shutil.rmtree(agent_dir, ignore_errors=True)
             raise
 
@@ -151,8 +150,7 @@ class FileAgentStore(AgentStore):
         try:
             self._write(agent_dir, config, soul)
         except Exception:
-            # Only clean up a directory this call created — never delete a
-            # pre-existing agent on a failed write.
+            # 이 호출이 만든 디렉터리만 정리한다 — 쓰기 실패로 기존 agent를 삭제하지 않는다.
             if not pre_existing:
                 shutil.rmtree(agent_dir, ignore_errors=True)
             raise
@@ -163,16 +161,16 @@ class FileAgentStore(AgentStore):
         effective_user = user_id or _ac.get_effective_user_id()
         agent_dir = paths.user_agent_dir(effective_user, name)
         if not agent_dir.exists():
-            # A legacy shared-layout agent is intentionally left in place (the
-            # write path never targets it); report it distinctly.
+            # legacy 공유 레이아웃 agent는 의도적으로 그대로 둔다(쓰기 경로가 그것을 대상으로
+            # 삼지 않는다). 별도 상태로 보고한다.
             return "legacy" if paths.agent_dir(name).exists() else "missing"
         if not (agent_dir / "config.yaml").is_file():
-            # The directory holds memory/facts data but is not a custom agent
-            # (no config.yaml) — preserve it rather than deleting a user's memory
-            # (#4279). rmtree below would otherwise take the whole tree.
+            # 이 디렉터리는 memory/facts 데이터를 담고 있을 뿐 custom agent가 아니다
+            # (config.yaml 없음). 사용자의 memory를 지우는 대신 보존한다(#4279). 그대로 두면
+            # 아래 rmtree가 트리 전체를 날린다.
             return "not-custom-agent"
-        # rmtree removes config.yaml, SOUL.md and the co-located memory.json in
-        # one shot — the historical behaviour.
+        # rmtree가 config.yaml, SOUL.md, 같은 위치의 memory.json을 한 번에 제거한다 —
+        # 기존 동작 그대로다.
         shutil.rmtree(agent_dir)
         return "deleted"
 
@@ -189,13 +187,12 @@ class FileAgentStore(AgentStore):
     # -- internals --
 
     def _discover(self) -> list[tuple[str, str]]:
-        """Enumerate ``(user_id, name)`` across per-user and legacy layouts.
+        """per-user와 legacy 레이아웃 전체에서 ``(user_id, name)``을 열거한다.
 
-        A legacy shared-layout agent is attributed to ``DEFAULT_USER_ID`` and is
-        shadowed only by a ``users/default/`` agent of the same name — not by an
-        agent another user happens to own — matching the GitHub registry's
-        historical discovery (``load_agent_config(name)`` resolves a legacy agent
-        under ``DEFAULT_USER_ID``).
+        legacy 공유 레이아웃 agent는 ``DEFAULT_USER_ID`` 소유로 간주하며, 같은 이름의
+        ``users/default/`` agent에만 가려진다 — 다른 사용자가 소유한 agent에는 가려지지 않는다.
+        GitHub registry의 기존 discovery 동작과 일치한다(``load_agent_config(name)``은 legacy
+        agent를 ``DEFAULT_USER_ID`` 아래에서 해석한다).
         """
         paths = _ac.get_paths()
         discovered: list[tuple[str, str]] = []
@@ -222,16 +219,14 @@ class FileAgentStore(AgentStore):
 
     @staticmethod
     def _write(agent_dir: Path, config: dict | None, soul: str | None) -> None:
-        """Write config.yaml and/or SOUL.md, each via an atomic ``os.replace``.
+        """config.yaml과 SOUL.md를 각각 원자적 ``os.replace``로 기록한다.
 
-        Each part is written only when supplied (``config``/``soul`` non-None),
-        staged to a temp file then committed with ``os.replace``, so neither file
-        is ever observed half-written. The two commits are sequential, **not** a
-        single transaction: a crash between them can leave a freshly-replaced
-        config.yaml beside a stale SOUL.md (single-node, sub-millisecond window).
-        The ``db`` backend commits both fields in one transaction; if cross-file
-        atomicity ever matters here, restore ``update_agent``'s partial-write
-        reporting.
+        각 부분은 값이 주어졌을 때만(``config``/``soul``이 None이 아닐 때) 임시 파일에 staging된
+        뒤 ``os.replace``로 commit되므로, 어느 파일도 절반만 쓰인 상태로 관찰되지 않는다. 두
+        commit은 순차적이며 **단일 트랜잭션이 아니다**: 그 사이에 crash가 나면 방금 교체된
+        config.yaml 옆에 오래된 SOUL.md가 남을 수 있다(단일 노드, 밀리초 미만의 구간).
+        ``db`` backend는 두 필드를 한 트랜잭션으로 commit한다. 여기서 파일 간 원자성이 필요해지면
+        ``update_agent``의 부분 쓰기 보고를 복원한다.
         """
         pending: list[tuple[Path, Path]] = []
         staged: list[Path] = []

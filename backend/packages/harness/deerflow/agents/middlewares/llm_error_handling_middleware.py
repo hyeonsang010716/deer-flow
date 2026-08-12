@@ -1,4 +1,4 @@
-"""LLM error handling middleware with retry/backoff and user-facing fallbacks."""
+"""LLM 오류 처리 middleware — retry/backoff와 사용자에게 보여줄 fallback을 담당한다."""
 
 from __future__ import annotations
 
@@ -65,10 +65,9 @@ _AUTH_PATTERNS = (
     "未授权",
 )
 
-# Provider burst-rate (``limit_burst_rate``) signals. This is a *rate-of-change*
-# limit, not a quota limit: the provider throttles when request RPM ramps up too
-# steeply (e.g. the 08:30 morning peak going 0 -> full throttle in seconds).
-# Matched against both the error message and the error ``code``/``type``.
+# provider의 burst-rate(``limit_burst_rate``) 신호. quota 제한이 아니라 *증가율* 제한이다.
+# 요청 RPM이 너무 가파르게 오르면 provider가 throttle한다(예: 08:30 아침 피크에 몇 초 만에 0 -> 최대).
+# 에러 메시지와 에러 ``code``/``type`` 양쪽에 대해 매칭한다.
 _BURST_PATTERNS = (
     "limit_burst_rate",
     "rate increased too quickly",
@@ -77,47 +76,40 @@ _BURST_PATTERNS = (
     "突发速率",
 )
 
-# Per-exception retry budget overrides.
+# 예외별 retry 예산 override.
 #
-# Some transient errors are retriable in principle but expensive to retry at
-# the default budget. StreamChunkTimeoutError in particular fires after the
-# upstream provider has already stalled for `stream_chunk_timeout` seconds
-# (typically 120-240s); a full 3-attempt loop can therefore stack 6-12 minutes
-# of dead air before surfacing the failure to the user. We keep exactly one
-# retry (cheap reconnect that catches genuine transient TCP blips) and then
-# fail fast — the same buffered payload is overwhelmingly likely to fail
-# again at the upstream provider for the same reason.
+# 일부 transient 에러는 원리상 재시도 가능하지만 기본 예산으로 재시도하기엔 비용이 크다.
+# 특히 StreamChunkTimeoutError는 upstream provider가 이미 `stream_chunk_timeout`초
+# (보통 120-240초) 멈춘 뒤에 발생한다. 3회 시도를 다 돌면 사용자에게 실패를 알리기까지
+# 6-12분의 침묵이 쌓인다. 그래서 retry는 정확히 한 번만 남기고(진짜 일시적인 TCP 끊김을
+# 잡는 값싼 재연결) 바로 실패시킨다. 같은 버퍼된 payload는 같은 이유로 upstream에서
+# 다시 실패할 가능성이 압도적으로 높기 때문이다.
 #
-# Keys are exception class *names* (not classes) so we don't introduce
-# import-time coupling on optional dependencies like langchain-openai. The
-# value is the absolute max attempt count, NOT additional retries — so a
-# value of 2 means "1 first attempt + 1 retry" (the CR-requested
-# "keep one retry" behavior).
+# 키는 예외 클래스 *이름*이다(클래스가 아니다). langchain-openai 같은 선택적 의존성에
+# import 시점 결합을 만들지 않기 위해서다. 값은 추가 retry 횟수가 아니라 절대 최대 시도
+# 횟수이므로, 2는 "첫 시도 1 + retry 1"을 뜻한다(CR에서 요청한 "retry 한 번 유지" 동작).
 _RETRY_BUDGET_OVERRIDES: dict[str, int] = {
     "StreamChunkTimeoutError": 2,
 }
 
-# Per-reason retry budget overrides, applied in addition to the per-exception
-# overrides above; the tightest bound wins (so neither loosens the other) and
-# the user-configured ``retry_max_attempts`` still caps everything.
+# reason별 retry 예산 override. 위의 예외별 override와 함께 적용되며 가장 빡빡한 값이
+# 이긴다(어느 쪽도 다른 쪽을 느슨하게 만들지 않는다). 사용자가 설정한
+# ``retry_max_attempts``가 여전히 전체 상한이다.
 #
-# A burst-rate (``limit_burst_rate``) 429 gets a tight budget on purpose:
-# retrying into the burst adds demand to the very request-rate slope being
-# throttled, so we keep at most one retry (with a longer backoff) and then shed
-# load rather than hammering the provider. Keys are ``_classify_error`` reasons.
+# burst-rate(``limit_burst_rate``) 429에 의도적으로 좁은 예산을 준다. burst 상황에서
+# 재시도하면 throttle 대상인 요청 증가율 자체를 더 밀어올리므로, retry는 최대 한 번만
+# 하고(backoff는 더 길게) 부하를 덜어낸다. 키는 ``_classify_error``의 reason이다.
 _REASON_RETRY_BUDGETS: dict[str, int] = {
     "burst_rate": 2,
 }
 
-# Exception class names that indicate the upstream stream-chunk watchdog
-# fired because the model stalled mid-flight. These deserve a more specific
-# user-facing message than the generic "temporarily unavailable" copy,
-# because the typical root cause is a long tool-call serialization stalling
-# the upstream stream — and the most actionable advice we can give the user
-# is "ask for a shorter / split output" rather than "wait and retry".
-# Generic connection drops (httpx RemoteProtocolError / ReadError) are
-# intentionally excluded: they routinely fire on transient network blips
-# with normal payloads, where the "split the work" guidance is misleading.
+# 모델이 응답 도중 멈춰서 upstream의 stream-chunk watchdog가 발동했음을 뜻하는 예외
+# 클래스 이름들. 흔한 원인이 긴 tool-call 직렬화가 upstream stream을 막는 것이라,
+# 일반적인 "일시적으로 사용 불가" 문구보다 더 구체적인 안내가 필요하다. 사용자에게 줄 수
+# 있는 가장 실행 가능한 조언은 "기다렸다 재시도"가 아니라 "출력을 짧게 하거나 나눠 달라"다.
+# 일반적인 연결 끊김(httpx RemoteProtocolError / ReadError)은 의도적으로 제외한다.
+# 정상 payload에서도 일시적 네트워크 문제로 흔히 발생하며, 그때 "작업을 나누라"는 안내는
+# 오히려 오해를 준다.
 _STREAM_DROP_EXCEPTIONS: frozenset[str] = frozenset(
     {
         "StreamChunkTimeoutError",
@@ -125,45 +117,38 @@ _STREAM_DROP_EXCEPTIONS: frozenset[str] = frozenset(
 )
 
 
-# Process-global LLM call concurrency cap. ONE limiter is shared across every
-# ``LLMErrorHandlingMiddleware`` instance and every call path: the lead agent
-# (main event loop), subagents (the isolated persistent loop in
-# subagents/executor.py), ``asyncio.run`` tests, and the sync graph path. That
-# matters because a provider burst-rate (``limit_burst_rate``) limit fires on
-# the *slope* of the request rate, so the cap must bound aggregate in-flight
-# calls process-wide - a per-loop cap (which is what asyncio.Semaphore would
-# give) is defeated the moment subagent fan-out runs on a second loop.
+# 프로세스 전역 LLM 호출 동시성 상한. limiter 하나를 모든
+# ``LLMErrorHandlingMiddleware`` 인스턴스와 모든 호출 경로가 공유한다: lead agent(메인
+# event loop), subagent(subagents/executor.py의 격리된 상주 loop), ``asyncio.run`` 테스트,
+# sync graph 경로. provider의 burst-rate(``limit_burst_rate``) 제한은 요청률의 *기울기*에
+# 걸리므로, 상한은 프로세스 전체의 in-flight 호출 합계를 묶어야 한다. loop별 상한
+# (asyncio.Semaphore가 주는 것)은 subagent fan-out이 두 번째 loop에서 도는 순간 무력해진다.
 #
-# Correctness invariants the design below preserves:
-#   * Lossless waiter handoff: a permit handed to a waiter is *reserved* for
-#     that waiter at dequeue time (``granted=True``). If the waiter is
-#     cancelled before it wakes, the reserved permit is re-handed to the next
-#     waiter (or freed) - so a cancellation in the post-dequeue/pre-reacquire
-#     window never strands the next waiter with capacity idle.
-#   * Startup-only cap: the cap is resolved ONCE, at the first middleware
-#     construction (``_apply_configured_cap``), and frozen thereafter. Later
-#     ``__init__`` calls never touch the cap - whether they hold a newer or an
-#     older ``AppConfig`` snapshot. This removes the pseudo-generation path
-#     entirely: with no cap mutation at runtime there is no downscale that
-#     could hand excess permits to queued waiters (keeping ``in_flight`` pegged
-#     at the old cap), and no construction-order race where a stale config
-#     constructed after a fresher one could restore a higher cap. Per-attempt
-#     callers only acquire/release. Changing the cap requires a gateway
-#     restart (see ``LlmCallConfig.max_concurrent_calls``).
+# 아래 설계가 지키는 정합성 불변식:
+#   * 무손실 waiter 인계: waiter에게 넘긴 permit은 dequeue 시점에 그 waiter 앞으로
+#     *예약*된다(``granted=True``). waiter가 깨어나기 전에 취소되면 예약된 permit은 다음
+#     waiter에게 다시 넘기거나 반납한다. 따라서 dequeue 후 재획득 전 구간에서 취소가
+#     일어나도 용량을 놀린 채 다음 waiter를 방치하는 일이 없다.
+#   * 시작 시점 고정 상한: 상한은 첫 middleware 생성 시점(``_apply_configured_cap``)에
+#     한 번만 결정되고 이후 고정된다. 이후 ``__init__``은 더 새로운 ``AppConfig``
+#     스냅샷을 들고 있든 더 오래된 것을 들고 있든 상한을 건드리지 않는다. 이로써
+#     의사 generation 경로가 통째로 사라진다. 런타임에 상한이 바뀌지 않으므로 상한을
+#     낮출 때 대기 중인 waiter에게 초과 permit이 넘어가 ``in_flight``가 옛 상한에 고정되는
+#     일도, 오래된 config가 새 config보다 늦게 생성되어 더 높은 상한을 복원하는 생성 순서
+#     race도 없다. 시도 단위 호출자는 acquire/release만 한다. 상한 변경은 gateway
+#     재시작이 필요하다(``LlmCallConfig.max_concurrent_calls`` 참고).
 
 
 class _AsyncWaiter:
-    """A parked async caller awaiting a transferred permit.
+    """permit 인계를 기다리며 대기 중인 async 호출자.
 
-    ``granted`` is flipped to ``True`` (under the limiter lock) at the exact
-    moment a permit is reserved for this waiter - by ``release`` handing off a
-    returning permit, or by another cancelling waiter handing off its reserved
-    permit. The reservation is atomic with the dequeue, so the invariant
-    ``granted is True  <=>  not in _async_waiters`` always holds: once granted,
-    the permit is already counted in ``_in_flight`` and the waiter need only
-    wake and return. A cancelled waiter therefore knows from ``granted``
-    whether it owes a handoff (granted) or is merely unregistering (not yet
-    granted).
+    ``granted``는 이 waiter 앞으로 permit이 예약되는 바로 그 순간 (limiter lock 아래서)
+    ``True``가 된다. ``release``가 반납된 permit을 넘겨줄 때, 또는 취소되는 다른 waiter가
+    자기 예약 permit을 넘겨줄 때다. 예약은 dequeue와 원자적이라
+    ``granted is True  <=>  not in _async_waiters`` 불변식이 항상 성립한다. 일단 granted가
+    되면 permit은 이미 ``_in_flight``에 계상되어 있으므로 waiter는 깨어나 반환만 하면 된다.
+    따라서 취소된 waiter는 ``granted``만 보고 인계 의무가 있는지(granted) 단순 등록 해제인지
+    (아직 granted 아님) 판단할 수 있다.
     """
 
     __slots__ = ("loop", "event", "granted")
@@ -175,25 +160,20 @@ class _AsyncWaiter:
 
 
 class _ProcessWideLimiter:
-    """In-flight call limiter shared across event loops and sync/async wrappers.
+    """event loop와 sync/async wrapper를 가로질러 공유되는 in-flight 호출 limiter.
 
-    ``asyncio.Semaphore`` binds to the first event loop that uses it and raises
-    if acquired from another, so it cannot cap lead-agent and subagent calls
-    together (they run on different loops), nor the sync graph path. This
-    limiter is built on ``threading`` primitives (not loop-bound): every call
-    path shares one in-flight counter and one cap.
+    ``asyncio.Semaphore``는 처음 사용한 event loop에 묶이고 다른 loop에서 획득하면 예외를
+    던진다. 그래서 서로 다른 loop에서 도는 lead agent와 subagent 호출을 함께 제한할 수 없고
+    sync graph 경로도 못 다룬다. 이 limiter는 loop에 묶이지 않는 ``threading`` 프리미티브로
+    만들어져 모든 호출 경로가 하나의 in-flight 카운터와 하나의 상한을 공유한다.
 
-    The cap is **immutable**: it is set once at construction (by
-    ``_apply_configured_cap`` on the first middleware ``__init__``) and never
-    mutated afterwards. Because the cap never changes at runtime there is no
-    downscale race (a lowered cap could otherwise keep admitting queued
-    waiters until ``in_flight`` drains) and no config-freshness race (a stale
-    snapshot constructed later could otherwise restore a higher cap). Per-
-    attempt callers (``acquire_sync``/``acquire_async``/``release``) never
-    touch the cap. Permits are released in a ``finally`` and an async waiter
-    that is cancelled after its permit was reserved hands the reservation to
-    the next waiter, so capacity never leaks and a cancellation never strands
-    a later waiter.
+    상한은 **불변**이다. 첫 middleware ``__init__``에서 ``_apply_configured_cap``이 한 번
+    설정한 뒤 절대 바뀌지 않는다. 런타임에 상한이 변하지 않으므로 상한을 낮췄을 때
+    ``in_flight``가 빠질 때까지 대기 중인 waiter를 계속 들여보내는 race도, 오래된 스냅샷이
+    나중에 생성되어 더 높은 상한을 복원하는 race도 없다. 시도 단위 호출자
+    (``acquire_sync``/``acquire_async``/``release``)는 상한을 건드리지 않는다. permit은
+    ``finally``에서 반납하고, permit이 예약된 뒤 취소된 async waiter는 그 예약을 다음
+    waiter에게 넘긴다. 따라서 용량이 새지 않고 취소가 뒤의 waiter를 방치하지 않는다.
     """
 
     def __init__(self, limit: int) -> None:
@@ -201,9 +181,9 @@ class _ProcessWideLimiter:
         self._cond = threading.Condition(self._lock)
         self._in_flight = 0
         self._limit = max(0, limit)
-        # FIFO of async callers waiting on capacity. Each waiter lives on its
-        # caller's loop; release/handoff wakes one across loops via
-        # call_soon_threadsafe so the wakeup runs on the right loop.
+        # 용량을 기다리는 async 호출자의 FIFO. 각 waiter는 자기 호출자의 loop에 있으므로
+        # release/인계는 call_soon_threadsafe로 loop를 건너 깨운다. 그래야 wakeup이
+        # 올바른 loop에서 실행된다.
         self._async_waiters: deque[_AsyncWaiter] = deque()
 
     @property
@@ -215,27 +195,26 @@ class _ProcessWideLimiter:
         return self._in_flight
 
     def acquire_sync(self) -> None:
-        """Block the calling thread until a permit is available, then take one."""
+        """permit이 생길 때까지 호출 thread를 막았다가 하나를 가져간다."""
         with self._cond:
             while not self._try_acquire_locked():
                 self._cond.wait()
 
     def release(self) -> None:
-        """Return one permit, handing it to a waiter if one is queued.
+        """permit 하나를 반납한다. 대기 중인 waiter가 있으면 그쪽으로 넘긴다.
 
-        If an async waiter is queued, the returning permit *transfers* to it
-        (ownership moves; ``_in_flight`` is unchanged) and its event is set so
-        it wakes already owning a permit. Otherwise the permit returns to the
-        free pool (``_in_flight -= 1``) and one sync waiter is notified to grab
-        it on its next ``_try_acquire_locked`` re-check.
+        async waiter가 대기 중이면 반납되는 permit이 그쪽으로 *이전*되고(소유권만 이동하고
+        ``_in_flight``는 그대로) event를 set해서 permit을 이미 가진 상태로 깨어나게 한다.
+        그렇지 않으면 permit은 free pool로 돌아가고(``_in_flight -= 1``) sync waiter 하나에게
+        알려 다음 ``_try_acquire_locked`` 재확인에서 가져가게 한다.
         """
         with self._cond:
             if self._async_waiters:
                 waiter = self._async_waiters.popleft()
                 waiter.granted = True
                 if not self._wake_locked(waiter):
-                    # Owner loop closed: the transferred permit is stranded;
-                    # hand it to the next waiter or free it.
+                    # 소유 loop가 닫혔다. 이전된 permit이 붕 뜨므로 다음 waiter에게
+                    # 넘기거나 반납한다.
                     self._handoff_granted_permit_locked()
                 return
             if self._in_flight > 0:
@@ -243,15 +222,13 @@ class _ProcessWideLimiter:
             self._cond.notify()
 
     async def acquire_async(self) -> None:
-        """Acquire a permit without blocking the event loop.
+        """event loop를 막지 않고 permit을 획득한다.
 
-        Free capacity -> take one immediately. Otherwise park on an
-        ``asyncio.Event``; ``release`` / a cap-raise transfers a permit to us
-        (``granted=True``) and sets the event. On cancellation, if a permit was
-        already reserved for us, hand it to the next waiter (or free it) so the
-        reservation is never lost; if we were still queued (not yet granted),
-        just unregister - no permit was reserved for us, so there is nothing to
-        release.
+        여유 용량이 있으면 즉시 하나를 가져간다. 없으면 ``asyncio.Event``에 대기한다.
+        ``release``나 상한 상향이 permit을 우리에게 이전하고(``granted=True``) event를 set한다.
+        취소될 때 이미 permit이 예약되어 있었다면 다음 waiter에게 넘기거나 반납해서 예약이
+        사라지지 않게 한다. 아직 대기열에만 있었다면(granted 이전) 등록만 해제한다. 예약된
+        permit이 없으니 반납할 것도 없다.
         """
         loop = asyncio.get_running_loop()
         while True:
@@ -272,16 +249,15 @@ class _ProcessWideLimiter:
             except asyncio.CancelledError:
                 with self._cond:
                     if waiter.granted:
-                        # A permit was reserved for us but we're cancelling
-                        # before waking. Pass the reservation to the next
-                        # waiter (or free it) so it is not stranded.
+                        # permit이 예약됐지만 깨어나기 전에 취소된다. 예약이 붕 뜨지
+                        # 않도록 다음 waiter에게 넘기거나 반납한다.
                         self._handoff_granted_permit_locked()
                     else:
-                        # Still queued, never granted (granted is set only when
-                        # dequeued, under the lock): just unregister.
+                        # 아직 대기열에 있고 granted된 적 없다(granted는 lock 아래
+                        # dequeue될 때만 설정된다). 등록만 해제한다.
                         self._async_waiters.remove(waiter)
                 raise
-            return  # woken => granted => we own a permit (already in _in_flight)
+            return  # 깨어남 => granted => permit 보유(이미 _in_flight에 계상됨)
 
     def _try_acquire_locked(self) -> bool:
         if self._in_flight < self._limit:
@@ -290,74 +266,68 @@ class _ProcessWideLimiter:
         return False
 
     def _handoff_granted_permit_locked(self) -> None:
-        """Transfer an already-reserved permit to the next queued waiter, or free it.
+        """이미 예약된 permit을 다음 대기 waiter에게 이전하거나 반납한다.
 
-        Used when a waiter that had a permit reserved cancels before waking, or
-        when a reservation target's loop is dead. The permit is already counted
-        in ``_in_flight``; transferring keeps it counted (ownership moves to the
-        next waiter), freeing returns it to the pool. Either way ``_in_flight``
-        stays correct and the reservation is never lost.
+        permit을 예약받은 waiter가 깨어나기 전에 취소됐거나 예약 대상의 loop가 죽었을 때
+        쓴다. permit은 이미 ``_in_flight``에 계상되어 있으므로, 이전하면 계상이 유지되고
+        (소유권만 다음 waiter로 이동) 반납하면 pool로 돌아간다. 어느 쪽이든 ``_in_flight``는
+        정확하게 유지되고 예약은 사라지지 않는다.
         """
         while self._async_waiters:
             waiter = self._async_waiters.popleft()
             waiter.granted = True
             if self._wake_locked(waiter):
-                return  # ownership transferred; _in_flight unchanged
-            # dead loop; try the next waiter
-        # No async waiter to take it: free the permit and wake a sync waiter.
+                return  # 소유권 이전 완료. _in_flight는 그대로
+            # 죽은 loop다. 다음 waiter를 시도한다
+        # 받아갈 async waiter가 없다. permit을 반납하고 sync waiter를 깨운다.
         if self._in_flight > 0:
             self._in_flight -= 1
         self._cond.notify()
 
     def _wake_locked(self, waiter: _AsyncWaiter) -> bool:
-        """Schedule ``event.set`` on the waiter's loop. False if the loop is dead."""
+        """waiter의 loop에 ``event.set``을 예약한다. loop가 죽었으면 False를 반환한다."""
         try:
             waiter.loop.call_soon_threadsafe(waiter.event.set)
             return True
         except RuntimeError:
-            return False  # owner loop closed: the wakeup cannot land
+            return False  # 소유 loop가 닫혀 wakeup이 도달할 수 없다
 
 
 _LIMITER_LOCK = threading.Lock()
 _PROCESS_LIMITER: _ProcessWideLimiter | None = None
 
-# Whether the process-wide cap has been resolved yet. The cap is startup-only:
-# the first ``LLMErrorHandlingMiddleware`` ``__init__`` resolves it (creating a
-# limiter for a positive cap, or leaving it ``None`` for a disabled cap) and
-# every subsequent ``__init__`` is a no-op - regardless of whether its
-# ``AppConfig`` snapshot is newer or older than the first. This is the single
-# owner of the cap; per-attempt callers only acquire/release.
+# 프로세스 전역 상한이 결정됐는지 여부. 상한은 시작 시점에만 정해진다. 첫
+# ``LLMErrorHandlingMiddleware`` ``__init__``이 이를 결정하고(양수면 limiter 생성, 아니면
+# ``None``으로 두어 비활성) 이후의 모든 ``__init__``은 no-op이다. 그 인스턴스의
+# ``AppConfig`` 스냅샷이 첫 번째보다 새롭든 오래됐든 마찬가지다. 여기가 상한의 유일한
+# 소유자이며, 시도 단위 호출자는 acquire/release만 한다.
 _CAP_RESOLVED: bool = False
 
 
 def _get_process_limiter() -> _ProcessWideLimiter | None:
-    """Return the process-wide LLM-call limiter, or ``None`` when the cap is
-    disabled (or before the first middleware construction resolves it).
+    """프로세스 전역 LLM 호출 limiter를 반환한다. 상한이 비활성이거나 첫 middleware 생성
+    전이면 ``None``이다.
 
-    Per-attempt callers use this to acquire/release only - it never changes the
-    cap. ``limiter is None`` is the sole gate for "cap disabled": a per-call
-    short-circuit on the instance's configured value would let a later
-    (reloaded) instance with ``max_concurrent_calls=0`` silently drop the cap
-    mid-process, which is exactly the hot-reload churn the startup-only design
-    removes.
+    시도 단위 호출자는 acquire/release 용도로만 쓴다. 상한은 절대 바뀌지 않는다.
+    "상한 비활성"의 유일한 판정은 ``limiter is None``이다. 인스턴스의 설정값으로 호출마다
+    단락하면 ``max_concurrent_calls=0``인 (reload된) 나중 인스턴스가 프로세스 도중 상한을
+    조용히 없앨 수 있는데, 그게 바로 시작 시점 고정 설계가 제거하려는 hot-reload 혼란이다.
     """
     return _PROCESS_LIMITER
 
 
 def _apply_configured_cap(limit: int) -> None:
-    """Resolve the process-wide cap from the first middleware ``__init__``.
+    """첫 middleware ``__init__``에서 프로세스 전역 상한을 결정한다.
 
-    Startup-only: the very first call wins and freezes the cap. A positive
-    ``limit`` creates the limiter at that cap; ``limit <= 0`` resolves the cap
-    as disabled (limiter stays ``None``, callers short-circuit on
-    ``limiter is None``). Every later call - whether it carries a newer or an
-    older ``AppConfig`` snapshot, and whether it would raise or lower the cap -
-    is ignored, so the cap can never be mutated at runtime. Changing it requires
-    a gateway restart.
+    시작 시점 전용이다. 맨 처음 호출이 이기고 상한을 고정한다. ``limit``이 양수면 그 값으로
+    limiter를 만들고, ``limit <= 0``이면 상한을 비활성으로 확정한다(limiter는 ``None``으로
+    남고 호출자는 ``limiter is None``에서 단락한다). 이후 호출은 ``AppConfig`` 스냅샷이
+    새롭든 오래됐든, 상한을 올리든 내리든 전부 무시되므로 런타임에 상한이 바뀔 수 없다.
+    변경하려면 gateway를 재시작해야 한다.
     """
     global _PROCESS_LIMITER, _CAP_RESOLVED
     if _CAP_RESOLVED:
-        return  # cap already frozen at first construction; this instance is a no-op
+        return  # 첫 생성에서 이미 상한이 고정됐다. 이 인스턴스는 no-op이다
     with _LIMITER_LOCK:
         if _CAP_RESOLVED:
             return
@@ -367,18 +337,17 @@ def _apply_configured_cap(limit: int) -> None:
 
 
 class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
-    """Retry transient LLM errors and surface graceful assistant messages."""
+    """일시적인 LLM 오류를 재시도하고 사용자에게 자연스러운 assistant 메시지를 보여준다."""
 
     retry_max_attempts: int = 3
     retry_base_delay_ms: int = 1000
     retry_cap_delay_ms: int = 8000
-    # Longer backoff base used only for burst-rate (limit_burst_rate) 429s, so
-    # the single burst retry lands after the throttle window subsides.
+    # burst-rate(limit_burst_rate) 429에만 쓰는 더 긴 backoff 기준값. 단 한 번의 burst
+    # retry가 throttle 구간이 지나간 뒤에 떨어지도록 한다.
     burst_retry_base_delay_ms: int = 5000
-    # Process-wide cap on concurrently in-flight LLM calls. 0 disables the cap
-    # (default) so existing deployments see no behavior change; set to a
-    # positive int to bound aggregate concurrency and smooth provider
-    # burst-rate (limit_burst_rate) spikes. See _get_process_limiter.
+    # 동시 in-flight LLM 호출의 프로세스 전역 상한. 0(기본값)이면 상한을 끄므로 기존 배포는
+    # 동작이 바뀌지 않는다. 양수로 두면 전체 동시성을 묶어 provider의
+    # burst-rate(limit_burst_rate) 급증을 완만하게 만든다. _get_process_limiter 참고.
     max_concurrent_llm_calls: int = 0
 
     def __init__(self, *, app_config: AppConfig, **kwargs: Any) -> None:
@@ -387,9 +356,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         self.circuit_failure_threshold = app_config.circuit_breaker.failure_threshold
         self.circuit_recovery_timeout_sec = app_config.circuit_breaker.recovery_timeout_sec
 
-        # Retry / backoff / concurrency knobs are all configured via the
-        # ``llm_call`` section of config.yaml; they override the class defaults
-        # above so operators can tune them without code changes.
+        # retry / backoff / 동시성 설정값은 모두 config.yaml의 ``llm_call`` 섹션에서 온다.
+        # 위의 클래스 기본값을 덮어쓰므로 운영자가 코드 수정 없이 조정할 수 있다.
         llm_call = app_config.llm_call
         self.retry_max_attempts = llm_call.retry_max_attempts
         self.retry_base_delay_ms = llm_call.retry_base_delay_ms
@@ -397,14 +365,13 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         self.burst_retry_base_delay_ms = llm_call.burst_retry_base_delay_ms
         self.max_concurrent_llm_calls = llm_call.max_concurrent_calls
 
-        # Resolve the process-wide cap (startup-only: the first ``__init__`` in
-        # the process wins and freezes it; later instances - newer or older
-        # config - are no-ops). Per-attempt callers only acquire/release, so the
-        # cap can never be mutated at runtime and there is no downscale or
-        # config-freshness race to admit waiters above the live cap.
+        # 프로세스 전역 상한을 결정한다(시작 시점 전용: 프로세스의 첫 ``__init__``이 이겨
+        # 상한을 고정하고, 이후 인스턴스는 config가 새롭든 오래됐든 no-op이다). 시도 단위
+        # 호출자는 acquire/release만 하므로 런타임에 상한이 바뀔 수 없고, 현재 상한을 넘겨
+        # waiter를 들여보내는 하향 조정 race나 config 신선도 race도 없다.
         _apply_configured_cap(self.max_concurrent_llm_calls)
 
-        # Circuit Breaker state
+        # Circuit Breaker 상태
         self._circuit_lock = threading.Lock()
         self._circuit_failure_count = 0
         self._circuit_open_until = 0.0
@@ -412,14 +379,13 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         self._circuit_probe_in_flight = False
 
     def _max_attempts_for(self, exc: BaseException, reason: str = "transient") -> int:
-        """Return the effective max attempt count for this exception.
+        """이 예외에 적용할 실효 최대 시도 횟수를 반환한다.
 
-        The user-configured ``retry_max_attempts`` is the ceiling; per-exception
-        (``_RETRY_BUDGET_OVERRIDES``, keyed by class name) and per-reason
-        (``_REASON_RETRY_BUDGETS``, keyed by ``_classify_error`` reason)
-        overrides can only *tighten* it. The tightest bound wins, so a burst-rate
-        429 never gets more attempts than its dedicated budget even if the
-        operator raised the global cap.
+        사용자가 설정한 ``retry_max_attempts``가 상한이고, 예외별
+        (``_RETRY_BUDGET_OVERRIDES``, 클래스 이름 기준)과 reason별
+        (``_REASON_RETRY_BUDGETS``, ``_classify_error``의 reason 기준) override는 이를
+        *좁히기만* 한다. 가장 빡빡한 값이 이기므로, 운영자가 전역 상한을 올려도 burst-rate
+        429는 전용 예산보다 많이 시도하지 않는다.
         """
         candidates = [self.retry_max_attempts]
         class_override = _RETRY_BUDGET_OVERRIDES.get(type(exc).__name__)
@@ -431,7 +397,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         return min(candidates)
 
     def _check_circuit(self) -> bool:
-        """Returns True if circuit is OPEN (fast fail), False otherwise."""
+        """circuit이 OPEN이면(즉시 실패) True, 아니면 False를 반환한다."""
         with self._circuit_lock:
             now = time.time()
 
@@ -483,11 +449,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                     )
 
     def _release_half_open_probe(self) -> None:
-        """Release the in-flight half-open probe without recording a failure.
+        """실패로 기록하지 않고 진행 중인 half-open probe를 해제한다.
 
-        Used when something other than a classified success/failure consumes the probe (a
-        GraphBubbleUp control-flow signal, or a non-retriable error), so the circuit can admit
-        the next probe instead of fast-failing forever.
+        성공/실패로 분류되지 않은 무언가가 probe를 소비했을 때(GraphBubbleUp 제어 흐름
+        시그널이나 재시도 불가 에러) 쓴다. 그래야 circuit이 영원히 즉시 실패하지 않고 다음
+        probe를 받아들인다.
         """
         with self._circuit_lock:
             if self._circuit_state == "half_open":
@@ -503,11 +469,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             return False, "quota"
         if _matches_any(lowered, _AUTH_PATTERNS):
             return False, "auth"
-        # Burst-rate (limit_burst_rate) 429 is retriable but needs its own
-        # policy: a tight retry budget and a longer backoff base (see
-        # _REASON_RETRY_BUDGETS / _build_retry_delay_ms). Detected before the
-        # generic 429->transient mapping so it isn't lumped in with ordinary
-        # transient errors.
+        # burst-rate(limit_burst_rate) 429는 재시도 가능하지만 별도 정책이 필요하다.
+        # 좁은 retry 예산과 더 긴 backoff 기준값을 쓴다(_REASON_RETRY_BUDGETS /
+        # _build_retry_delay_ms 참고). 일반적인 429->transient 매핑보다 먼저 판정해서
+        # 평범한 transient 에러와 뭉뚱그려지지 않게 한다.
         if _matches_any(lowered, _BURST_PATTERNS) or _matches_any(str(error_code).lower(), _BURST_PATTERNS):
             return True, "burst_rate"
 
@@ -516,20 +481,18 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             "APITimeoutError",
             "APIConnectionError",
             "InternalServerError",
-            "ReadError",  # httpx.ReadError: connection dropped mid-stream
-            "RemoteProtocolError",  # httpx: server closed connection unexpectedly
-            "StreamChunkTimeoutError",  # langchain-openai: chunk gap exceeded stream_chunk_timeout
+            "ReadError",  # httpx.ReadError: stream 도중 연결 끊김
+            "RemoteProtocolError",  # httpx: 서버가 예기치 않게 연결을 닫음
+            "StreamChunkTimeoutError",  # langchain-openai: chunk 간격이 stream_chunk_timeout 초과
         }:
             return True, "transient"
-        # Upstream sometimes returns ``200 OK`` with an empty
-        # ``generations`` list (observed against Volces "coding" /
-        # ark.cn-beijing.volces.com). ``langchain_core.language_models.
-        # chat_models.ainvoke`` then crashes with
-        # ``IndexError: list index out of range`` at
-        # ``llm_result.generations[0][0].message``. That isn't really a
-        # client bug — it's a transient upstream-payload glitch — so we
-        # route it through the same retry/backoff path as other transient
-        # provider failures rather than failing the whole run.
+        # upstream이 빈 ``generations`` 리스트와 함께 ``200 OK``를 반환할 때가 있다
+        # (Volces "coding" / ark.cn-beijing.volces.com에서 관측). 그러면
+        # ``langchain_core.language_models.chat_models.ainvoke``가
+        # ``llm_result.generations[0][0].message``에서
+        # ``IndexError: list index out of range``로 죽는다. 이건 클라이언트 버그가 아니라
+        # 일시적인 upstream payload 결함이므로, 실행 전체를 실패시키지 않고 다른 transient
+        # provider 실패와 같은 retry/backoff 경로로 보낸다.
         if isinstance(exc, IndexError):
             return True, "transient"
         if status_code in _RETRIABLE_STATUS_CODES:
@@ -544,15 +507,14 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Run one sync model attempt under the process-global concurrency cap.
+        """프로세스 전역 동시성 상한 아래에서 sync 모델 시도 한 번을 실행한다.
 
-        The limiter wraps a *single* attempt only (not the retry loop), so
-        backoff sleeps release the slot for other callers. ``limiter is None``
-        (cap disabled at startup) is a direct passthrough; a non-``None``
-        limiter is always consulted - the cap is frozen at the first
-        ``__init__``, so a later instance whose ``max_concurrent_llm_calls`` is
-        0 cannot silently drop it. Permits release on any exit (return or
-        raise) via ``finally`` so a raised handler never leaks a slot.
+        limiter는 retry loop 전체가 아니라 *한 번의* 시도만 감싼다. 그래서 backoff sleep
+        동안 슬롯이 다른 호출자에게 풀린다. ``limiter is None``(시작 시점에 상한 비활성)이면
+        그대로 통과시키고, ``None``이 아니면 항상 limiter를 거친다. 상한은 첫 ``__init__``에서
+        고정되므로 ``max_concurrent_llm_calls``가 0인 나중 인스턴스가 이를 조용히 없앨 수 없다.
+        permit은 ``finally``에서 반환/예외 어느 경로로 빠져나가도 반납되므로 handler가 예외를
+        던져도 슬롯이 새지 않는다.
         """
         limiter = _get_process_limiter()
         if limiter is None:
@@ -568,16 +530,14 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Run one async model attempt under the process-global concurrency cap.
+        """프로세스 전역 동시성 상한 아래에서 async 모델 시도 한 번을 실행한다.
 
-        The limiter wraps a *single* attempt only (not the retry loop), so
-        backoff sleeps release the slot for other callers - we bound in-flight
-        requests, not waiting ones. ``limiter is None`` (cap disabled at
-        startup) is a direct passthrough; a non-``None`` limiter is always
-        consulted (cap frozen at first ``__init__``). Permits release on any
-        exit (return, raise, or cancellation) via ``finally``;
-        ``acquire_async`` separately cleans up if cancelled while waiting, so
-        capacity never leaks.
+        limiter는 retry loop 전체가 아니라 *한 번의* 시도만 감싼다. 그래서 backoff sleep
+        동안 슬롯이 다른 호출자에게 풀린다. 대기 중인 요청이 아니라 in-flight 요청을 묶는
+        것이다. ``limiter is None``(시작 시점에 상한 비활성)이면 그대로 통과시키고,
+        ``None``이 아니면 항상 limiter를 거친다(상한은 첫 ``__init__``에서 고정). permit은
+        ``finally``에서 반환/예외/취소 어느 경로로 빠져나가도 반납되고, 대기 중 취소된
+        경우는 ``acquire_async``가 따로 정리하므로 용량이 새지 않는다.
         """
         limiter = _get_process_limiter()
         if limiter is None:
@@ -589,35 +549,29 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             limiter.release()
 
     def _build_retry_delay_ms(self, prev_delay_ms: int | None, exc: BaseException, reason: str = "transient") -> int:
-        """Compute the next retry delay (ms) using decorrelated jitter.
+        """decorrelated jitter로 다음 retry 지연(ms)을 계산한다.
 
-        An explicit ``Retry-After`` from the provider is honored as-is (no
-        jitter) - the server told us exactly when to come back, and for a
-        burst-rate 429 this is strongly preferred over any computed delay.
-        Otherwise AWS-style "decorrelated jitter" is applied:
-        ``delay = random(base, min(cap, max(base, seed * 3)))`` where ``seed``
-        is the previous delay, or the reason-specific base on the first retry
-        (``prev_delay_ms is None``). The window is clamped to the cap *before*
-        drawing (not after) so the distribution stays uniform up to the cap
-        rather than piling up at it. ``reason="burst_rate"`` swaps in
-        ``burst_retry_base_delay_ms`` (longer than the normal base) so the
-        single burst retry lands after the throttle window subsides.
+        provider가 명시한 ``Retry-After``는 jitter 없이 그대로 따른다. 서버가 언제 다시
+        오라고 정확히 알려준 것이고, burst-rate 429에서는 계산된 지연보다 이쪽이 훨씬 낫다.
+        그 외에는 AWS 스타일 "decorrelated jitter"를 적용한다:
+        ``delay = random(base, min(cap, max(base, seed * 3)))``. 여기서 ``seed``는 직전
+        지연이며, 첫 retry(``prev_delay_ms is None``)에서는 reason별 기준값이다. 추첨 *전에*
+        구간을 cap으로 자르므로(추첨 후가 아니라) 분포가 cap에 쌓이지 않고 cap까지 균등하게
+        유지된다. ``reason="burst_rate"``면 일반 기준값보다 긴
+        ``burst_retry_base_delay_ms``를 써서 단 한 번의 burst retry가 throttle 구간이 지난
+        뒤에 떨어지게 한다.
 
-        Seeding the first retry from the *reason-specific* base (not always the
-        normal base) is what keeps the first-and-only burst retry
-        non-degenerate: with the normal base (1000ms) the burst window would
-        collapse to ``randint(5000, max(5000, 1000*3)) = randint(5000, 5000)``
-        and every concurrent burst failure would realign on the same 5s tick.
-        Seeding from 5000ms gives ``randint(5000, min(8000, 15000)) =
-        randint(5000, 8000)`` with defaults, so a fleet that failed together
-        spreads out across the whole window.
+        첫 retry의 seed를 항상 일반 기준값이 아니라 *reason별* 기준값으로 잡는 이유는,
+        처음이자 마지막인 burst retry가 퇴화하지 않게 하기 위해서다. 일반 기준값(1000ms)을
+        쓰면 burst 구간이 ``randint(5000, max(5000, 1000*3)) = randint(5000, 5000)``으로
+        무너져 동시에 실패한 burst들이 전부 같은 5초 지점에 다시 정렬된다. 5000ms를 seed로
+        쓰면 기본값 기준 ``randint(5000, min(8000, 15000)) = randint(5000, 8000)``이 되어
+        함께 실패한 fleet이 구간 전체로 흩어진다.
 
-        Deterministic exponential backoff (``base * 2^(attempt-1)``) makes
-        every concurrent retryer realign on the same backoff ticks; when a
-        whole fleet fails at once (e.g. a provider burst-rate limit at the
-        morning peak) that synchronized retry storm re-triggers the very limit
-        we are backing off from. Decorrelated jitter spreads those retries
-        across a random window so they don't re-peak in lockstep.
+        결정적 지수 backoff(``base * 2^(attempt-1)``)는 동시에 재시도하는 모두를 같은 backoff
+        지점에 다시 정렬시킨다. fleet 전체가 한꺼번에 실패하면(예: 아침 피크의 provider
+        burst-rate 제한) 그 동기화된 retry 폭풍이 지금 피하려던 바로 그 제한을 다시 발동시킨다.
+        decorrelated jitter는 retry를 무작위 구간에 흩어 같은 박자로 재차 몰리지 않게 한다.
         """
         retry_after = _extract_retry_after_ms(exc)
         if retry_after is not None:
@@ -625,14 +579,13 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         base = self.burst_retry_base_delay_ms if reason == "burst_rate" else self.retry_base_delay_ms
         cap = self.retry_cap_delay_ms
         seed = base if prev_delay_ms is None else prev_delay_ms
-        # Clamp the window to the cap *before* drawing so the jitter spreads
-        # uniformly across [base, min(cap, seed*3)] instead of concentrating at
-        # the cap: with defaults seed*3 (=15000) >> cap (=8000), drawing
-        # randint(base, seed*3) then min(delay, cap) would put ~70% of draws at
-        # exactly cap, re-clustering a fleet that the jitter is meant to spread.
+        # 추첨 *전에* 구간을 cap으로 자른다. 그래야 jitter가 cap에 몰리지 않고
+        # [base, min(cap, seed*3)]에 균등하게 퍼진다. 기본값에서는 seed*3(=15000)이
+        # cap(=8000)보다 훨씬 크므로, randint(base, seed*3) 후 min(delay, cap)을 하면
+        # 추첨의 약 70%가 정확히 cap에 몰려 jitter가 흩으려던 fleet이 다시 뭉친다.
         high = min(cap, max(base, seed * 3))
         if high < base:
-            return cap  # base exceeds cap (misconfiguration): the cap wins
+            return cap  # base가 cap을 넘는 잘못된 설정이다. cap이 이긴다
         return random.randint(base, high)
 
     def _build_retry_message(
@@ -648,11 +601,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             "busy": "provider is busy",
             "burst_rate": "provider is throttling request burst rate",
         }.get(reason, "provider request failed temporarily")
-        # ``max_attempts`` is the *effective* budget for this call (from
-        # ``_max_attempts_for``), not the configured ceiling: a burst-rate call
-        # is capped at 2 attempts, so its message must read ``1/2`` not ``1/3``
-        # even when ``retry_max_attempts`` is the default 3 - otherwise the UI
-        # promises a retry that will never happen.
+        # ``max_attempts``는 설정된 상한이 아니라 이 호출의 *실효* 예산이다
+        # (``_max_attempts_for``에서 온다). burst-rate 호출은 2회로 제한되므로
+        # ``retry_max_attempts``가 기본값 3이어도 메시지는 ``1/3``이 아니라 ``1/2``여야 한다.
+        # 아니면 UI가 일어나지 않을 retry를 약속하게 된다.
         return f"LLM request retry {attempt}/{max_attempts}: {reason_text}. Retrying in {seconds}s."
 
     def _build_circuit_breaker_message(self) -> str:
@@ -685,13 +637,11 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         if reason == "burst_rate":
             return "The configured LLM provider is temporarily throttling requests because the request rate increased too quickly (burst-rate limit). Please wait a moment and try again."
         if reason in {"busy", "transient"}:
-            # Stream-drop failures (chunk-gap timeout, peer-closed connection,
-            # raw read error) almost always point at a single oversized
-            # tool-call payload — the model spent so long serializing JSON
-            # arguments that the upstream provider buffered and the stream
-            # gap exceeded `stream_chunk_timeout`. Surfacing this distinct
-            # cause lets the user split or shorten their next request
-            # instead of helplessly retrying the same prompt.
+            # stream 끊김 실패(chunk 간격 timeout, 상대가 닫은 연결, raw read error)는
+            # 거의 항상 지나치게 큰 tool-call payload 하나가 원인이다. 모델이 JSON 인자를
+            # 직렬화하는 데 너무 오래 걸려 upstream provider가 버퍼링했고 stream 간격이
+            # `stream_chunk_timeout`을 넘긴 것이다. 이 원인을 따로 알려주면 사용자가 같은
+            # prompt를 무작정 재시도하는 대신 요청을 나누거나 줄일 수 있다.
             if type(exc).__name__ in _STREAM_DROP_EXCEPTIONS:
                 return (
                     "The model's streaming response was interrupted before it could "
@@ -721,9 +671,9 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         return {
             "type": "llm_retry",
             "attempt": attempt,
-            # Effective budget for this call (burst-rate == 2), not the
-            # configured ceiling - the frontend renders this and the
-            # ``message`` below, so both must describe the loop that runs.
+            # 설정된 상한이 아니라 이 호출의 실효 예산이다(burst-rate == 2). frontend가
+            # 이 값과 아래 ``message``를 함께 렌더링하므로 둘 다 실제로 도는 loop를
+            # 설명해야 한다.
             "max_attempts": max_attempts,
             "wait_ms": wait_ms,
             "reason": reason,
@@ -794,7 +744,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 self._record_success()
                 return response
             except GraphBubbleUp:
-                # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+                # LangGraph 제어 흐름 시그널(interrupt/pause/resume)은 그대로 전파한다.
                 self._release_half_open_probe()
                 raise
             except Exception as exc:
@@ -823,11 +773,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 if retriable and reason != "burst_rate":
                     self._record_failure()
                 else:
-                    # Non-retriable, OR burst_rate (a transient provider
-                    # slope-throttle, not "provider down"): release the half-open
-                    # probe without recording a failure so the circuit doesn't
-                    # trip and fast-fail ALL calls for the recovery window - the
-                    # exact self-inflicted outage #4290 is trying to prevent.
+                    # 재시도 불가이거나 burst_rate("provider 다운"이 아니라 일시적인
+                    # 증가율 throttle)인 경우다. 실패로 기록하지 않고 half-open probe만
+                    # 해제해서 circuit이 열려 복구 구간 동안 모든 호출을 즉시 실패시키는
+                    # 일을 막는다. #4290이 막으려던 자초한 장애가 바로 그것이다.
                     self._release_half_open_probe()
                 return self._build_user_fallback_message(exc, reason)
 
@@ -853,7 +802,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 self._record_success()
                 return response
             except GraphBubbleUp:
-                # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+                # LangGraph 제어 흐름 시그널(interrupt/pause/resume)은 그대로 전파한다.
                 self._release_half_open_probe()
                 raise
             except Exception as exc:
@@ -882,11 +831,10 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 if retriable and reason != "burst_rate":
                     self._record_failure()
                 else:
-                    # Non-retriable, OR burst_rate (a transient provider
-                    # slope-throttle, not "provider down"): release the half-open
-                    # probe without recording a failure so the circuit doesn't
-                    # trip and fast-fail ALL calls for the recovery window - the
-                    # exact self-inflicted outage #4290 is trying to prevent.
+                    # 재시도 불가이거나 burst_rate("provider 다운"이 아니라 일시적인
+                    # 증가율 throttle)인 경우다. 실패로 기록하지 않고 half-open probe만
+                    # 해제해서 circuit이 열려 복구 구간 동안 모든 호출을 즉시 실패시키는
+                    # 일을 막는다. #4290이 막으려던 자초한 장애가 바로 그것이다.
                     self._release_half_open_probe()
                 return self._build_user_fallback_message(exc, reason)
 

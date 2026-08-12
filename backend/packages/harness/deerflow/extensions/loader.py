@@ -1,9 +1,8 @@
-"""Config-driven extension loading.
+"""config 기반 extension 로딩.
 
-Entry points are named as `module.path:install`, resolved through the same
-`resolve_variable` helper the guardrails provider already uses. Load order is
-the config list order — explicit and reproducible, which matters because the
-middleware stack is position-sensitive.
+entry point는 `module.path:install` 형식으로 지정하며, guardrails provider가 이미 쓰는 것과
+같은 `resolve_variable` 헬퍼로 해석한다. 로드 순서는 config list의 순서 그대로다. middleware
+stack은 위치에 민감하므로 명시적이고 재현 가능한 순서가 중요하다.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ DiagnosticLevel = Literal["debug", "info", "warning", "error"]
 
 
 class ExtensionSpec(BaseModel):
-    """One entry of the `plugins:` list in config.yaml."""
+    """config.yaml의 `plugins:` 목록 항목 하나."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -42,10 +41,10 @@ class ExtensionSpec(BaseModel):
 
 @dataclass(frozen=True)
 class Diagnostic:
-    """A load- or run-time problem attributed to a specific extension.
+    """특정 extension에 귀속된 로드/실행 시점 문제.
 
-    The repository has no structured diagnostics channel today; this is a
-    deliberately minimal one whose only job is keeping failures attributable.
+    현재 저장소에는 구조화된 diagnostics 채널이 없다. 이것은 실패의 출처를 추적 가능하게
+    유지하는 것만을 목적으로 하는 최소한의 채널이다.
     """
 
     level: DiagnosticLevel
@@ -70,7 +69,7 @@ class Diagnostic:
 
 
 class ExtensionLoadError(RuntimeError):
-    """Raised when an extension marked `required: true` fails to load."""
+    """`required: true`로 표시된 extension의 로드가 실패했을 때 발생한다."""
 
 
 def _parse_version(version: object) -> tuple[int, ...] | None:
@@ -83,14 +82,13 @@ def _parse_version(version: object) -> tuple[int, ...] | None:
 
 
 def _compatible(declared: str, current: str) -> bool:
-    """One-directional, with the semver window for the contract's life stage.
+    """단방향 호환성 검사이며, 계약의 생애 단계에 맞는 semver 창을 쓴다.
 
-    Pre-1.0 the contract surface is observational only and minors may break,
-    so the window is same major.minor with patches additive: host >= declared.
-    From 1.0 on contracts only grow within a major, so a newer host stays
-    compatible with older extensions while an extension written against a
-    newer minor is refused — it would reach for contract additions the host
-    does not implement. Unparseable versions are refused, not waved through."""
+    1.0 이전에는 계약 표면이 관찰용뿐이고 minor에서 깨질 수 있으므로, 창은 같은 major.minor에
+    patch만 추가되는 범위다(host >= declared). 1.0부터는 계약이 major 안에서 늘어나기만 하므로,
+    더 새로운 host는 옛 extension과 계속 호환되지만 더 새로운 minor를 대상으로 작성된
+    extension은 거부된다. host가 구현하지 않은 계약 추가분을 요구할 것이기 때문이다. 파싱할 수
+    없는 버전은 통과시키지 않고 거부한다."""
     declared_parts = _parse_version(declared)
     current_parts = _parse_version(current)
     if not declared_parts or not current_parts:
@@ -106,9 +104,9 @@ def _compatible(declared: str, current: str) -> bool:
 
 
 def _range_for(declared: str) -> str:
-    """The pip window matching ``_compatible``'s rules, for the actionable
-    refusal message. Falls back to an exact request when the declared version
-    is unparseable — the message must survive the version that caused it."""
+    """``_compatible``의 규칙에 대응하는 pip 버전 범위. 조치 가능한 거부 메시지에 쓴다.
+    선언된 버전을 파싱할 수 없으면 정확한 버전 지정으로 폴백한다. 메시지는 그 원인이 된 버전
+    때문에 깨지면 안 되기 때문이다."""
     parts = _parse_version(declared)
     if not parts:
         return f"=={declared}"
@@ -119,11 +117,11 @@ def _range_for(declared: str) -> str:
 
 
 def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, list[Diagnostic]]:
-    """Resolve and install every configured extension.
+    """설정된 extension을 모두 해석하고 install 한다.
 
-    Fail-open by default: a broken extension is skipped with a diagnostic so
-    the Gateway still starts. `required: true` flips that to fail-closed for
-    extensions whose absence changes behaviour rather than just observability.
+    기본은 fail-open이다. 망가진 extension은 diagnostic만 남기고 건너뛰므로 Gateway는 계속
+    기동한다. `required: true`는 이를 fail-closed로 바꾼다. 없을 때 관찰 가능성이 아니라 동작
+    자체가 달라지는 extension을 위한 것이다.
     """
     registry = ExtensionRegistry()
     diagnostics: list[Diagnostic] = []
@@ -165,10 +163,9 @@ def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, l
                 raise ExtensionLoadError(f"required extension {spec.use} declares invalid api marker")
             continue
         if declared is not None:
-            # ``isinstance(..., str)`` also accepts subclasses whose
-            # ``__str__``/``__format__`` methods can execute plugin code while
-            # we build an incompatibility diagnostic. Normalize with the base
-            # implementation before compatibility checks and rendering.
+            # ``isinstance(..., str)``는 subclass도 통과시키는데, 그 subclass의
+            # ``__str__``/``__format__``이 비호환 diagnostic을 만드는 도중에 plugin 코드를
+            # 실행할 수 있다. 호환성 검사와 렌더링 전에 base 구현으로 정규화한다.
             declared = str.__str__(declared)
         if declared is not None and not _compatible(declared, API_VERSION):
             message = f"extension requires extension-api {declared}, host provides {API_VERSION}. Install a matching version: pip install 'deerflow-extension-api{_range_for(declared)}'"
@@ -178,10 +175,9 @@ def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, l
                 raise ExtensionLoadError(f"required extension {spec.use} declares incompatible api {declared}")
             continue
 
-        # Positional rollback, not registry.discard(spec.use): two specs may
-        # legitimately share the same `use` with different config, and
-        # discard-by-source would also erase an earlier, successfully
-        # installed instance that happens to share this spec's `use`.
+        # registry.discard(spec.use)가 아니라 위치 기반 rollback을 쓴다. 서로 다른 config로
+        # 같은 `use`를 공유하는 spec이 정당하게 존재할 수 있는데, source 기준으로 지우면 이
+        # spec과 `use`가 같을 뿐인, 앞서 성공적으로 install된 인스턴스까지 지워진다.
         mark = registry.mark()
         try:
             with registry.attributed_to(spec.use):
@@ -197,29 +193,25 @@ def load_extensions(specs: Sequence[ExtensionSpec]) -> tuple[LoadedExtensions, l
 
         loaded_sources.append(spec.use)
 
-    # Loading third-party code is exactly the event an operator needs positive
-    # confirmation of, and every other branch here is failure-only — so without
-    # this line a fully successful load is indistinguishable from a `plugins:`
-    # block the host never read. The x/y count names the difference between
-    # "all loaded" and "some were skipped" without repeating the per-failure
-    # errors already logged above.
+    # 서드파티 코드 로딩이야말로 운영자가 성공을 확실히 확인해야 하는 사건인데, 여기의 다른
+    # 분기는 전부 실패 전용이다. 이 줄이 없으면 완전히 성공한 로드와 host가 아예 읽지 않은
+    # `plugins:` 블록을 구분할 수 없다. x/y 카운트는 위에서 이미 남긴 실패별 오류를 반복하지
+    # 않으면서 "전부 로드"와 "일부 건너뜀"을 구분해준다.
     if specs:
         logger.info("Extensions loaded: %d/%d (%s)", len(loaded_sources), len(specs), ", ".join(loaded_sources) or "none")
     else:
-        # Debug, not info: no configured plugins is the default state for almost
-        # every deployment, and an unconditional line would be pure boot noise.
+        # info가 아니라 debug다. plugin 미설정은 거의 모든 배포의 기본 상태이고, 무조건
+        # 찍으면 순수한 부팅 노이즈가 된다.
         logger.debug("No extensions configured")
 
     return registry.build(), diagnostics
 
 
 def _frozen_config(config: dict[str, Any]) -> Mapping[str, Any]:
-    """Hand extensions a shallow copy of their config block.
+    """extension에 자기 config 블록의 얕은 복사본을 넘긴다.
 
-    This is a shallow copy: it stops an extension from reassigning
-    top-level keys on another extension's (or the caller's) config dict, but
-    nested structures (lists, dicts) are still shared by reference and can be
-    mutated in place. Use plain, top-level config values if this guarantee
-    matters to you.
+    얕은 복사이므로, extension이 다른 extension이나 호출자의 config dict에서 최상위 키를 다시
+    할당하는 것은 막지만, 중첩 구조(list, dict)는 여전히 참조로 공유되어 제자리에서 변경될 수
+    있다. 이 보장이 중요하다면 평평한 최상위 config 값을 쓴다.
     """
     return dict(config)

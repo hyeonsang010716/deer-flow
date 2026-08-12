@@ -1,26 +1,22 @@
-"""Abstract interface for custom agent definition storage.
+"""custom agent 정의 저장소의 추상 인터페이스.
 
-Two implementations:
-- :class:`FileAgentStore` — the historical per-user on-disk layout
-  (``config.yaml`` + ``SOUL.md``), still the default and behaviourally
-  unchanged.
-- :class:`SqlAgentStore` — a row per agent in the shared SQL persistence
-  layer, so every node in a multi-instance deployment sees the same agents.
+두 가지 구현이 있다:
+- :class:`FileAgentStore` — 기존의 사용자별 on-disk 레이아웃(``config.yaml`` +
+  ``SOUL.md``). 여전히 기본값이며 동작도 그대로다.
+- :class:`SqlAgentStore` — 공유 SQL persistence 레이어에 agent당 한 row를 두므로,
+  다중 인스턴스 배포에서 모든 노드가 같은 agent를 본다.
 
-The store is deliberately **synchronous**. Its consumers — the LangGraph graph
-factory (``make_lead_agent``), the ``setup_agent`` / ``update_agent`` tools, and
-the GitHub agent registry — are synchronous and may run on the event loop or in
-a separate process from the gateway, where an async engine cannot be driven.
-Async HTTP routes call the store via ``asyncio.to_thread`` (the same pattern the
-agents router already uses for filesystem work).
+이 store는 의도적으로 **동기**다. 소비자인 LangGraph graph factory
+(``make_lead_agent``), ``setup_agent`` / ``update_agent`` 도구, GitHub agent
+registry가 모두 동기이고, event loop 위나 gateway와 별도 프로세스에서 실행될 수 있는데
+그런 곳에서는 async engine을 구동할 수 없기 때문이다. async HTTP route는
+``asyncio.to_thread``로 store를 호출한다(agents router가 파일시스템 작업에 이미 쓰는 방식).
 
-``user_id`` semantics (kept identical to the pre-refactor free functions in
-:mod:`deerflow.config.agents_config`, which is what makes the file backend a
-behaviour-neutral move): ``None`` resolves to the effective user from the
-request context — ``"default"`` in no-auth mode — via
-:func:`deerflow.runtime.user_context.get_effective_user_id`. This is filesystem
-bucket semantics, distinct from the AUTO/None sentinel used by the async
-``thread_meta`` repositories.
+``user_id`` 의미(리팩터링 전 :mod:`deerflow.config.agents_config`의 자유 함수들과
+동일하게 유지했고, 그래서 file backend 이관이 동작 중립적이다): ``None``은
+:func:`deerflow.runtime.user_context.get_effective_user_id`를 통해 request context의
+유효 사용자로 해석된다(no-auth 모드에서는 ``"default"``). 이것은 파일시스템 버킷 의미이며,
+async ``thread_meta`` repository가 쓰는 AUTO/None sentinel과는 다르다.
 """
 
 from __future__ import annotations
@@ -33,11 +29,10 @@ from deerflow.config.agents_config import AgentConfig
 
 
 def parse_agent_config(data: dict[str, Any], name: str) -> AgentConfig:
-    """Build an :class:`AgentConfig` from a raw config *document*, shared by both backends.
+    """raw config *document*로부터 :class:`AgentConfig`를 만든다. 두 backend가 공유한다.
 
-    Sets ``name`` from the natural key when the document omits it and strips
-    unknown keys (e.g. a legacy ``prompt_file``) before validation — identical
-    to the pre-refactor ``load_agent_config``.
+    document에 ``name``이 없으면 자연키에서 채우고, 검증 전에 알 수 없는 키(예: 예전
+    ``prompt_file``)를 제거한다. 리팩터링 전 ``load_agent_config``와 동일하다.
     """
     data = dict(data)
     if "name" not in data:
@@ -47,85 +42,80 @@ def parse_agent_config(data: dict[str, Any], name: str) -> AgentConfig:
     return AgentConfig(**data)
 
 
-# Delete outcome, mirroring the agents router's result:
-# a row/dir was removed ("deleted"); only a legacy shared-layout entry exists,
-# which the current write path never removes ("legacy"); nothing was there
-# ("missing"); or a per-user directory exists holding memory/facts data but is
-# not a custom agent (no config.yaml), so it is preserved rather than deleting a
-# user's memory ("not-custom-agent", #4279).
+# 삭제 결과. agents router의 결과와 대응한다:
+# row/디렉터리를 제거했거나("deleted"), 현재 write 경로가 절대 지우지 않는 legacy 공유
+# 레이아웃 항목만 있거나("legacy"), 아무것도 없었거나("missing"), 사용자별 디렉터리가
+# memory/facts 데이터를 담고 있지만 custom agent는 아니어서(config.yaml 없음) 사용자의
+# memory를 지우는 대신 보존한 경우다("not-custom-agent", #4279).
 AgentDeleteOutcome = Literal["deleted", "legacy", "missing", "not-custom-agent"]
 
 
 class AgentExistsError(Exception):
-    """Raised by :meth:`AgentStore.create` when ``(user_id, name)`` already exists."""
+    """``(user_id, name)``이 이미 존재할 때 :meth:`AgentStore.create`가 raise한다."""
 
 
 class AgentStore(abc.ABC):
     @abc.abstractmethod
     def get(self, name: str, *, user_id: str | None = None) -> AgentConfig:
-        """Return the agent's config.
+        """agent의 config를 반환한다.
 
-        Raises :class:`FileNotFoundError` if the agent does not exist — the
-        historical contract that ``routers/agents.py`` and ``update_agent`` rely
-        on to surface a 404 / "does not exist" error.
+        agent가 없으면 :class:`FileNotFoundError`를 raise한다. ``routers/agents.py``와
+        ``update_agent``가 404 / "does not exist" 오류를 드러내기 위해 의존하는 기존 계약이다.
         """
 
     @abc.abstractmethod
     def exists(self, name: str, *, user_id: str | None = None) -> bool:
-        """Return whether ``name`` is already taken for ``user_id``.
+        """``user_id``에 대해 ``name``이 이미 사용 중인지 반환한다.
 
-        Consistent with :meth:`create`'s conflict rule (so an "available" name
-        never then 409s): the file backend treats any per-user or legacy
-        directory as taken; the db backend checks for a row.
+        :meth:`create`의 충돌 규칙과 일관되므로 "사용 가능"하던 이름이 나중에 409가 되는 일은
+        없다. file backend는 사용자별이든 legacy든 디렉터리가 있으면 사용 중으로 보고,
+        db backend는 row 존재 여부를 확인한다.
         """
 
     @abc.abstractmethod
     def get_soul(self, name: str, *, user_id: str | None = None) -> str | None:
-        """Return the agent's ``SOUL.md`` content, or ``None`` if unset/empty."""
+        """agent의 ``SOUL.md`` 내용을 반환한다. 설정되지 않았거나 비었으면 ``None``."""
 
     @abc.abstractmethod
     def list(self, *, user_id: str | None = None) -> list[AgentConfig]:
-        """Return every custom agent owned by ``user_id``, sorted by name."""
+        """``user_id``가 소유한 모든 custom agent를 이름순으로 반환한다."""
 
     @abc.abstractmethod
     def list_all(self) -> list[tuple[str, AgentConfig]]:
-        """Return ``(user_id, config)`` for every agent across all owners.
+        """모든 소유자에 걸친 전체 agent를 ``(user_id, config)``로 반환한다.
 
-        Used by the GitHub registry, which scans all users' agents for repo
-        bindings. Ordering is deterministic (by ``user_id`` then name).
+        repo 바인딩을 찾기 위해 모든 사용자의 agent를 훑는 GitHub registry가 사용한다.
+        순서는 결정적이다(``user_id`` 다음 name).
         """
 
     @abc.abstractmethod
     def create(self, name: str, config: dict, soul: str, *, user_id: str | None = None) -> None:
-        """Persist a new agent from the config *document* each write surface builds.
+        """각 write 지점이 만든 config *document*로부터 새 agent를 저장한다.
 
-        ``config`` is the raw dict the caller assembled (the same one previously
-        written to ``config.yaml``); passing the document rather than a
-        re-serialized :class:`AgentConfig` keeps the on-disk bytes and the
-        "only present keys are written" behaviour identical to the pre-refactor
-        writers. Raises :class:`AgentExistsError` on an existing ``(user_id, name)``.
+        ``config``는 caller가 조립한 raw dict다(예전에 ``config.yaml``에 쓰던 바로 그것).
+        재직렬화한 :class:`AgentConfig` 대신 document를 넘기면 on-disk 바이트와 "존재하는
+        키만 쓴다"는 동작이 리팩터링 전 writer와 동일하게 유지된다. ``(user_id, name)``이
+        이미 있으면 :class:`AgentExistsError`를 raise한다.
         """
 
     @abc.abstractmethod
     def update(self, name: str, config: dict | None, soul: str | None, *, user_id: str | None = None) -> None:
-        """Write an agent's config and/or soul (upsert).
+        """agent의 config와/또는 soul을 쓴다(upsert).
 
-        ``config`` / ``soul`` are each independently optional: ``None`` means
-        "leave that part unchanged" — the agents router updates config only when
-        a config field changed, and soul only when one was supplied. Creates the
-        record if it does not exist (the ``setup_agent`` / first-write path).
+        ``config``와 ``soul``은 각각 독립적으로 선택적이며, ``None``은 "그 부분은 그대로
+        둔다"는 뜻이다. agents router는 config 필드가 바뀐 경우에만 config를, soul이 주어진
+        경우에만 soul을 갱신한다. 레코드가 없으면 생성한다(``setup_agent`` / 최초 write 경로).
         """
 
     @abc.abstractmethod
     def delete(self, name: str, *, user_id: str | None = None) -> AgentDeleteOutcome:
-        """Delete an agent and its co-located memory, returning the outcome."""
+        """agent와 같은 위치에 있는 memory를 삭제하고 결과를 반환한다."""
 
     @abc.abstractmethod
     def signature(self) -> Hashable:
-        """Return an opaque change token for cache invalidation.
+        """cache 무효화를 위한 불투명한 변경 토큰을 반환한다.
 
-        Equal tokens mean "nothing changed since last read". The GitHub registry
-        keys its cache off this instead of ``stat()`` so it works for both
-        backends (mtime triples for ``file``; a deterministic digest of stored
-        agent contents for ``db``).
+        토큰이 같으면 "마지막 읽기 이후 변한 것이 없다"는 뜻이다. GitHub registry는 두 backend
+        모두에서 동작하도록 ``stat()`` 대신 이 값으로 cache를 키잉한다(``file``은 mtime
+        3-튜플, ``db``는 저장된 agent 내용의 결정적 digest).
         """

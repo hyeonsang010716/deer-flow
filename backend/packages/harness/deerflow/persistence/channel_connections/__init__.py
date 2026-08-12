@@ -1,4 +1,4 @@
-"""User-owned IM channel connection persistence."""
+"""사용자 소유 IM channel connection의 영속화."""
 
 from deerflow.persistence.channel_connections.model import (
     ChannelConnectionRow,

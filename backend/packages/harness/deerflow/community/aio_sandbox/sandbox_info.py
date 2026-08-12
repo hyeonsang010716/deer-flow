@@ -1,4 +1,4 @@
-"""Sandbox metadata for cross-process discovery and state persistence."""
+"""cross-process 탐색과 상태 영속화를 위한 sandbox 메타데이터."""
 
 from __future__ import annotations
 
@@ -8,17 +8,16 @@ from dataclasses import dataclass, field
 
 @dataclass
 class SandboxInfo:
-    """Persisted sandbox metadata that enables cross-process discovery.
+    """cross-process 탐색을 가능하게 하는 영속 sandbox 메타데이터.
 
-    This dataclass holds all the information needed to reconnect to an
-    existing sandbox from a different process (e.g., gateway vs langgraph,
-    multiple workers, or across K8s pods with shared storage).
+    다른 프로세스(gateway vs langgraph, 여러 worker, 저장소를 공유하는 K8s pod 등)에서
+    기존 sandbox에 다시 연결하는 데 필요한 정보를 모두 담는다.
     """
 
     sandbox_id: str
-    sandbox_url: str  # e.g. http://localhost:8080 or http://k3s:30001
-    container_name: str | None = None  # Only for local container backend
-    container_id: str | None = None  # Only for local container backend
+    sandbox_url: str  # 예: http://localhost:8080 또는 http://k3s:30001
+    container_name: str | None = None  # local container backend 전용
+    container_id: str | None = None  # local container backend 전용
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:

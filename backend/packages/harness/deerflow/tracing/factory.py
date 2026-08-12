@@ -24,8 +24,8 @@ def _create_langfuse_handler(config) -> Any:
     from langfuse import Langfuse
     from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
 
-    # langfuse>=4 initializes project-specific credentials through the client
-    # singleton; the LangChain callback then attaches to that configured client.
+    # langfuse>=4는 client singleton을 통해 프로젝트별 자격 증명을 초기화한다. LangChain
+    # callback은 그렇게 설정된 client에 붙는다.
     Langfuse(
         secret_key=config.secret_key,
         public_key=config.public_key,
@@ -35,10 +35,10 @@ def _create_langfuse_handler(config) -> Any:
 
 
 def build_tracing_callbacks() -> list[Any]:
-    """Build callbacks for all explicitly enabled tracing providers."""
+    """명시적으로 활성화된 모든 tracing provider의 callback을 만든다."""
     validate_enabled_tracing_providers()
-    # Monocle is not a callback provider; this per-run path is just where an
-    # embedded process that skipped Gateway-lifespan setup can be told about it.
+    # Monocle은 callback provider가 아니다. 이 run 단위 경로는 Gateway lifespan setup을
+    # 건너뛴 embedded 프로세스에 그 사실을 알려 주는 자리일 뿐이다.
     if is_monocle_tracing_enabled() and not is_monocle_setup_completed():
         logger.debug(
             "MONOCLE_TRACING is set but Monocle is not initialized in this process — only the Gateway lifespan runs setup automatically; embedded/TUI callers must call deerflow.tracing.setup_monocle_tracing_if_enabled() themselves."

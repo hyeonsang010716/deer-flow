@@ -1,13 +1,12 @@
-"""SQL-backed agent store (synchronous).
+"""SQL 기반 agent store(동기).
 
-Serves the ``agent_storage.backend: db`` path. It is intentionally synchronous
-and uses its own small engine (see :mod:`deerflow.persistence.agents.base` for
-why the store is sync). The engine points at the same database the async
-persistence layer manages — the ``agents`` table is created by that layer's
-Alembic bootstrap (migration ``0006``); this store only reads and writes rows.
+``agent_storage.backend: db`` 경로를 담당한다. 의도적으로 동기이며 자체의 작은 engine을
+사용한다(store가 동기인 이유는 :mod:`deerflow.persistence.agents.base` 참고). 이 engine은 async
+persistence 계층이 관리하는 것과 같은 데이터베이스를 가리킨다 — ``agents`` 테이블은 그 계층의
+Alembic bootstrap(migration ``0006``)이 만들고, 이 store는 row를 읽고 쓸 뿐이다.
 
-Both the sqlite (stdlib) and postgres (psycopg) sync drivers already ship with
-the app, so this adds no dependency.
+sqlite(stdlib)와 postgres(psycopg)의 동기 driver 모두 앱에 이미 포함돼 있으므로 의존성이
+추가되지 않는다.
 """
 
 from __future__ import annotations
@@ -38,11 +37,10 @@ from deerflow.runtime.user_context import get_effective_user_id
 
 logger = logging.getLogger(__name__)
 
-# Cache sync engines by URL: the store is constructed on demand in multiple
-# places (gateway routes, the graph factory) and each process should reuse one
-# engine/pool rather than opening a connection per call. The lock keeps two
-# threads first-touching the same URL from building — and registering connect
-# listeners on — duplicate engines.
+# 동기 engine을 URL 기준으로 캐시한다. store는 여러 곳(gateway route, graph factory)에서
+# 필요할 때마다 생성되므로, 호출마다 연결을 여는 대신 프로세스당 하나의 engine/pool을 재사용해야
+# 한다. lock은 같은 URL을 처음 건드리는 두 thread가 중복 engine을 만들고 거기에 connect
+# listener를 등록하는 것을 막는다.
 _engines: dict[str, Engine] = {}
 _engines_lock = threading.Lock()
 
@@ -51,15 +49,14 @@ def _build_engine(url: str) -> Engine:
     connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
     engine = create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
     if url.startswith("sqlite"):
-        # Mirror the async engine's per-connection PRAGMAs (persistence/engine.py).
-        # journal_mode=WAL is persistent on the DB file (the async bootstrap sets
-        # it), but synchronous and busy_timeout are per-connection: without this
-        # these sync connections run synchronous=FULL and pysqlite's default 5s
-        # busy_timeout rather than the async engine's NORMAL + 30s. Match them so
-        # both engines behave identically against the shared DB and a concurrent
-        # writer waits up to 30s instead of failing early on lock contention.
+        # async engine의 연결별 PRAGMA를 그대로 맞춘다(persistence/engine.py).
+        # journal_mode=WAL은 DB 파일에 영구 반영되지만(async bootstrap이 설정한다), synchronous와
+        # busy_timeout은 연결별 설정이다. 이 코드가 없으면 이 동기 연결들은 async engine의
+        # NORMAL + 30s가 아니라 synchronous=FULL과 pysqlite 기본값 5s busy_timeout으로 동작한다.
+        # 값을 맞춰 두 engine이 공유 DB에 대해 동일하게 동작하고, 동시 writer가 lock 경합에서
+        # 일찍 실패하지 않고 최대 30초까지 기다리게 한다.
         @event.listens_for(engine, "connect")
-        def _enable_sqlite_pragmas(dbapi_conn, _record):  # noqa: ARG001 — SQLAlchemy contract
+        def _enable_sqlite_pragmas(dbapi_conn, _record):  # noqa: ARG001 — SQLAlchemy 계약
             cursor = dbapi_conn.cursor()
             try:
                 cursor.execute("PRAGMA journal_mode=WAL;")
@@ -84,7 +81,7 @@ def _get_sessionmaker(url: str) -> sessionmaker[Session]:
 
 
 def _config_document(config: dict) -> dict:
-    """Strip the natural key from the stored document (``name`` is its own column)."""
+    """저장 문서에서 natural key를 제거한다(``name``은 별도 컬럼이다)."""
     return {k: v for k, v in config.items() if k != "name"}
 
 
@@ -147,7 +144,7 @@ class SqlAgentStore(AgentStore):
                 session.add(row)
                 session.commit()
         except IntegrityError as e:
-            # UNIQUE(user_id, name) turns the check-then-write race into a clean conflict.
+            # UNIQUE(user_id, name)이 확인 후 쓰기 경합을 깔끔한 conflict로 바꿔 준다.
             raise AgentExistsError(f"Agent '{name}' already exists for user '{effective_user}'") from e
 
     def update(self, name: str, config: dict | None, soul: str | None, *, user_id: str | None = None) -> None:
@@ -158,12 +155,11 @@ class SqlAgentStore(AgentStore):
                 self._apply_update(row, config, soul)
                 session.commit()
                 return
-            # Upsert: setup_agent and any first-time write land here. Two
-            # concurrent first-time updates (e.g. two setup_agent handshakes) can
-            # both see row is None and both insert; UNIQUE(user_id, name) rejects
-            # the loser. Re-fetch the winner's row and apply the update to it
-            # rather than letting a raw IntegrityError surface as a 500 — a true
-            # upsert, symmetric with create()'s conflict handling.
+            # upsert: setup_agent과 모든 최초 쓰기가 여기로 온다. 동시에 실행된 두 최초
+            # update(예: setup_agent handshake 두 개)가 모두 row가 None인 것을 보고 둘 다
+            # insert할 수 있으며, UNIQUE(user_id, name)이 진 쪽을 거부한다. 날것의
+            # IntegrityError가 500으로 드러나게 두지 말고 이긴 쪽 row를 다시 가져와 update를
+            # 적용한다 — create()의 conflict 처리와 대칭되는 진짜 upsert다.
             row = AgentRow(
                 id=uuid.uuid4().hex,
                 user_id=effective_user,
@@ -197,26 +193,24 @@ class SqlAgentStore(AgentStore):
             row_deleted = result.rowcount > 0
         agent_dir = get_paths().user_agent_dir(effective_user, name)
         if row_deleted:
-            # The agent existed as a row; remove any co-located on-disk memory
-            # (deermem file backend) so it is not orphaned. Mirrors the file
-            # backend's rmtree, which bundles config + soul + memory.
+            # agent가 row로 존재했으므로, 같은 위치의 디스크 memory(deermem file backend)를
+            # 함께 제거해 고아로 남지 않게 한다. config + soul + memory를 묶어 지우는 file
+            # backend의 rmtree와 동일하다.
             if agent_dir.exists():
                 shutil.rmtree(agent_dir)
             return "deleted"
-        # No agent row. A bare on-disk directory here holds only memory/facts
-        # data (in db mode the config lives in the row, not on disk), so preserve
-        # it rather than deleting a user's memory (#4279) — do not rmtree it.
+        # agent row가 없다. 여기 남아 있는 디스크 디렉터리는 memory/facts 데이터만 담고 있으므로
+        # (db 모드에서 config는 디스크가 아니라 row에 있다) 사용자의 memory를 지우는 대신
+        # 보존한다(#4279) — rmtree하지 않는다.
         if agent_dir.exists():
             return "not-custom-agent"
         return "missing"
 
     def signature(self) -> Hashable:
-        # The GitHub registry uses this token to decide whether cached agent
-        # bindings are still current. Timestamps alone are not sufficient
-        # because two writes can reuse the same database timestamp.
-        # Computing the digest reads the small agents table only on the
-        # registry's cache-freshness check; revisit if agent counts or webhook
-        # delivery rates grow enough for this scan to become material.
+        # GitHub registry는 캐시된 agent binding이 아직 최신인지 판단하는 데 이 토큰을 쓴다.
+        # 두 번의 쓰기가 같은 데이터베이스 timestamp를 가질 수 있으므로 timestamp만으로는
+        # 부족하다. digest 계산은 registry의 캐시 신선도 확인 때만 작은 agents 테이블을 읽는다.
+        # agent 수나 webhook 전달량이 늘어 이 스캔이 부담이 되면 다시 검토한다.
         with self._Session() as session:
             rows = session.execute(
                 select(

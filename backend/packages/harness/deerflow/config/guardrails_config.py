@@ -1,21 +1,20 @@
-"""Configuration for pre-tool-call authorization."""
+"""도구 호출 전 authorization 설정."""
 
 from pydantic import BaseModel, Field
 
 
 class GuardrailProviderConfig(BaseModel):
-    """Configuration for a guardrail provider."""
+    """guardrail provider 설정."""
 
     use: str = Field(description="Class path (e.g. 'deerflow.guardrails.builtin:AllowlistProvider')")
     config: dict = Field(default_factory=dict, description="Provider-specific settings passed as kwargs")
 
 
 class GuardrailsConfig(BaseModel):
-    """Configuration for pre-tool-call authorization.
+    """도구 호출 전 authorization 설정.
 
-    When enabled, every tool call passes through the configured provider
-    before execution. The provider receives tool name, arguments, and the
-    agent's passport reference, and returns an allow/deny decision.
+    활성화하면 모든 도구 호출이 실행 전에 설정된 provider를 거친다. provider는 도구
+    이름, 인자, 에이전트의 passport 참조를 받아 허용/거부를 결정한다.
     """
 
     enabled: bool = Field(default=False, description="Enable guardrail middleware")
@@ -28,7 +27,7 @@ _guardrails_config: GuardrailsConfig | None = None
 
 
 def get_guardrails_config() -> GuardrailsConfig:
-    """Get the guardrails config, returning defaults if not loaded."""
+    """guardrails 설정을 반환한다. 아직 로드되지 않았으면 기본값을 쓴다."""
     global _guardrails_config
     if _guardrails_config is None:
         _guardrails_config = GuardrailsConfig()
@@ -36,13 +35,13 @@ def get_guardrails_config() -> GuardrailsConfig:
 
 
 def load_guardrails_config_from_dict(data: dict) -> GuardrailsConfig:
-    """Load guardrails config from a dict (called during AppConfig loading)."""
+    """dict에서 guardrails 설정을 읽는다(AppConfig 로딩 중 호출된다)."""
     global _guardrails_config
     _guardrails_config = GuardrailsConfig.model_validate(data)
     return _guardrails_config
 
 
 def reset_guardrails_config() -> None:
-    """Reset the cached config instance. Used in tests to prevent singleton leaks."""
+    """캐시된 설정 인스턴스를 비운다. 테스트에서 singleton 누수를 막는 데 쓴다."""
     global _guardrails_config
     _guardrails_config = None

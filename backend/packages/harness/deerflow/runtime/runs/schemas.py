@@ -1,10 +1,10 @@
-"""Run status and disconnect mode enums."""
+"""run 상태와 disconnect mode enum."""
 
 from enum import StrEnum
 
 
 class ThreadOperationKind(StrEnum):
-    """Kind of operation holding exclusive admission for a thread."""
+    """thread에 대한 배타적 admission을 점유하는 operation의 종류."""
 
     run = "run"
     checkpoint_write = "checkpoint_write"
@@ -12,7 +12,7 @@ class ThreadOperationKind(StrEnum):
 
 
 class RunStatus(StrEnum):
-    """Lifecycle status of a single run."""
+    """단일 run의 lifecycle 상태."""
 
     pending = "pending"
     running = "running"
@@ -23,7 +23,7 @@ class RunStatus(StrEnum):
 
 
 class DisconnectMode(StrEnum):
-    """Behaviour when the SSE consumer disconnects."""
+    """SSE consumer가 연결을 끊었을 때의 동작."""
 
     cancel = "cancel"
     continue_ = "continue"

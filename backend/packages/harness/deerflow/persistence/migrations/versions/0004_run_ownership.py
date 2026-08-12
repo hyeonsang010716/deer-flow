@@ -1,4 +1,4 @@
-"""run ownership.
+"""run ownership 컬럼과 active-thread unique index를 추가한다.
 
 Revision ID: 0004_run_ownership
 Revises: 0003_scheduled_tasks
@@ -22,19 +22,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def _dedupe_active_runs_per_thread() -> None:
-    """Cancel superseded active rows so the partial unique index can be built.
+    """partial unique index를 만들 수 있도록, 대체된 active row를 취소한다.
 
-    ``uq_runs_thread_active`` enforces at most one pending/running row per
-    ``thread_id``. A DB that already has two+ active rows for the same thread
-    (reachable in the field: Postgres deployments had reconciliation skipped
-    by the old sqlite-only gate, and anyone who ran ``GATEWAY_WORKERS>1``
-    before this PR can have duplicates) would fail ``CREATE UNIQUE INDEX``
-    and abort the alembic upgrade, blocking gateway startup.
+    ``uq_runs_thread_active``는 ``thread_id``당 pending/running row를 최대 하나로 강제한다.
+    같은 thread에 이미 active row가 둘 이상인 DB는 ``CREATE UNIQUE INDEX``에 실패해 alembic
+    upgrade가 중단되고 gateway 시작이 막힌다(실제로 발생 가능하다. Postgres 배포는 예전 sqlite
+    전용 gate 때문에 reconciliation을 건너뛰었고, 이 PR 이전에 ``GATEWAY_WORKERS>1``로 실행한
+    경우 중복이 생길 수 있다).
 
-    Keep the newest active row per ``thread_id`` (by ``created_at`` DESC,
-    ``run_id`` DESC as a deterministic tiebreaker) and mark the rest as
-    ``error``. Cancelled rows get an explanatory ``error`` string so
-    operators can see why the run was killed.
+    ``thread_id``별로 가장 최근 active row만 남기고(``created_at`` DESC, 결정적 tiebreaker로
+    ``run_id`` DESC) 나머지는 ``error``로 표시한다. 취소된 row에는 설명이 담긴 ``error``
+    문자열을 넣어 운영자가 왜 run이 종료됐는지 알 수 있게 한다.
     """
     bind = op.get_bind()
     cancel_message = "cancelled during migration 0004_run_ownership: superseded by a newer active run for the same thread (partial unique index uq_runs_thread_active)"
@@ -93,19 +91,17 @@ def upgrade() -> None:
     safe_add_column("runs", sa.Column("owner_worker_id", sa.String(length=128), nullable=True))
     safe_add_column("runs", sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True))
 
-    # Idempotent index creation: the legacy bootstrap path runs create_all
-    # (which creates the index from the ORM __table_args__) before upgrade
-    # head, so the migration must not fail when the index already exists.
+    # 멱등한 index 생성. legacy bootstrap 경로는 upgrade head 전에 create_all을 실행해
+    # ORM __table_args__로부터 index를 만들므로, index가 이미 있어도 migration이 실패하면 안 된다.
     insp = sa.inspect(op.get_bind())
     existing = {ix["name"] for ix in insp.get_indexes("runs")}
     if "ix_runs_lease" not in existing:
         with op.batch_alter_table("runs", schema=None) as batch_op:
             batch_op.create_index("ix_runs_lease", ["lease_expires_at"], unique=False)
     if "uq_runs_thread_active" not in existing:
-        # Cancel duplicate active rows first so the partial UNIQUE index can
-        # be built on DBs that already violate the invariant. No-op on clean
-        # DBs (the common path -- create_all already created the index, so
-        # this branch only runs on legacy DBs that pre-date the index).
+        # 이미 불변식을 위반한 DB에서도 partial UNIQUE index를 만들 수 있도록 중복 active row를
+        # 먼저 취소한다. 정상 DB에서는 no-op이다(일반 경로에서는 create_all이 이미 index를
+        # 만들었으므로, 이 분기는 index 이전 시절의 legacy DB에서만 실행된다).
         _dedupe_active_runs_per_thread()
         with op.batch_alter_table("runs", schema=None) as batch_op:
             batch_op.create_index(

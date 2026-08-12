@@ -1,15 +1,16 @@
-"""Auto-load credentials from Claude Code CLI and Codex CLI.
+"""Claude Code CLI와 Codex CLI에서 credential을 자동으로 로드한다.
 
-Implements two credential strategies:
-  1. Claude Code OAuth token from explicit env vars or an exported credentials file
-     - Uses Authorization: Bearer header (NOT x-api-key)
-     - Requires anthropic-beta: oauth-2025-04-20,claude-code-20250219
-     - Supports $CLAUDE_CODE_OAUTH_TOKEN, $CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR, and $ANTHROPIC_AUTH_TOKEN
-     - Override path with $CLAUDE_CODE_CREDENTIALS_PATH
-  2. Codex CLI token from ~/.codex/auth.json
-     - Uses chatgpt.com/backend-api/codex/responses endpoint
-     - Supports both legacy top-level tokens and current nested tokens shape
-     - Override path with $CODEX_AUTH_PATH
+두 가지 credential 전략을 구현한다:
+  1. 명시적 환경 변수 또는 내보낸 credential 파일에서 얻는 Claude Code OAuth 토큰
+     - Authorization: Bearer header를 쓴다(x-api-key가 아니다)
+     - anthropic-beta: oauth-2025-04-20,claude-code-20250219이 필요하다
+     - $CLAUDE_CODE_OAUTH_TOKEN, $CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR,
+       $ANTHROPIC_AUTH_TOKEN을 지원한다
+     - $CLAUDE_CODE_CREDENTIALS_PATH로 경로를 덮어쓸 수 있다
+  2. ~/.codex/auth.json에서 얻는 Codex CLI 토큰
+     - chatgpt.com/backend-api/codex/responses endpoint를 쓴다
+     - legacy 최상위 토큰 형태와 현재의 중첩 토큰 형태를 모두 지원한다
+     - $CODEX_AUTH_PATH로 경로를 덮어쓸 수 있다
 """
 
 import json
@@ -22,18 +23,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Required beta headers for Claude Code OAuth tokens
+# Claude Code OAuth 토큰에 필요한 beta header
 OAUTH_ANTHROPIC_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14"
 
 
 def is_oauth_token(token: str) -> bool:
-    """Check if a token is a Claude Code OAuth token (not a standard API key)."""
+    """토큰이 (표준 API key가 아닌) Claude Code OAuth 토큰인지 확인한다."""
     return isinstance(token, str) and "sk-ant-oat" in token
 
 
 @dataclass
 class ClaudeCodeCredential:
-    """Claude Code CLI OAuth credential."""
+    """Claude Code CLI의 OAuth credential."""
 
     access_token: str
     refresh_token: str = ""
@@ -44,12 +45,12 @@ class ClaudeCodeCredential:
     def is_expired(self) -> bool:
         if self.expires_at <= 0:
             return False
-        return time.time() * 1000 > self.expires_at - 60_000  # 1 min buffer
+        return time.time() * 1000 > self.expires_at - 60_000  # 1분 여유
 
 
 @dataclass
 class CodexCliCredential:
-    """Codex CLI credential."""
+    """Codex CLI의 credential."""
 
     access_token: str
     account_id: str = ""
@@ -147,15 +148,15 @@ def _extract_claude_code_credential(data: dict[str, Any], source: str) -> Claude
 
 
 def load_claude_code_credential() -> ClaudeCodeCredential | None:
-    """Load OAuth credential from explicit Claude Code handoff sources.
+    """명시적인 Claude Code 인계 소스에서 OAuth credential을 로드한다.
 
-    Lookup order:
-      1. $CLAUDE_CODE_OAUTH_TOKEN or $ANTHROPIC_AUTH_TOKEN
+    조회 순서:
+      1. $CLAUDE_CODE_OAUTH_TOKEN 또는 $ANTHROPIC_AUTH_TOKEN
       2. $CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
       3. $CLAUDE_CODE_CREDENTIALS_PATH
       4. ~/.claude/.credentials.json
 
-    Exported credentials files contain:
+    내보낸 credential 파일의 구조:
     {
       "claudeAiOauth": {
         "accessToken": "sk-ant-oat01-...",
@@ -196,7 +197,7 @@ def load_claude_code_credential() -> ClaudeCodeCredential | None:
 
 
 def load_codex_cli_credential() -> CodexCliCredential | None:
-    """Load credential from Codex CLI (~/.codex/auth.json)."""
+    """Codex CLI(~/.codex/auth.json)에서 credential을 로드한다."""
     cred_path = _resolve_credential_path("CODEX_AUTH_PATH", ".codex/auth.json")
     data = _load_json_file(cred_path, "Codex CLI credentials")
     if data is None:

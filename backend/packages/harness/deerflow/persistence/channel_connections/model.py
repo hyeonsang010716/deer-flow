@@ -1,4 +1,4 @@
-"""ORM models for user-owned IM channel connections."""
+"""사용자 소유 IM channel connection의 ORM model."""
 
 from __future__ import annotations
 
@@ -46,11 +46,10 @@ class ChannelConnectionRow(Base):
             name="uq_channel_connection_owner_provider_identity",
         ),
         Index("idx_channel_connections_event_lookup", "provider", "workspace_id", "bot_user_id"),
-        # Enforce the single-active-owner invariant at the database layer: at most
-        # one non-revoked row may exist per external identity. This makes ownership
-        # transfer race-safe (concurrent connects from different owners can no
-        # longer both commit a connected row). Partial unique indexes are
-        # supported by both SQLite (>= 3.8.0) and PostgreSQL.
+        # single-active-owner 불변식을 DB 계층에서 강제한다. external identity 하나당
+        # revoke되지 않은 row는 최대 하나만 존재할 수 있다. 이로써 소유권 이전이 race에
+        # 안전해진다(서로 다른 owner의 동시 connect가 둘 다 connected row를 커밋할 수 없다).
+        # partial unique index는 SQLite(>= 3.8.0)와 PostgreSQL 모두 지원한다.
         Index(
             "uq_channel_connection_active_identity",
             "provider",

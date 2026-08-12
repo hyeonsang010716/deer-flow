@@ -1,4 +1,4 @@
-"""Apply skill ``allowed-tools`` only to skills active in lead-agent context."""
+"""skill의 ``allowed-tools``를 lead-agent context에서 활성화된 skill에만 적용한다."""
 
 from __future__ import annotations
 
@@ -40,13 +40,12 @@ type _PolicySignature = tuple[str, tuple[str, ...]]
 
 
 class SkillToolPolicyMiddleware(AgentMiddleware[AgentState]):
-    """Restrict agent tools to declarations from slash/in-context skills.
+    """agent의 도구를 slash 또는 in-context skill이 선언한 범위로 제한한다.
 
-    Merely enabling a skill makes it discoverable; it does not activate its
-    authority policy. A skill becomes policy-active when the user slash-activates
-    it for the run or after the model loads it into ``skill_context``. Explicit
-    slash activation dominates for the rest of that run: passively reading a
-    second skill cannot widen the slash skill's authority.
+    skill을 enabled로 두는 것만으로는 탐색 가능해질 뿐 권한 정책이 활성화되지는 않는다. skill은 사용자가
+    run에서 slash로 활성화하거나 모델이 ``skill_context``에 로드했을 때 정책상 활성 상태가 된다.
+    명시적 slash 활성화는 남은 run 동안 우선한다. 두 번째 skill을 수동적으로 읽어도 slash skill의 권한을
+    넓힐 수 없다.
     """
 
     def __init__(
@@ -110,8 +109,8 @@ class SkillToolPolicyMiddleware(AgentMiddleware[AgentState]):
             container_root = storage.get_container_root()
         except Exception:
             logger.exception("Failed to load active skills for allowed-tools policy")
-            # A real active reference exists but cannot be authorized. Signal a
-            # policy failure so callers retain only framework-safe tools.
+            # 실제 활성 참조가 있는데 인가할 수 없는 상태다. 정책 실패를 알려 호출자가
+            # framework-safe 도구만 유지하도록 한다.
             return [], True
 
         registry = {posixpath.normpath(skill.get_container_file_path(container_root)): skill for skill in skills}
@@ -252,12 +251,11 @@ class SkillToolPolicyMiddleware(AgentMiddleware[AgentState]):
         *,
         allowed: set[str] | None,
     ) -> ToolMessage | Command:
-        """Remove denied schemas and promotions from tool_search output.
+        """tool_search 출력에서 거부된 schema와 promotion을 제거한다.
 
-        Keeping tool_search available is safe only if it cannot return a full
-        schema for a tool removed by the active policy. Deferred filtering still
-        controls when an allowed schema becomes model-visible; this method keeps
-        the discovery result itself within the same authorization boundary.
+        tool_search를 계속 노출해도 안전한 것은, 활성 정책이 제거한 도구의 전체 schema를 반환할 수 없을
+        때뿐이다. 허용된 schema가 언제 모델에 보이게 되는지는 여전히 deferred filtering이 통제하며,
+        이 메서드는 탐색 결과 자체를 같은 인가 경계 안에 묶어 둔다.
         """
         name = str(request.tool_call.get("name") or "")
         if name != _TOOL_SEARCH_NAME or allowed is None:

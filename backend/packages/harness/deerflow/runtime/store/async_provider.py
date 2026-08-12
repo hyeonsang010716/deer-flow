@@ -1,13 +1,13 @@
-"""Async Store factory — backend mirrors runtime persistence configuration.
+"""async Store factory. backend는 runtime persistence 설정을 그대로 따른다.
 
-The deprecated ``checkpointer`` section takes precedence when present;
-otherwise Store follows the unified ``database`` section in *config.yaml*:
+deprecated된 ``checkpointer`` 섹션이 있으면 그것이 우선한다. 없으면 Store는
+*config.yaml*의 통합 ``database`` 섹션을 따른다:
 
 - ``memory``   → :class:`langgraph.store.memory.InMemoryStore`
 - ``sqlite``   → :class:`langgraph.store.sqlite.aio.AsyncSqliteStore`
 - ``postgres`` → :class:`langgraph.store.postgres.aio.AsyncPostgresStore`
 
-Usage (e.g. FastAPI lifespan)::
+사용 예(예: FastAPI lifespan)::
 
     from deerflow.runtime.store import make_store
 
@@ -39,21 +39,21 @@ logger = logging.getLogger(__name__)
 
 
 async def _ensure_postgres_schema(conn_string: str, schema: str) -> None:
-    """Create the configured schema before LangGraph creates its store tables."""
+    """LangGraph가 store 테이블을 만들기 전에 설정된 schema를 생성한다."""
     await ensure_postgres_schema_async(conn_string, schema, install_hint=POSTGRES_STORE_INSTALL)
 
 
 # ---------------------------------------------------------------------------
-# Internal backend factory
+# 내부 backend factory
 # ---------------------------------------------------------------------------
 
 
 @contextlib.asynccontextmanager
 async def _async_store(config) -> AsyncIterator[BaseStore]:
-    """Async context manager that constructs and tears down a Store.
+    """Store를 만들고 정리하는 async context manager.
 
-    The ``config`` argument is a :class:`deerflow.config.checkpointer_config.CheckpointerConfig`
-    instance — the same object used by the checkpointer factory.
+    ``config`` 인자는 :class:`deerflow.config.checkpointer_config.CheckpointerConfig`
+    인스턴스이며, checkpointer factory가 쓰는 것과 같은 객체다.
     """
     if config.type == "memory":
         from langgraph.store.memory import InMemoryStore
@@ -98,23 +98,23 @@ async def _async_store(config) -> AsyncIterator[BaseStore]:
 
 
 # ---------------------------------------------------------------------------
-# Public async context manager
+# 공개 async context manager
 # ---------------------------------------------------------------------------
 
 
 @contextlib.asynccontextmanager
 async def make_store(app_config: AppConfig | None = None) -> AsyncIterator[BaseStore]:
-    """Yield a Store selected from legacy or unified persistence config.
+    """legacy 또는 통합 persistence 설정으로 선택한 Store를 내보낸다.
 
-    The legacy ``checkpointer`` section takes precedence when configured;
-    otherwise the unified ``database`` section selects the backend, matching
-    :func:`deerflow.runtime.checkpointer.async_provider.make_checkpointer`::
+    legacy ``checkpointer`` 섹션이 설정되어 있으면 그것이 우선한다. 없으면 통합
+    ``database`` 섹션이 backend를 고르며, 이는
+    :func:`deerflow.runtime.checkpointer.async_provider.make_checkpointer`와 동일하다::
 
         async with make_store(app_config) as store:
             app.state.store = store
 
-    An :class:`~langgraph.store.memory.InMemoryStore` is returned only when the
-    resolved backend is explicitly ``memory``.
+    :class:`~langgraph.store.memory.InMemoryStore`는 해석된 backend가 명시적으로
+    ``memory``일 때만 반환된다.
     """
     if app_config is None:
         app_config = get_app_config()

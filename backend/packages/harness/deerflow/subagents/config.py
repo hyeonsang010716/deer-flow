@@ -1,4 +1,4 @@
-"""Subagent configuration definitions."""
+"""subagent 설정 정의."""
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -9,26 +9,23 @@ if TYPE_CHECKING:
 
 @dataclass
 class SubagentConfig:
-    """Configuration for a subagent.
+    """subagent 설정.
 
     Attributes:
-        name: Unique identifier for the subagent.
-        description: When Claude should delegate to this subagent.
-        system_prompt: The system prompt that guides the subagent's behavior.
-        tools: Optional list of tool names to allow. If None, inherits all tools.
-        disallowed_tools: Optional list of tool names to deny.
-        skills: Optional list of skill names to make discoverable and activatable.
-                If None, all enabled skills are available. If empty, skills are
-                disabled for this subagent. Skill bodies and their allowed-tools
-                policies take effect only after activation/loading at runtime.
-        model: Model to use - 'inherit' uses parent's model.
-        max_turns: Maximum agent turns before stopping. Built-in agents use the
-            value set here (general-purpose=150, bash=60) unless the global
-            ``subagents.max_turns`` is set.
-        timeout_seconds: Bare fallback execution-time cap. For built-in agents the
-            effective limit is the global ``subagents.timeout_seconds`` (default
-            1800 = 30 min), layered on by the registry; this 900 only applies
-            when no differing global value exists.
+        name: subagent의 고유 식별자.
+        description: Claude가 이 subagent에 위임해야 하는 상황.
+        system_prompt: subagent의 동작을 이끄는 system prompt.
+        tools: 허용할 tool 이름 목록(선택). None이면 모든 tool을 상속한다.
+        disallowed_tools: 거부할 tool 이름 목록(선택).
+        skills: 발견 및 활성화를 허용할 skill 이름 목록(선택). None이면 enabled된 모든 skill을
+                쓸 수 있고, 빈 리스트면 이 subagent에서 skill이 비활성화된다. skill 본문과
+                allowed-tools 정책은 runtime에 활성화/로드된 뒤에만 적용된다.
+        model: 사용할 model. 'inherit'이면 부모의 model을 쓴다.
+        max_turns: 중단 전 최대 agent turn 수. 전역 ``subagents.max_turns``가 설정되지 않은
+            한 built-in agent는 여기 값을 쓴다(general-purpose=150, bash=60).
+        timeout_seconds: 최후의 fallback 실행 시간 상한. built-in agent의 실효 제한은 registry가
+            덧씌우는 전역 ``subagents.timeout_seconds``(기본 1800 = 30분)이며, 여기의 900은
+            다른 전역 값이 없을 때만 적용된다.
     """
 
     name: str
@@ -49,7 +46,7 @@ def _default_model_name(app_config: "AppConfig") -> str:
 
 
 def resolve_subagent_model_name(config: SubagentConfig, parent_model: str | None, *, app_config: "AppConfig | None" = None) -> str:
-    """Resolve the effective model name a subagent should use."""
+    """subagent가 실제로 사용할 model 이름을 해석한다."""
     if config.model != "inherit":
         return config.model
 

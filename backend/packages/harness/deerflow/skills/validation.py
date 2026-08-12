@@ -1,6 +1,6 @@
-"""Skill frontmatter validation utilities.
+"""skill frontmatter 검증 유틸리티.
 
-Pure-logic validation of SKILL.md frontmatter — no FastAPI or HTTP dependencies.
+SKILL.md frontmatter를 순수 로직으로 검증한다. FastAPI나 HTTP 의존성은 없다.
 """
 
 import re
@@ -12,13 +12,13 @@ from deerflow.skills.types import SKILL_MD_FILE
 
 
 def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]:
-    """Validate a skill directory's SKILL.md frontmatter.
+    """skill 디렉터리의 SKILL.md frontmatter를 검증한다.
 
     Args:
-        skill_dir: Path to the skill directory containing SKILL.md.
+        skill_dir: SKILL.md를 담고 있는 skill 디렉터리 경로.
 
     Returns:
-        Tuple of (is_valid, message, skill_name).
+        (is_valid, message, skill_name) 튜플.
     """
     skill_md = skill_dir / SKILL_MD_FILE
     if not skill_md.exists():
@@ -32,18 +32,18 @@ def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]
         return False, "Invalid frontmatter format", None
     frontmatter = parts.metadata
 
-    # Check for unexpected properties
+    # 예상치 못한 속성이 있는지 확인한다
     unexpected_keys = set(frontmatter.keys()) - ALLOWED_FRONTMATTER_PROPERTIES
     if unexpected_keys:
         return False, f"Unexpected key(s) in SKILL.md frontmatter: {', '.join(sorted(unexpected_keys))}", None
 
-    # Check required fields
+    # 필수 필드를 확인한다
     if "name" not in frontmatter:
         return False, "Missing 'name' in frontmatter", None
     if "description" not in frontmatter:
         return False, "Missing 'description' in frontmatter", None
 
-    # Validate name
+    # name을 검증한다
     name = frontmatter.get("name", "")
     if not isinstance(name, str):
         return False, f"Name must be a string, got {type(name).__name__}", None
@@ -51,7 +51,7 @@ def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]
     if not name:
         return False, "Name cannot be empty", None
 
-    # Check naming convention (hyphen-case: lowercase with hyphens)
+    # 이름 규칙을 확인한다(hyphen-case: 소문자와 하이픈)
     if not re.match(r"^[a-z0-9-]+$", name):
         return False, f"Name '{name}' should be hyphen-case (lowercase letters, digits, and hyphens only)", None
     if name.startswith("-") or name.endswith("-") or "--" in name:
@@ -59,7 +59,7 @@ def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]
     if len(name) > 64:
         return False, f"Name is too long ({len(name)} characters). Maximum is 64 characters.", None
 
-    # Validate description
+    # description을 검증한다
     description = frontmatter.get("description", "")
     if not isinstance(description, str):
         return False, f"Description must be a string, got {type(description).__name__}", None

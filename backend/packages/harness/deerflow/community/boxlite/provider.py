@@ -1,14 +1,13 @@
-"""``BoxliteProvider`` — DeerFlow :class:`SandboxProvider` backed by BoxLite.
+"""``BoxliteProvider`` — BoxLite 기반 DeerFlow :class:`SandboxProvider`.
 
-Integrates `BoxLite <https://github.com/boxlite-ai/boxlite>`_ — a daemonless,
-OCI-native micro-VM runtime — as a DeerFlow sandbox backend. See
-https://github.com/bytedance/deer-flow/issues/3936.
+daemon이 필요 없는 OCI 네이티브 micro-VM 런타임인
+`BoxLite <https://github.com/boxlite-ai/boxlite>`_ 를 DeerFlow sandbox backend로 붙인다.
+https://github.com/bytedance/deer-flow/issues/3936 참고.
 
-Config is read off :class:`SandboxConfig` (``extra="allow"``), so BoxLite keys
-may appear under ``sandbox:`` in ``config.yaml`` even though they are not declared
-on the model — see this package's ``__init__`` docstring for the full set. The
-provider creates one micro-VM per ``(user, thread)`` and reuses it within the
-process.
+설정은 :class:`SandboxConfig`(``extra="allow"``)에서 읽으므로, 모델에 선언되지 않은
+BoxLite 키도 ``config.yaml``의 ``sandbox:`` 아래에 쓸 수 있다. 전체 목록은 이 패키지의
+``__init__`` docstring을 참고한다. provider는 ``(user, thread)``마다 micro-VM을 하나 만들고
+프로세스 내에서 재사용한다.
 """
 
 from __future__ import annotations
@@ -42,8 +41,8 @@ T = TypeVar("T")
 DEFAULT_IMAGE = "python:3.12-slim"
 _BOX_NAME_PREFIX = "deer-flow-boxlite-"
 _NO_ACTIVE_IDENTITY = object()
-# DeerFlow's virtual prefixes, materialised on the box rootfs at start so the
-# Sandbox file APIs (which address /mnt/user-data/...) resolve natively.
+# DeerFlow의 virtual prefix들. box 시작 시 rootfs에 실제로 만들어 두어야
+# /mnt/user-data/... 를 다루는 Sandbox 파일 API가 그대로 동작한다.
 _VIRTUAL_DIRS = (
     f"{VIRTUAL_PATH_PREFIX}/workspace",
     f"{VIRTUAL_PATH_PREFIX}/uploads",
@@ -53,7 +52,7 @@ _VIRTUAL_DIRS = (
 
 
 class SandboxIdentityCollisionError(RuntimeError):
-    """A deterministic ID is already tracked for a different user/thread."""
+    """결정적으로 계산된 ID가 이미 다른 user/thread에 물려 있다."""
 
     def __init__(
         self,
@@ -65,36 +64,35 @@ class SandboxIdentityCollisionError(RuntimeError):
 
 
 def _import_simplebox() -> type[SimpleBox]:
-    """Import BoxLite's async ``SimpleBox`` lazily.
+    """BoxLite의 async ``SimpleBox``를 지연 import한다.
 
-    Kept out of module import so the harness (and every other provider) installs
-    without BoxLite; the dependency is only needed once this provider is selected.
+    모듈 import 시점에서 빼두어야 harness(와 다른 모든 provider)가 BoxLite 없이도 설치된다.
+    이 provider를 선택했을 때만 의존성이 필요하다.
     """
     try:
         from boxlite import SimpleBox
-    except ImportError as e:  # pragma: no cover - depends on the optional dependency
+    except ImportError as e:  # pragma: no cover - optional 의존성에 좌우된다
         raise ImportError("BoxliteProvider requires the optional 'boxlite' dependency. Install it with: pip install 'deerflow-harness[boxlite]' or pip install boxlite.") from e
     return SimpleBox
 
 
 def _import_sync_boxlite_runtime():
-    """Import BoxLite's sync runtime lazily for startup reconciliation."""
+    """startup reconciliation용으로 BoxLite의 sync runtime을 지연 import한다."""
     try:
         from boxlite import SyncBoxlite
-    except ImportError as e:  # pragma: no cover - depends on the optional dependency
+    except ImportError as e:  # pragma: no cover - optional 의존성에 좌우된다
         raise ImportError("BoxliteProvider requires the optional 'boxlite' dependency. Install it with: pip install 'deerflow-harness[boxlite]' or pip install boxlite.") from e
     return SyncBoxlite
 
 
 class _EventLoopThread:
-    """A private asyncio event loop running on a dedicated daemon thread.
+    """전용 daemon thread에서 도는 전용 asyncio event loop.
 
-    BoxLite is async-native and its box handles are loop-affine, while DeerFlow's
-    ``Sandbox`` contract is synchronous and may be invoked from arbitrary
-    ``asyncio.to_thread`` workers. Owning one loop here and marshalling every
-    coroutine onto it via ``run_coroutine_threadsafe`` gives a stable, thread-safe
-    bridge without BoxLite's greenlet sync facade (which refuses to run inside an
-    async context and is thread-affine).
+    BoxLite는 async 네이티브이고 box handle이 loop에 종속되는 반면, DeerFlow의 ``Sandbox``
+    계약은 동기이며 임의의 ``asyncio.to_thread`` worker에서 호출될 수 있다. 여기서 loop를
+    하나 소유하고 모든 coroutine을 ``run_coroutine_threadsafe``로 넘기면 안정적인 thread-safe
+    bridge가 된다. BoxLite의 greenlet sync facade는 async context 안에서 실행을 거부하고
+    thread에도 종속되므로 쓰지 않는다.
     """
 
     def __init__(self) -> None:
@@ -128,7 +126,7 @@ class _EventLoopThread:
 
 
 class _SyncBoxAdapter:
-    """Adapt a sync BoxLite ``Box`` handle to the async ``SimpleBox`` methods we use."""
+    """sync BoxLite ``Box`` handle을 우리가 쓰는 async ``SimpleBox`` 메서드에 맞춘다."""
 
     def __init__(self, runtime: Any, box: Any) -> None:
         self._runtime = runtime
@@ -160,14 +158,14 @@ class _SyncBoxAdapter:
 
 
 def _run_sync_adapter[T](coro: Awaitable[T], *, timeout: float | None = None) -> T:
-    """Run sync-adapter coroutines without using the BoxLite async loop."""
+    """BoxLite async loop를 쓰지 않고 sync adapter coroutine을 실행한다."""
     if timeout is None:
         return asyncio.run(coro)
     return asyncio.run(asyncio.wait_for(coro, timeout=timeout))
 
 
 class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
-    """Run each DeerFlow sandbox as a BoxLite micro-VM."""
+    """DeerFlow sandbox 하나를 BoxLite micro-VM 하나로 실행한다."""
 
     uses_thread_data_mounts = False
     needs_upload_permission_adjustment = True
@@ -175,15 +173,14 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
 
     @staticmethod
     def _sandbox_id(thread_id: str, user_id: str) -> str:
-        """Deterministic sandbox ID from user/thread scope.
+        """user/thread 범위에서 결정적으로 계산한 sandbox ID.
 
-        Includes user_id so a box created for one user's bucket cannot be
-        reclaimed by another user's thread with the same thread_id.
+        user_id를 포함하므로, 한 user의 bucket으로 만든 box를 같은 thread_id를 가진
+        다른 user의 thread가 가져갈 수 없다.
 
-        The 8-to-16-character change intentionally causes one cold start during
-        a mixed-version rollout. Older 8-character boxes remain in the warm pool
-        until the normal orphan cleanup removes them; they are never reused
-        under a new 16-character identity.
+        길이를 8자에서 16자로 바꾼 것은 버전이 섞인 롤아웃 중 cold start를 한 번 유발한다.
+        기존 8자 box는 일반 orphan cleanup이 제거할 때까지 warm pool에 남고, 새 16자
+        identity로 재사용되지는 않는다.
         """
         return hashlib.sha256(f"{user_id}:{thread_id}".encode()).hexdigest()[:16]
 
@@ -213,8 +210,8 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
         def _opt(name: str, default: Any = None) -> Any:
             return getattr(sandbox_config, name, default)
 
-        # $VARS in config.yaml are already resolved by AppConfig.resolve_env_variables
-        # (which raises on a missing var), so the environment dict is used as-is.
+        # config.yaml의 $VARS는 AppConfig.resolve_env_variables가 이미 치환했고
+        # (없는 변수면 예외를 던진다) 따라서 environment dict를 그대로 쓴다.
         replicas = _opt("replicas")
         idle_timeout = _opt("idle_timeout")
         health_check_skip_seconds = _opt("health_check_skip_seconds")
@@ -244,7 +241,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
         return sandbox_id or None
 
     def _lock_for_sandbox(self, sandbox_id: str) -> threading.Lock:
-        """Return the per-sandbox acquire lock for a deterministic sandbox id."""
+        """결정적 sandbox id에 대응하는 sandbox별 acquire lock을 반환한다."""
         with self._lock:
             lock = self._acquire_locks.get(sandbox_id)
             if lock is None:
@@ -253,17 +250,17 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
             return lock
 
     def _start_idle_checker(self) -> None:
-        """Start idle cleanup when enabled; idle_timeout=0 keeps it disabled."""
+        """활성화된 경우 idle cleanup을 시작한다. idle_timeout=0이면 비활성 상태로 둔다."""
         if self._config["idle_timeout"] <= 0:
             return
         super()._start_idle_checker()
 
     def _active_count_locked(self) -> int:
-        """Return active BoxLite box count while ``_lock`` is held."""
+        """``_lock``을 잡은 상태에서 활성 BoxLite box 개수를 반환한다."""
         return len(self._boxes)
 
     def _destroy_warm_entry(self, sandbox_id: str, entry: BoxliteBox, *, reason: str) -> None:
-        """Close a removed warm-pool entry and log with context."""
+        """제거된 warm-pool 항목을 닫고 사유와 함께 로그를 남긴다."""
         with self._lock:
             if sandbox_id not in self._warm_pool:
                 self._skip_health_check_warm_ids.discard(sandbox_id)
@@ -285,7 +282,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
                 logger.warning("Error closing BoxLite box %s (reason=%s): %s", sandbox_id, reason, e)
 
     def _invalidate_box(self, sandbox_id: str, reason: str) -> None:
-        """Destroy and deregister a box after a terminal command-path failure."""
+        """명령 경로에서 복구 불가 실패가 난 box를 파괴하고 등록에서 제거한다."""
         box_to_close: BoxliteBox | None = None
         with self._lock:
             active_box = self._boxes.pop(sandbox_id, None)
@@ -305,10 +302,10 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
         box_to_close.close()
 
     def _reconcile_orphans(self) -> None:
-        """Adopt DeerFlow-owned BoxLite boxes left by a previous provider/process.
+        """이전 provider/프로세스가 남긴 DeerFlow 소유 BoxLite box를 인수한다.
 
-        BoxLite boxes are discovered by a DeerFlow-specific name prefix. Adopted
-        boxes enter the warm pool so the normal idle reaper can reclaim them.
+        DeerFlow 전용 이름 prefix로 box를 찾는다. 인수한 box는 warm pool에 넣어
+        일반 idle reaper가 회수할 수 있게 한다.
         """
         try:
             adopted = self._adopt_existing_boxes()
@@ -365,7 +362,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
 
         return adopted
 
-    # ── Acquire / release ────────────────────────────────────────────────
+    # ── 획득 / 반납 ──────────────────────────────────────────────────────
 
     def acquire(self, thread_id: str | None = None, *, user_id: str | None = None) -> str:
         if thread_id is None:
@@ -423,7 +420,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
             return box.id
 
     def _create_box(self, sandbox_id: str) -> BoxliteBox:
-        # Enforce replica limit: evict oldest warm-pool box if active + warm boxes are at capacity.
+        # replica 상한을 적용한다. active + warm이 정원에 도달하면 가장 오래된 warm-pool box를 밀어낸다.
         replicas, total = self._replica_count()
         if total >= replicas:
             evicted = self._evict_oldest_warm()
@@ -439,7 +436,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
                 cpus=self._config["cpus"],
             )
             await box.start()
-            # Materialise DeerFlow's virtual prefixes so file ops resolve natively.
+            # DeerFlow의 virtual prefix를 실제로 만들어 파일 연산이 그대로 동작하게 한다.
             await box.exec("sh", "-lc", mkdir_cmd)
             return box
 
@@ -452,11 +449,10 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
             return self._boxes.get(sandbox_id)
 
     def release(self, sandbox_id: str) -> None:
-        """Release a sandbox into the warm pool — VM stays running.
+        """sandbox를 warm pool로 반납한다. VM은 계속 실행 상태로 둔다.
 
-        The box is moved from _boxes to _warm_pool; _thread_boxes entries are
-        cleared so the thread no longer holds an active reference. The VM is
-        NOT stopped unless shutdown has already begun.
+        box를 _boxes에서 _warm_pool로 옮기고, _thread_boxes 항목을 지워 thread가 더 이상
+        활성 참조를 갖지 않게 한다. shutdown이 이미 시작된 경우가 아니면 VM은 중지하지 않는다.
         """
         close_box: BoxliteBox | None = None
         with self._lock:
@@ -483,19 +479,19 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
             logger.info("Released sandbox %s to warm pool (VM still running)", sandbox_id)
 
     def _reclaim_warm_pool(self, sandbox_id: str, expected_key: tuple[str, str]) -> str | None:
-        """Try to reclaim a warm-pool box by sandbox_id.
+        """sandbox_id로 warm-pool box 회수를 시도한다.
 
-        Returns sandbox_id on success, None if not found or dead.
+        성공하면 sandbox_id를, 없거나 죽었으면 None을 반환한다.
 
-        Only boxes that *this provider instance* placed in the warm pool via
-        ``release()`` may skip the health check when reclaimed shortly after
-        release; startup-adopted/orphaned boxes always validate before reuse.
+        *이 provider 인스턴스*가 ``release()``로 warm pool에 넣은 box만, 반납 직후에
+        회수될 때 health check를 건너뛸 수 있다. startup에서 인수했거나 orphan이었던 box는
+        재사용 전에 항상 검증한다.
         """
 
         with self._lock:
             if sandbox_id not in self._warm_pool:
                 return None
-            # Startup-adopted entries have unknown identity until their first reclaim.
+            # startup에서 인수한 항목은 첫 회수 전까지 identity를 알 수 없다.
             stored_key = self._warm_pool_identity.get(sandbox_id)
             if stored_key is not None and stored_key != expected_key:
                 raise SandboxIdentityCollisionError(
@@ -508,9 +504,8 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
 
         skip_seconds = self._config.get("health_check_skip_seconds", 0.0)
         if skip_eligible and skip_seconds > 0 and (time.time() - released_at) < skip_seconds:
-            # Recently released by this provider — promote directly without a
-            # health-check round trip, but never return an adapter that this
-            # process already knows is closed.
+            # 이 provider가 방금 반납한 box라면 health check 왕복 없이 바로 승격한다.
+            # 단, 이 프로세스가 이미 닫힌 것으로 아는 adapter는 절대 반환하지 않는다.
             with self._lock:
                 current = self._warm_pool.get(sandbox_id)
                 stored_key = self._warm_pool_identity.get(sandbox_id)
@@ -524,7 +519,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
                     return None
                 warm_entry = self._warm_pool.pop(sandbox_id, None)
                 if warm_entry is None:
-                    return None  # Raced with another thread
+                    return None  # 다른 thread와 경쟁에서 밀렸다
                 self._skip_health_check_warm_ids.discard(sandbox_id)
                 self._warm_pool_identity.pop(sandbox_id, None)
                 box, _ = warm_entry
@@ -545,7 +540,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
             )
             return sandbox_id
 
-        # Health check: run a simple command to verify the VM is alive
+        # health check: 간단한 명령을 실행해 VM이 살아 있는지 확인한다
         try:
             result = box.execute_command("echo ok", timeout=5)
             if "ok" not in result:
@@ -585,7 +580,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
                 self._destroy_warm_entry(sandbox_id, warm_entry[0], reason="health_check_failed")
             return None
 
-        # Promote from warm pool to active
+        # warm pool에서 active로 승격한다
         with self._lock:
             current = self._warm_pool.get(sandbox_id)
             stored_key = self._warm_pool_identity.get(sandbox_id)
@@ -599,7 +594,7 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
                 return None
             warm_entry = self._warm_pool.pop(sandbox_id, None)
             if warm_entry is None:
-                return None  # Raced with another thread
+                return None  # 다른 thread와 경쟁에서 밀렸다
             self._skip_health_check_warm_ids.discard(sandbox_id)
             self._warm_pool_identity.pop(sandbox_id, None)
             box, _ = warm_entry
@@ -610,13 +605,12 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
         return sandbox_id
 
     def reset(self) -> None:
-        """Release tracked BoxLite VMs to this instance's warm-pool cleanup.
+        """추적 중인 BoxLite VM을 이 인스턴스의 warm-pool cleanup에 넘긴다.
 
-        ``reset_sandbox_provider()`` drops the provider singleton and calls this
-        lightweight hook so config changes take effect on the next provider
-        construction. Teardown belongs to ``shutdown()``; reset intentionally
-        leaves running VMs alive, but keeps them visible to this instance's idle
-        reaper and atexit shutdown instead of orphaning them.
+        ``reset_sandbox_provider()``는 provider singleton을 버리고 이 가벼운 hook을 호출해
+        다음 provider 생성 시 config 변경이 반영되게 한다. 실제 teardown은 ``shutdown()``의
+        몫이다. reset은 의도적으로 실행 중인 VM을 살려 두되, orphan으로 만들지 않고 이
+        인스턴스의 idle reaper와 atexit shutdown에 계속 보이게 유지한다.
         """
         with self._lock:
             now = time.time()
@@ -651,6 +645,6 @@ class BoxliteProvider(WarmPoolLifecycleMixin[BoxliteBox], SandboxProvider):
         for box in active + warm:
             try:
                 box.close()
-            except Exception as e:  # pragma: no cover - defensive
+            except Exception as e:  # pragma: no cover - 방어적 처리
                 logger.warning("Error closing BoxLite box %s during shutdown: %s", box.id, e)
         self._loop.close()

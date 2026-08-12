@@ -1,10 +1,10 @@
-"""Configuration for the custom agents management API."""
+"""커스텀 agent 관리 API 설정."""
 
 from pydantic import BaseModel, Field
 
 
 class AgentsApiConfig(BaseModel):
-    """Configuration for custom-agent and user-profile management routes."""
+    """커스텀 agent 및 사용자 프로필 관리 route 설정."""
 
     enabled: bool = Field(
         default=False,
@@ -16,17 +16,17 @@ _agents_api_config: AgentsApiConfig = AgentsApiConfig()
 
 
 def get_agents_api_config() -> AgentsApiConfig:
-    """Get the current agents API configuration."""
+    """현재 agents API 설정을 반환한다."""
     return _agents_api_config
 
 
 def set_agents_api_config(config: AgentsApiConfig) -> None:
-    """Set the agents API configuration."""
+    """agents API 설정을 지정한다."""
     global _agents_api_config
     _agents_api_config = config
 
 
 def load_agents_api_config_from_dict(config_dict: dict) -> None:
-    """Load agents API configuration from a dictionary."""
+    """dict에서 agents API 설정을 읽어 들인다."""
     global _agents_api_config
     _agents_api_config = AgentsApiConfig(**config_dict)

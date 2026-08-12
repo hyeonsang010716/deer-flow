@@ -1,8 +1,8 @@
-"""Unified tool result semantics for structured signal production.
+"""구조화된 신호 생산을 위한 통합 도구 결과 의미 체계.
 
-Every tool result that passes through ToolErrorHandlingMiddleware gets a
-``deerflow_tool_meta`` entry in additional_kwargs. Downstream consumers
-(ToolProgressMiddleware, etc.) read this key instead of parsing text.
+ToolErrorHandlingMiddleware를 거치는 모든 도구 결과는 additional_kwargs에
+``deerflow_tool_meta`` 항목을 얻는다. 하위 소비자(ToolProgressMiddleware 등)는 텍스트를
+파싱하는 대신 이 키를 읽는다.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ _PARTIAL_MARKERS = (
     "limited results",
     "truncated",
     "results may be incomplete",
-    # Tools that return status="success" with a no-results body (instead of status="error")
-    # must still be caught by stagnation detection so the model is prompted to try a different query.
+    # status="error" 대신 status="success"에 결과 없음 본문을 담아 돌려주는 도구도 정체 감지에
+    # 걸려야 모델이 다른 쿼리를 시도하도록 유도된다.
     "no results found",
     "no content found",
     "no images found",
@@ -81,30 +81,28 @@ _UNKNOWN_ERROR: dict[str, object] = {
     "recommended_next_action": "try_alternative",
 }
 
-# Tool names whose result content is a *rendered remote page* rather than a tool's
-# own message. Name-based, mirroring ToolResultSanitizationMiddleware's
-# _REMOTE_CONTENT_TOOL_NAMES: the first-party fetch providers all normalize to
-# ``web_fetch`` (see community/*/tools.py), so the gate stays provider-agnostic.
-# The gate is required because normalize_tool_message() runs for *every* tool —
-# a short "not found" line is legitimate output from many of them.
-# ``web_capture`` is deliberately absent: its result is a tool message about an
-# artifact ("Captured screenshot: <path> (warning: ...)"), not a rendered page, so
-# a title rule cannot apply. A dead-target capture still yields the artifact plus a
-# model-visible warning; stamping it belongs to the provider boundary (#4239).
+# 결과 내용이 도구 자신의 메시지가 아니라 *렌더링된 원격 페이지*인 도구 이름들.
+# ToolResultSanitizationMiddleware의 _REMOTE_CONTENT_TOOL_NAMES와 마찬가지로 이름 기반이다.
+# 자체 fetch provider는 모두 ``web_fetch``로 정규화되므로(community/*/tools.py 참고) 이
+# gate는 provider와 무관하게 동작한다. normalize_tool_message()가 *모든* 도구에 대해 돌기
+# 때문에 gate가 필요하다. 짧은 "not found" 줄은 많은 도구에서 정상 출력이다.
+# ``web_capture``는 의도적으로 빠져 있다. 그 결과는 렌더링된 페이지가 아니라 artifact에 대한
+# 도구 메시지("Captured screenshot: <path> (warning: ...)")라 title 규칙을 적용할 수 없다.
+# 죽은 대상을 캡처해도 artifact와 모델이 볼 수 있는 경고는 나오며, 그 표시는 provider 경계의
+# 몫이다(#4239).
 _PAGE_CONTENT_TOOL_NAMES: frozenset[str] = frozenset({"web_fetch"})
 
-# Category attributes reused by the error-shell path, indexed by the error_type
-# _ERROR_RULES already declares. Derived rather than duplicated so a shell can
-# never drift from the recoverable/next-action contract of its own category.
+# error-shell 경로가 재사용하는 카테고리 속성. _ERROR_RULES가 이미 선언한 error_type으로
+# 색인한다. 복제가 아니라 파생이라, shell이 자기 카테고리의 recoverable/next-action 계약과
+# 어긋날 수 없다.
 _ATTRS_BY_ERROR_TYPE: dict[str, dict[str, object]] = {str(attrs["error_type"]): attrs for _keywords, attrs in _ERROR_RULES}
 
-# Reason phrases (RFC 9110 §15 plus the wording real servers ship) mapped onto the
-# error_type they already have in _ERROR_RULES. Restricted to the statuses a fetch
-# actually lands on as a rendered page. The 5xx split mirrors _ERROR_RULES' own:
-# 500/501 sit with its "500"/"internal error" keywords (internal → stop), while
-# 502/503/504 sit with its "timeout"/"temporarily unavailable" keywords (transient
-# → try_alternative) — a gateway error is the try-a-different-source case, and the
-# same words must not classify differently here than through _classify_error_text.
+# reason 문구(RFC 9110 §15 및 실제 서버가 쓰는 표현)를 _ERROR_RULES가 이미 가진 error_type에
+# 매핑한다. fetch가 렌더링된 페이지로 실제 마주치는 status로 한정한다. 5xx 분할은
+# _ERROR_RULES와 같다. 500/501은 "500"/"internal error" 키워드 쪽(internal → stop),
+# 502/503/504는 "timeout"/"temporarily unavailable" 키워드 쪽(transient → try_alternative)이다.
+# gateway 오류는 다른 출처를 시도해야 하는 경우이고, 같은 단어가 _classify_error_text를 거칠
+# 때와 여기서 다르게 분류되면 안 된다.
 _ERROR_SHELL_PHRASES: dict[str, str] = {
     "unauthorized": "auth",
     "proxy authentication required": "auth",
@@ -121,29 +119,27 @@ _ERROR_SHELL_PHRASES: dict[str, str] = {
     "gateway timeout": "transient",
 }
 
-# Generic subject nouns a server may prefix onto the reason phrase ("Page not found",
-# IIS's "404 - File or directory not found."). Stripped from the *front* only, so any
-# word left over after the phrase still rejects the title.
+# 서버가 reason 문구 앞에 붙일 수 있는 일반 명사들("Page not found", IIS의
+# "404 - File or directory not found."). *앞쪽*에서만 제거하므로 문구 뒤에 남는 단어가
+# 하나라도 있으면 그 title은 거른다.
 _STATUS_TITLE_FILLER: frozenset[str] = frozenset({"http", "error", "page", "the", "file", "or", "directory", "url", "resource"})
 
 
-# Pre-compiled at module load from _ERROR_RULES. Anchoring bare numeric codes (401, 403, 404,
-# 500) to word boundaries prevents substring hits on unrelated numbers like "took 500ms".
-# Computed here (after _ERROR_RULES) so the set is authoritative and thread-safe — no lazy
-# writes on the hot classification path.
+# 모듈 로드 시 _ERROR_RULES에서 미리 컴파일한다. 숫자 코드(401, 403, 404, 500)를 단어 경계에
+# 고정해 "took 500ms" 같은 무관한 숫자에 부분 일치하지 않게 한다. _ERROR_RULES 뒤에서 계산해
+# 이 집합이 유일한 기준이자 thread-safe가 되게 하고, 분류 hot path에서 지연 쓰기를 없앤다.
 _NUMERIC_KW_RE: dict[str, re.Pattern[str]] = {kw: re.compile(rf"\b{kw}\b") for rule_keywords, _ in _ERROR_RULES for kw in rule_keywords if kw.isdigit()}
 
 _SEMANTIC_ZERO_ERROR_STRINGS: frozenset[str] = frozenset({"none", "null", "false", "no", "ok", "success", "n/a", ""})
 
 
 def _extract_json_error_text(content: str) -> str | None:
-    """Return the error string from a JSON-wrapped error like {"error": "...", "query": "..."}.
+    """{"error": "...", "query": "..."} 같은 JSON 포장 오류에서 error 문자열을 반환한다.
 
-    Returns None when the ``error`` field is falsy (JSON null / 0 / false / empty
-    string) or is a sentinel string that conventionally means "no error" (e.g.
-    ``"none"``, ``"null"``, ``"false"``).  This prevents tools that return
-    ``{"error": "none", "results": [...]}`` on success from being misclassified
-    as errors.
+    ``error`` 필드가 falsy(JSON null / 0 / false / 빈 문자열)이거나 관례상 "오류 없음"을
+    뜻하는 sentinel 문자열(예: ``"none"``, ``"null"``, ``"false"``)이면 None을 반환한다.
+    성공 시 ``{"error": "none", "results": [...]}``를 돌려주는 도구가 오류로 잘못 분류되는
+    것을 막는다.
     """
     try:
         data = json.loads(content)
@@ -154,14 +150,14 @@ def _extract_json_error_text(content: str) -> str | None:
         return None
     if isinstance(error, str) and error.lower().strip() in _SEMANTIC_ZERO_ERROR_STRINGS:
         return None
-    # Serialize non-string values to JSON so _classify_error_text sees a predictable
-    # format (e.g. {"error": 404} → "404", {"error": [...]} → "[...]") instead of
-    # Python repr which can spuriously match keyword rules like "missing required".
+    # 문자열이 아닌 값은 JSON으로 직렬화해 _classify_error_text가 예측 가능한 형태를 보게 한다
+    # (예: {"error": 404} → "404", {"error": [...]} → "[...]"). Python repr을 쓰면
+    # "missing required" 같은 키워드 규칙에 잘못 걸릴 수 있다.
     return error if isinstance(error, str) else json.dumps(error)
 
 
 def _match_keyword(kw: str, lower: str) -> bool:
-    """Match a keyword against lowercased text, using word boundaries for numeric codes."""
+    """소문자 텍스트에 키워드를 매칭한다. 숫자 코드는 단어 경계를 적용한다."""
     if kw.isdigit():
         return bool(_NUMERIC_KW_RE[kw].search(lower))
     return kw in lower
@@ -176,26 +172,24 @@ def _classify_error_text(text: str) -> dict[str, object]:
 
 
 def _classify_error_shell(msg: ToolMessage, content: str) -> dict[str, object] | None:
-    """Return category attributes when a fetched page is an HTTP error page.
+    """가져온 페이지가 HTTP 오류 페이지일 때 카테고리 속성을 반환한다.
 
-    A fetch of a missing URL succeeds at the transport layer, so none of the branches
-    above apply and the server's error page reaches the model stamped
-    ``status="success"`` — counted as evidence it never contained (issue #4273).
+    없는 URL을 fetch해도 transport 계층에서는 성공하므로 위의 어떤 분기에도 걸리지 않고,
+    서버의 오류 페이지가 ``status="success"``로 표시된 채 모델에 도달한다. 담고 있지도 않은
+    근거로 집계되는 셈이다(issue #4273).
 
-    The signal is the *extracted title*: error pages from nginx / Apache / IIS /
-    Cloudflare all render with the status line as their heading and only server
-    boilerplate as the body ("# 404 Not Found" over "nginx/1.24.0"). Matching is by
-    equality after normalization, never substring, so a document merely *about* a
-    status keeps its title's other words and is rejected: "404 Ways to Cook Rice" and
-    "Not Found: a short history of the 404" both survive as successes.
+    신호는 *추출된 title*이다. nginx / Apache / IIS / Cloudflare의 오류 페이지는 모두 status
+    줄을 제목으로 렌더링하고 본문에는 서버 상용구만 담는다("# 404 Not Found" 아래
+    "nginx/1.24.0"). 매칭은 정규화 후 부분 일치가 아니라 완전 일치이므로, 단지 어떤 status에
+    *관한* 문서는 title의 다른 단어가 남아 걸러진다. "404 Ways to Cook Rice"와
+    "Not Found: a short history of the 404"는 모두 success로 살아남는다.
 
-    Content length deliberately plays no part — measured against real error pages it
-    does not separate (an IIS 404 renders to 193 chars, a genuine article to 202).
+    콘텐츠 길이는 의도적으로 쓰지 않는다. 실제 오류 페이지로 측정해 보면 구분되지 않는다
+    (IIS 404는 193자, 진짜 기사는 202자로 렌더링됐다).
 
-    This is the provider-agnostic fallback only. The authoritative signal is the
-    provider's own status code, which stays at the web_fetch boundary (Browserless
-    surfaces ``X-Response-Code`` per #4239); a page whose title is not a status line
-    remains that layer's job.
+    이것은 provider와 무관한 fallback일 뿐이다. 기준이 되는 신호는 provider 자신의 status
+    code이고 그것은 web_fetch 경계에 남는다(Browserless는 #4239에 따라 ``X-Response-Code``를
+    노출한다). title이 status 줄이 아닌 페이지는 그 계층의 몫이다.
     """
     if msg.name not in _PAGE_CONTENT_TOOL_NAMES:
         return None
@@ -206,14 +200,14 @@ def _classify_error_shell(msg: ToolMessage, content: str) -> dict[str, object] |
 
 
 def _as_status_line(title: str) -> str | None:
-    """Reduce a page title to its bare reason phrase, or None if it carries content.
+    """페이지 title을 순수 reason 문구로 줄인다. 내용이 남아 있으면 None을 반환한다.
 
     "404 Not Found" -> "not found"; "404 - File or directory not found." -> "not found";
-    "404 Ways to Cook Rice" -> "ways to cook rice" (words survive, so it is a document).
+    "404 Ways to Cook Rice" -> "ways to cook rice"(단어가 남으므로 문서다).
     """
     words = re.sub(r"[^0-9a-z]+", " ", title.lower()).split()
-    # Strip leading status codes and generic nouns in either order — servers write both
-    # "404 - File or directory not found" and "HTTP Error 404 - Not Found".
+    # 앞의 status code와 일반 명사를 순서와 무관하게 제거한다. 서버는
+    # "404 - File or directory not found"와 "HTTP Error 404 - Not Found"를 모두 쓴다.
     while words and (words[0] in _STATUS_TITLE_FILLER or (len(words[0]) == 3 and words[0].isdigit() and 400 <= int(words[0]) <= 599)):
         words = words[1:]
     return " ".join(words) or None
@@ -230,11 +224,10 @@ def _make_meta(*, status: str, source: str, error_type: str | None = None, recov
 
 
 def stamp_exception_meta(msg: ToolMessage, exc_info: str) -> ToolMessage:
-    """Stamp deerflow_tool_meta with source='exception' onto an exception-derived ToolMessage.
+    """예외에서 파생된 ToolMessage에 source='exception'인 deerflow_tool_meta를 찍는다.
 
-    Unlike normalize_tool_message (which preserves existing stamps), this function always
-    overwrites any pre-existing TOOL_META_KEY entry.  Exception-derived classification is
-    more authoritative than a tool's own return-time stamp.
+    기존 표시를 보존하는 normalize_tool_message와 달리, 이 함수는 이미 있는 TOOL_META_KEY
+    항목을 항상 덮어쓴다. 예외 기반 분류가 도구 자신의 반환 시점 표시보다 우선한다.
     """
     attrs = _classify_error_text(exc_info)
     updated_kwargs = dict(msg.additional_kwargs or {})
@@ -244,30 +237,30 @@ def stamp_exception_meta(msg: ToolMessage, exc_info: str) -> ToolMessage:
 
 
 def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
-    """Attach deerflow_tool_meta to a ToolMessage if not already present."""
+    """아직 없으면 ToolMessage에 deerflow_tool_meta를 붙인다."""
     existing = (msg.additional_kwargs or {}).get(TOOL_META_KEY)
     if existing is not None:
         return msg
 
     content = msg.content if isinstance(msg.content, str) else ""
-    # Pre-compute once; reused by the partial-success marker check below to avoid calling
-    # content.lower() once per _PARTIAL_MARKERS entry inside the generator.
+    # 한 번만 계산해 아래 partial-success 마커 검사에서 재사용한다. 그러지 않으면 generator
+    # 안에서 _PARTIAL_MARKERS 항목마다 content.lower()를 호출하게 된다.
     content_lower = content.lower()
 
-    # Non-standard error: tool returned status="error" without the "Error:" prefix convention.
-    # (Actual exceptions from ToolErrorHandlingMiddleware are pre-stamped by stamp_exception_meta
-    # and exit early above — they never reach this branch.)
-    # Try JSON extraction first so classification uses only the "error" field value, not
-    # keywords that appear incidentally in other JSON fields (e.g. "query").
+    # 비표준 오류: 도구가 "Error:" 접두사 관례 없이 status="error"를 반환한 경우다.
+    # (ToolErrorHandlingMiddleware의 실제 예외는 stamp_exception_meta가 미리 표시하고 위에서
+    # 조기 반환하므로 이 분기에 오지 않는다.)
+    # 먼저 JSON 추출을 시도해 다른 JSON 필드(예: "query")에 우연히 들어간 키워드가 아니라
+    # "error" 필드 값만으로 분류하게 한다.
     if msg.status == "error" and not content.startswith(_ERROR_PREFIX):
         json_error = _extract_json_error_text(content)
         if json_error is not None:
             attrs = _classify_error_text(json_error)
         else:
-            # Determine whether content is a JSON object that simply has no 'error' key.
-            # If so, do NOT classify from the raw JSON string — incidental field values
-            # (e.g. {"user_id": 401}) would spuriously match keyword rules and hard-block
-            # the tool.  Classify raw text only when the content is not valid JSON.
+            # content가 단지 'error' 키가 없는 JSON 객체인지 판단한다. 그렇다면 raw JSON
+            # 문자열로 분류하면 안 된다. 부수적인 필드 값(예: {"user_id": 401})이 키워드
+            # 규칙에 잘못 걸려 도구를 차단할 수 있다. 유효한 JSON이 아닐 때만 원문 텍스트로
+            # 분류한다.
             try:
                 is_json_dict = isinstance(json.loads(content), dict)
             except (json.JSONDecodeError, ValueError):
@@ -298,7 +291,7 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
 
 
 def normalize_tool_result(result: ToolMessage | Command) -> ToolMessage | Command:
-    """Normalize a tool result, handling Command wrappers transparently."""
+    """도구 결과를 정규화한다. Command wrapper도 그대로 처리한다."""
     if isinstance(result, ToolMessage):
         return normalize_tool_message(result)
     return result

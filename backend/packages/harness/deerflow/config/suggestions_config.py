@@ -5,7 +5,7 @@ MAX_SUGGESTIONS_LIMIT = 5
 
 
 class SuggestionsConfig(BaseModel):
-    """Configuration for automatic follow-up suggestions."""
+    """자동 후속 질문 제안 설정."""
 
     enabled: bool = Field(default=True, description="Whether to enable follow-up question suggestions at the end of an AI response")
     max_suggestions: int = Field(

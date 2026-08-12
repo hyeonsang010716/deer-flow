@@ -1,8 +1,8 @@
-"""Pure Rich renderers for the transcript, status line and header.
+"""transcript, status line, header를 그리는 순수 Rich 렌더러.
 
-These take a :class:`ViewState` (plus light session info) and return Rich
-renderables. No Textual import, so they can be unit-tested by rendering to a
-Rich ``Console`` and inspecting the text.
+:class:`ViewState`(와 가벼운 session 정보)를 받아 Rich renderable을 반환한다. Textual을
+import하지 않으므로 Rich ``Console``에 렌더링하고 텍스트를 확인하는 방식으로 단위 테스트할 수
+있다.
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ def render_transcript(state: ViewState) -> RenderableType:
     if not state.rows:
         return Text(_EMPTY_HINT, style=f"italic {THEME.dim}")
 
-    # Only the message being generated right now renders as plain text (to avoid
-    # Markdown reflow jumpiness). Every other message — all history — renders as
-    # Markdown, so a follow-up turn never reverts prior answers to raw text.
+    # 지금 생성 중인 메시지만 평문으로 렌더링한다(Markdown 리플로로 화면이 튀는 것을 피하기
+    # 위해서다). 나머지 메시지, 즉 모든 히스토리는 Markdown으로 렌더링하므로 다음 턴이 이전
+    # 답변을 raw 텍스트로 되돌리는 일이 없다.
     blocks: list[RenderableType] = []
     for row in state.rows:
         streaming_now = state.streaming and isinstance(row, AssistantRow) and row.id is not None and row.id == state.streaming_id
         blocks.append(render_row(row, as_markdown=not streaming_now))
-        blocks.append(Text(""))  # one blank line between blocks for breathing room
+        blocks.append(Text(""))  # 블록 사이에 여백용 빈 줄 하나
     return Group(*blocks[:-1])
 
 
@@ -63,10 +63,10 @@ def render_row(row: Row, *, as_markdown: bool = True) -> RenderableType:
 
 
 def _assistant_markdown(text: str) -> RenderableType:
-    """A ``●`` speaker marker aligned to the top of the Markdown-rendered body."""
+    """Markdown으로 렌더링된 본문 상단에 정렬된 ``●`` 화자 표시."""
     grid = Table.grid(padding=(0, 1, 0, 0))
-    grid.add_column(width=1, vertical="top")  # marker
-    grid.add_column(ratio=1)  # markdown body
+    grid.add_column(width=1, vertical="top")  # 표시자
+    grid.add_column(ratio=1)  # markdown 본문
     grid.add_row(
         Text(SYMBOLS["assistant"], style=f"bold {THEME.assistant}"),
         Markdown(text),
@@ -114,7 +114,7 @@ def render_status(state: ViewState, *, model: str, thread_label: str, spinner: s
 
 
 def render_palette(items, index: int, limit: int = 8) -> RenderableType:
-    """Render the slash-command picker: a windowed list with one highlighted row."""
+    """slash 명령 선택기를 그린다. 한 행이 강조된, 창 단위로 잘린 목록이다."""
     if not items:
         return Text("")
     index = max(0, min(index, len(items) - 1))

@@ -1,13 +1,12 @@
 """
-Web and image search tools powered by the Brave Search API.
+Brave Search API 기반 웹/이미지 검색 도구.
 
-Brave Search provides web and image results from an independent search index
-via a REST API. An API key is required. Sign up at
-https://brave.com/search/api/ to get one.
+Brave Search는 독립적인 검색 인덱스의 웹/이미지 결과를 REST API로 제공한다.
+API key가 필요하며 https://brave.com/search/api/ 에서 발급받는다.
 
-Unlike the DuckDuckGo ``backend: brave`` option (which scrapes results via the
-DDGS aggregator), this provider calls the official Brave Search API directly,
-giving structured results, authenticated quota, and a documented SLA.
+DDGS aggregator로 결과를 스크래핑하는 DuckDuckGo의 ``backend: brave`` 옵션과 달리,
+이 provider는 공식 Brave Search API를 직접 호출한다. 구조화된 결과, 인증된 quota,
+문서화된 SLA를 얻는다.
 """
 
 import json
@@ -26,11 +25,11 @@ logger = logging.getLogger(__name__)
 _BRAVE_WEB_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 _BRAVE_IMAGES_ENDPOINT = "https://api.search.brave.com/res/v1/images/search"
 _DEFAULT_MAX_RESULTS = 5
-# Brave Search API caps the `count` parameter at 20 results per request.
+# Brave Search API는 `count` 파라미터를 요청당 20개 결과로 제한한다.
 _BRAVE_WEB_MAX_COUNT = 20
-# Brave Image Search supports larger batches than web search.
+# Brave Image Search는 웹 검색보다 큰 배치를 지원한다.
 _BRAVE_IMAGE_MAX_COUNT = 200
-# NAT64 well-known prefix (RFC 6052): IPv6 literals embedding an IPv4 address.
+# NAT64 well-known prefix(RFC 6052). IPv4 주소를 품은 IPv6 리터럴이다.
 _NAT64_PREFIX = ip_network("64:ff9b::/96")
 _api_key_warned: set[str] = set()
 
@@ -94,11 +93,10 @@ def _unexpected_format_error(query: str, *, service_name: str = "Brave Search") 
 
 
 def _decode_ipv4(host: str) -> IPv4Address | None:
-    """Decode obfuscated IPv4 literals that ``ip_address`` rejects.
+    """``ip_address``가 거부하는 난독화된 IPv4 리터럴을 디코딩한다.
 
-    Mirrors the permissive ``inet_aton`` parsing many HTTP clients use, so that
-    integer (``2130706433``), hex (``0x7f000001``) and octal (``0177.0.0.1``)
-    encodings of an address are recognized.
+    많은 HTTP client가 쓰는 관대한 ``inet_aton`` 파싱을 흉내 내어 정수(``2130706433``),
+    16진수(``0x7f000001``), 8진수(``0177.0.0.1``) 표기를 모두 인식한다.
     """
     parts = host.split(".")
     if not 1 <= len(parts) <= 4:
@@ -138,12 +136,12 @@ def _is_url_present(value: object) -> bool:
 
 
 def _embedded_ipv4(ip: IPv6Address) -> IPv4Address | None:
-    """Extract an IPv4 address embedded in an IPv6 literal, if any.
+    """IPv6 리터럴에 박혀 있는 IPv4 주소가 있으면 꺼낸다.
 
-    Covers IPv4-mapped (``::ffff:a.b.c.d``), 6to4 (``2002::/16``), NAT64
-    (``64:ff9b::/96``), and IPv4-compatible (``::a.b.c.d``) forms. These all
-    smuggle a v4 destination through the IPv6 path, where ``is_global`` on the
-    v6 literal alone would otherwise report a loopback/private target as safe.
+    IPv4-mapped(``::ffff:a.b.c.d``), 6to4(``2002::/16``), NAT64(``64:ff9b::/96``),
+    IPv4-compatible(``::a.b.c.d``) 형태를 모두 다룬다. 이들은 IPv6 경로로 v4 목적지를
+    숨겨 들여오며, v6 리터럴만 ``is_global``로 검사하면 loopback/사설 대상이 안전한 것으로
+    보고된다.
     """
     if ip.ipv4_mapped is not None:
         return ip.ipv4_mapped
@@ -151,7 +149,7 @@ def _embedded_ipv4(ip: IPv6Address) -> IPv4Address | None:
         return ip.sixtofour
     if ip in _NAT64_PREFIX:
         return IPv4Address(int(ip) & 0xFFFFFFFF)
-    # IPv4-compatible ``::a.b.c.d`` (high 96 bits zero, excluding ::/:: 1).
+    # IPv4-compatible ``::a.b.c.d`` (상위 96비트가 0이며 ::/::1은 제외).
     packed = int(ip)
     if packed >> 32 == 0 and packed > 1:
         return IPv4Address(packed & 0xFFFFFFFF)
@@ -159,14 +157,12 @@ def _embedded_ipv4(ip: IPv6Address) -> IPv4Address | None:
 
 
 def _safe_public_url(value: object) -> str:
-    """Return ``value`` only if it is a safe, public http(s) URL, else "".
+    """``value``가 안전한 공개 http(s) URL일 때만 그대로 반환하고, 아니면 ""를 반환한다.
 
-    This is a best-effort SSRF guard that rejects non-http(s) schemes,
-    ``localhost``, and private/non-global IP literals (including obfuscated
-    decimal/hex/octal encodings and IPv6 literals embedding a non-global IPv4).
-    It only inspects the URL string and cannot catch public hostnames that
-    resolve to internal IPs; any consumer that actually downloads these URLs
-    must re-validate the resolved IP at fetch time.
+    best-effort SSRF 방어다. http(s)가 아닌 scheme, ``localhost``, 사설/비공개 IP 리터럴
+    (난독화된 10/16/8진수 표기와 비공개 IPv4를 품은 IPv6 리터럴 포함)을 거부한다.
+    URL 문자열만 검사하므로 내부 IP로 resolve되는 공개 hostname은 잡지 못한다. 이 URL을
+    실제로 다운로드하는 쪽은 fetch 시점에 resolve된 IP를 다시 검증해야 한다.
     """
     if not isinstance(value, str):
         return ""
@@ -231,11 +227,11 @@ def _brave_get(
 
 @tool("web_search", parse_docstring=True)
 def web_search_tool(query: str, max_results: int = 5) -> str:
-    """Search the web for information using Brave Search.
+    """Brave Search로 웹에서 정보를 검색한다.
 
     Args:
-        query: Search keywords describing what you want to find. Be specific for better results.
-        max_results: Maximum number of search results to return. Default is 5.
+        query: 찾으려는 내용을 설명하는 검색 키워드. 구체적으로 쓸수록 결과가 좋아진다.
+        max_results: 반환할 최대 검색 결과 개수. 기본값은 5.
     """
     config = get_app_config().get_tool_config("web_search")
     if config is not None and "max_results" in (config.model_extra or {}):
@@ -277,13 +273,13 @@ def web_search_tool(query: str, max_results: int = 5) -> str:
 
 @tool("image_search", parse_docstring=True)
 def image_search_tool(query: str, max_results: int = 5) -> str:
-    """Search for images online using Brave Image Search. Use this tool BEFORE image generation to find reference images for characters, portraits, objects, scenes, or any content requiring visual accuracy.
+    """Brave Image Search로 온라인 이미지를 검색한다. 인물, 초상, 사물, 장면 등 시각적 정확도가 필요한 콘텐츠의 레퍼런스 이미지를 찾으려면 이미지를 생성하기 전에 반드시 이 도구를 사용하라.
 
-    The returned image URLs can be used as reference images in image generation to significantly improve quality.
+    반환된 이미지 URL은 이미지 생성 시 레퍼런스 이미지로 사용할 수 있으며, 품질을 크게 향상시킨다.
 
     Args:
-        query: Search keywords describing the images you want to find. Be specific for better results.
-        max_results: Maximum number of images to return. Default is 5, capped at 200.
+        query: 찾으려는 이미지를 설명하는 검색 키워드. 구체적으로 쓸수록 결과가 좋아진다.
+        max_results: 반환할 최대 이미지 개수. 기본값은 5이고 최대 200으로 제한된다.
     """
     config = get_app_config().get_tool_config("image_search")
     extra = (config.model_extra or {}) if config is not None else {}
@@ -334,9 +330,8 @@ def image_search_tool(query: str, max_results: int = 5) -> str:
         safe_thumb = _safe_public_url(raw_thumb)
         safe_source = _safe_public_url(raw_source)
 
-        # Surface a URL and remember which dict it came from, so the reported
-        # width/height describe the URL we actually return rather than a
-        # dropped one.
+        # URL을 노출하면서 그 URL이 어느 dict에서 왔는지 함께 기억한다. 그래야 보고되는
+        # width/height가 버려진 URL이 아니라 실제로 반환하는 URL을 설명한다.
         if safe_image:
             image_url, image_dims = safe_image, properties
         elif not _is_url_present(raw_image):

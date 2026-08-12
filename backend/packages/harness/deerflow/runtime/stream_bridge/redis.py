@@ -1,4 +1,4 @@
-"""Redis Streams-backed stream bridge."""
+"""Redis Streams 기반 stream bridge."""
 
 from __future__ import annotations
 
@@ -13,11 +13,10 @@ from typing import Any
 try:
     from redis.asyncio import Redis
     from redis.exceptions import RedisError, ResponseError
-except ImportError:  # pragma: no cover - only hit when the optional extra is missing
-    # ``redis`` is an optional extra (mirrors the ``postgres``/asyncpg path in
-    # persistence/engine.py). This module is imported lazily from
-    # ``make_stream_bridge`` only when ``stream_bridge.type == "redis"``, so the
-    # hint surfaces exactly when a Redis bridge is requested without the package.
+except ImportError:  # pragma: no cover - optional extra가 없을 때만 도달한다
+    # ``redis``는 optional extra다(persistence/engine.py의 ``postgres``/asyncpg 경로와 동일).
+    # 이 모듈은 ``stream_bridge.type == "redis"``일 때만 ``make_stream_bridge``에서 lazy하게
+    # import되므로, 패키지 없이 Redis bridge를 요청한 경우에만 이 안내가 노출된다.
     raise ImportError(
         "stream_bridge.type is set to 'redis' but the redis package is not installed.\n"
         "Install it with:\n"
@@ -35,25 +34,23 @@ _KIND_EVENT = "event"
 _KIND_END = "end"
 _REDIS_STREAM_ID_RE = re.compile(r"\d+(-\d+)?")
 
-# Batch size for ``XREAD``. Reading more than one entry per round-trip collapses
-# a large ``Last-Event-ID`` replay into far fewer calls; live tailing still
-# yields each event as it arrives because the consume loop returns mid-batch on
-# the end marker.
+# ``XREAD``의 batch 크기. round-trip마다 여러 entry를 읽으면 큰 ``Last-Event-ID`` replay가
+# 훨씬 적은 호출로 줄어든다. consume loop가 end marker에서 batch 중간에 반환하므로 live tailing은
+# 여전히 이벤트가 도착하는 즉시 하나씩 내보낸다.
 _XREAD_COUNT = 64
 
-# Maximum consecutive transient Redis errors (``ConnectionError``,
-# ``TimeoutError``, etc.) tolerated during ``subscribe`` before the error
-# propagates to the caller.  Brief blips are retried with exponential backoff
-# capped at ``heartbeat_interval``.
+# ``subscribe`` 중 에러가 호출자에게 전파되기 전까지 허용하는 연속 일시적 Redis 에러
+# (``ConnectionError``, ``TimeoutError`` 등)의 최대 횟수. 짧은 장애는 ``heartbeat_interval``로
+# 상한이 걸린 지수 backoff로 retry한다.
 _MAX_SUBSCRIBE_RETRIES = 3
 
 
 class RedisStreamBridge(StreamBridge):
-    """Per-run stream bridge backed by Redis Streams.
+    """Redis Streams로 구현한 run 단위 stream bridge.
 
-    Each run is stored in one Redis Stream and subscribers read directly with
-    ``XREAD``.  This keeps the SSE bridge usable across multiple gateway
-    worker processes while preserving ``Last-Event-ID`` replay semantics.
+    각 run은 하나의 Redis Stream에 저장되고 subscriber는 ``XREAD``로 직접 읽는다. 덕분에 SSE
+    bridge를 여러 gateway worker 프로세스에서 사용할 수 있으면서도 ``Last-Event-ID`` replay
+    의미가 유지된다.
     """
 
     supports_cross_process = True
@@ -75,9 +72,9 @@ class RedisStreamBridge(StreamBridge):
             self._stream_ttl_seconds = stream_ttl_seconds
         else:
             self._stream_ttl_seconds = None
-        # Each live SSE subscriber holds one pooled connection blocked in
-        # ``XREAD ... BLOCK`` for up to ``heartbeat_interval``. ``max_connections``
-        # caps that pool; ``None`` keeps redis-py's effectively-unbounded default.
+        # 활성 SSE subscriber는 각각 pool 연결 하나를 ``XREAD ... BLOCK``으로 최대
+        # ``heartbeat_interval``까지 붙잡는다. ``max_connections``가 그 pool의 상한이며,
+        # ``None``이면 redis-py의 사실상 무제한 기본값을 쓴다.
         self._redis = client if client is not None else Redis.from_url(redis_url, decode_responses=True, max_connections=max_connections)
         self._owns_client = client is None
 
@@ -176,7 +173,7 @@ class RedisStreamBridge(StreamBridge):
         )
 
     async def publish_end(self, run_id: str) -> None:
-        # Keep the configured number of data events plus the internal end marker.
+        # 설정된 개수의 data 이벤트에 내부 end marker 하나를 더해 보관한다.
         key = self._stream_key(run_id)
         await self._xadd_retained(
             key,
@@ -185,7 +182,7 @@ class RedisStreamBridge(StreamBridge):
         )
 
     async def stream_exists(self, run_id: str) -> bool:
-        """Return whether Redis still has retained stream data for *run_id*."""
+        """Redis에 *run_id*의 stream 데이터가 아직 남아 있는지 반환한다."""
         return bool(await self._redis.exists(self._stream_key(run_id)))
 
     async def _resolve_start_stream_id(self, key: str, last_event_id: str | None) -> str:
@@ -207,13 +204,12 @@ class RedisStreamBridge(StreamBridge):
         key: str,
         stream_id: str,
     ) -> tuple[list[Any], list[Any], list[Any]]:
-        """Atomically read retained bounds and entries after ``stream_id``.
+        """보관 경계와 ``stream_id`` 이후의 entry를 원자적으로 읽는다.
 
-        A blocking ``XREAD`` cannot participate in a Redis transaction. Live
-        subscribers therefore use this non-blocking atomic snapshot for
-        correctness, and a separate blocking read only as a wake-up signal.
-        This deliberately adds a three-command pipeline per poll (and a second
-        round trip while idle) so retained-bound checks cannot race with reads.
+        blocking ``XREAD``는 Redis 트랜잭션에 참여할 수 없다. 그래서 live subscriber는 정확성을
+        위해 이 non-blocking 원자적 snapshot을 쓰고, 별도의 blocking read는 wake-up 신호로만
+        쓴다. 보관 경계 확인이 read와 경합하지 않도록 poll마다 3-command pipeline(및 idle 중
+        두 번째 round trip)을 의도적으로 추가한다.
         """
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.xrange(key, count=1)
@@ -244,18 +240,17 @@ class RedisStreamBridge(StreamBridge):
                 if pending_initial_tail_id is None:
                     pending_initial_response = None
                 else:
-                    # The first blocking XREAD began against a proven-empty
-                    # stream. Its response is a provisional live baseline, not
-                    # yet client-visible data. Validate that baseline against
-                    # the retained watermark before yielding any of it.
+                    # 첫 blocking XREAD는 비어 있음이 확인된 stream을 대상으로 시작했다. 그
+                    # 응답은 잠정적인 live baseline일 뿐 아직 클라이언트에 보이는 데이터가
+                    # 아니다. 하나라도 내보내기 전에 보관 watermark와 대조해 검증한다.
                     snapshot_stream_id = pending_initial_tail_id
 
             try:
                 earliest_entries, latest_entries, response = await self._read_retained_snapshot(key, snapshot_stream_id)
             except ResponseError:
-                # Last-Event-ID is client-controlled and validated before XREAD.
-                # If Redis still rejects the id, fail instead of resetting to
-                # 0-0, which would replay the whole retained buffer on reconnect.
+                # Last-Event-ID는 클라이언트가 지정하며 XREAD 전에 검증된다. 그럼에도 Redis가
+                # id를 거부하면 0-0으로 되돌리지 않고 실패시킨다. 되돌리면 재연결 때 보관
+                # buffer 전체가 replay되기 때문이다.
                 logger.warning(
                     "Redis rejected stream id %r for stream bridge subscription",
                     snapshot_stream_id,
@@ -277,11 +272,10 @@ class RedisStreamBridge(StreamBridge):
                 await asyncio.sleep(delay)
                 continue
             else:
-                # A non-empty snapshot is forward progress. For an empty
-                # snapshot, keep any preceding wake-up failure count until the
-                # blocking XREAD itself succeeds; otherwise a permanently
-                # failing blocking read could retry forever because the
-                # non-blocking transaction succeeds between attempts.
+                # 비어 있지 않은 snapshot은 진전이다. 빈 snapshot이면 blocking XREAD 자체가
+                # 성공할 때까지 앞선 wake-up 실패 횟수를 유지한다. 그렇지 않으면 non-blocking
+                # 트랜잭션이 시도 사이에 성공하기 때문에, 영구적으로 실패하는 blocking read가
+                # 무한히 retry될 수 있다.
                 if response:
                     consecutive_errors = 0
 
@@ -346,10 +340,9 @@ class RedisStreamBridge(StreamBridge):
                 if not wake_response:
                     yield HEARTBEAT_SENTINEL
                 elif last_event_id is None and not gap_detection_enabled and not earliest_entries:
-                    # Do not discard the first wake-up from a proven-empty
-                    # stream. Holding it until the next atomic bounds check
-                    # gives no-cursor subscribers the same fell-behind signal
-                    # as Memory without changing malformed-cursor live tailing.
+                    # 비어 있음이 확인된 stream에서 온 첫 wake-up은 버리지 않는다. 다음 원자적
+                    # 경계 확인까지 붙들고 있으면, cursor 없는 subscriber도 Memory와 동일한
+                    # 뒤처짐 신호를 받으면서 잘못된 cursor의 live tailing 동작은 그대로 남는다.
                     pending_initial_response = wake_response
                 continue
 

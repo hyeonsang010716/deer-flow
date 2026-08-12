@@ -1,28 +1,23 @@
-"""Deterministic read-before-write gate for file-modifying tools (issue #3857).
+"""파일을 수정하는 도구를 위한 결정적 read-before-write gate(issue #3857).
 
-The lead agent's duplicate-output failure mode (the same report section
-appended five times) came from "append-only, never read back" writes. This
-middleware enforces a version gate: modifying an existing file requires a
-``read_file`` of the file's *current* version earlier in the conversation.
+lead agent가 같은 보고서 섹션을 다섯 번 덧붙이던 중복 출력 실패는 "append만 하고 다시 읽지
+않는" 쓰기에서 비롯됐다. 이 middleware는 버전 gate를 강제한다: 기존 파일을 수정하려면 대화
+앞부분에 그 파일의 *현재* 버전에 대한 ``read_file``이 있어야 한다.
 
-Design invariants:
-- Tools stay stateless. The read mark (``sha256`` of the full file content)
-  is stamped on the ``read_file`` ToolMessage's ``additional_kwargs``, so the
-  gate's state lives in ``state["messages"]``.
-- Summarization deleting the read result deletes the mark with it — the gate
-  can never pass while the read content is gone from context.
-- Writes never refresh marks: any successful write changes the file hash and
-  therefore invalidates every earlier read, forcing a re-read between
-  consecutive modifications.
-- Gate check and tool execution are serialized per (scope, path): LangGraph
-  runs the tool calls of one AIMessage concurrently, so without a critical
-  section two same-turn writes could both pass on one stale mark before
-  either mutation lands. The same lock covers ``read_file`` + mark stamping,
-  so a mark always hashes the version the model was actually shown.
-- Fail-open: if the gate itself cannot inspect the file (sandbox hiccup,
-  binary content, or sandboxes like AIO/E2B that report read failures as
-  ``"Error: ..."`` strings instead of raising), it lets the tool run and
-  produce its own error.
+설계 불변식:
+- 도구는 stateless로 유지한다. read mark(전체 파일 내용의 ``sha256``)는 ``read_file``
+  ToolMessage의 ``additional_kwargs``에 찍히므로, gate의 state는 ``state["messages"]``에 산다.
+- summarization이 read 결과를 지우면 mark도 함께 사라진다 — read한 내용이 context에서 없어진
+  동안에는 gate가 절대 통과하지 않는다.
+- 쓰기는 mark를 갱신하지 않는다. 성공한 쓰기는 파일 hash를 바꾸므로 이전의 모든 read를
+  무효화하고, 연속된 수정 사이에 재read를 강제한다.
+- gate 확인과 도구 실행은 (scope, path) 단위로 직렬화한다. LangGraph는 한 AIMessage의 tool
+  call들을 동시에 실행하므로, critical section이 없으면 같은 턴의 두 쓰기가 어느 쪽 변경도
+  반영되기 전에 하나의 오래된 mark로 모두 통과할 수 있다. 같은 lock이 ``read_file``과 mark
+  기록도 감싸므로, mark는 항상 모델이 실제로 본 버전을 hash한다.
+- fail-open: gate 자체가 파일을 확인할 수 없으면(sandbox 일시 오류, 바이너리 내용, 또는
+  AIO/E2B처럼 read 실패를 예외 대신 ``"Error: ..."`` 문자열로 알리는 sandbox) 도구를 그대로
+  실행시켜 도구가 스스로 에러를 내게 한다.
 """
 
 import asyncio
@@ -49,9 +44,9 @@ READ_MARK_KEY = "deerflow_read_mark"
 _READ_TOOLS = frozenset({"read_file"})
 _GATED_WRITE_TOOLS = frozenset({"write_file", "str_replace"})
 
-# AIO/E2B-style sandboxes convert read failures (including missing files)
-# into "Error: ..." strings instead of raising. Content with this prefix is
-# treated as "cannot inspect" — the gate fails open and no mark is stamped.
+# AIO/E2B 계열 sandbox는 read 실패(파일 없음 포함)를 예외가 아니라 "Error: ..." 문자열로
+# 바꾼다. 이 prefix로 시작하는 내용은 "확인 불가"로 취급한다 — gate는 fail-open이 되고 mark도
+# 찍지 않는다.
 _UNINSPECTABLE_CONTENT_PREFIX = "Error:"
 
 _BLOCK_MESSAGE = (
@@ -61,10 +56,9 @@ _BLOCK_MESSAGE = (
     "before an append), check what is already there, then retry."
 )
 
-# Per-(scope, path) locks serializing gate check + tool execution. Same
-# WeakValueDictionary pattern as sandbox/file_operation_lock.py, but a
-# separate namespace: the tool-internal file lock only guards the mutation,
-# while this one also spans the authorization that precedes it.
+# gate 확인과 도구 실행을 직렬화하는 (scope, path) 단위 lock. sandbox/file_operation_lock.py와
+# 같은 WeakValueDictionary 패턴이지만 namespace는 분리한다. 도구 내부의 파일 lock은 변경만
+# 보호하지만, 이 lock은 그 앞의 권한 확인까지 함께 감싼다.
 _GATE_LOCKS: weakref.WeakValueDictionary[tuple[str, str], threading.Lock] = weakref.WeakValueDictionary()
 _GATE_LOCKS_GUARD = threading.Lock()
 
@@ -88,7 +82,7 @@ def _content_hash(content: str) -> str:
 
 
 class ReadBeforeWriteMiddleware(AgentMiddleware):
-    """Version gate: block writes to existing files not read at their current version."""
+    """버전 gate: 현재 버전을 읽지 않은 기존 파일에 대한 쓰기를 막는다."""
 
     def __init__(self, content_reader: Callable[[Any, str], str] | None = None) -> None:
         super().__init__()
@@ -108,8 +102,8 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
             with self._lock_for(request, path):
                 blocked = self._check_write_gate(request)
                 if blocked is not None:
-                    # Stamp deerflow_tool_meta so ToolProgressMiddleware can classify
-                    # the blocked write even though it bypasses ToolErrorHandlingMiddleware.
+                    # 차단된 쓰기는 ToolErrorHandlingMiddleware를 우회하므로,
+                    # ToolProgressMiddleware가 분류할 수 있도록 deerflow_tool_meta를 찍는다.
                     return normalize_tool_result(blocked)
                 return handler(request)
         if name in _READ_TOOLS:
@@ -133,9 +127,8 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
             path = self._requested_path(request)
             if path is None:
                 return await handler(request)
-            # threading.Lock may be released from a different thread than the
-            # acquiring one, so acquiring in a worker thread and releasing on
-            # the event-loop thread is safe.
+            # threading.Lock은 획득한 thread가 아닌 다른 thread에서 해제해도 되므로, worker
+            # thread에서 획득하고 event loop thread에서 해제해도 안전하다.
             lock = self._lock_for(request, path)
             await asyncio.to_thread(lock.acquire)
             try:
@@ -166,7 +159,7 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
 
     @staticmethod
     def _lock_scope(request: ToolCallRequest) -> str:
-        """Scope locks per thread (or sandbox) so unrelated agents never contend."""
+        """관련 없는 agent끼리 경합하지 않도록 lock을 thread(또는 sandbox) 단위로 구분한다."""
         context = getattr(request.runtime, "context", None)
         if isinstance(context, dict):
             thread_id = context.get("thread_id")
@@ -191,15 +184,15 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
         try:
             current = self._content_reader(request.runtime, path)
         except FileNotFoundError:
-            # write_file creates the file; str_replace surfaces its own error.
+            # write_file은 파일을 생성하고, str_replace는 자체 에러를 낸다.
             return None
         except Exception:
             logger.warning("read-before-write gate could not inspect %r; allowing the write (fail-open)", path, exc_info=True)
             return None
         if current.startswith(_UNINSPECTABLE_CONTENT_PREFIX):
-            # Error-string sandbox read channel (AIO/E2B): "missing" and
-            # "unreadable" are indistinguishable here, so fail open — creation
-            # proceeds and genuine failures surface from the tool itself.
+            # 에러 문자열을 쓰는 sandbox read 채널(AIO/E2B)에서는 "파일 없음"과 "읽기 불가"를
+            # 구분할 수 없으므로 fail-open한다 — 생성은 그대로 진행되고 실제 실패는 도구
+            # 자체에서 드러난다.
             logger.debug("read-before-write gate got an error-string read for %r; allowing the write (fail-open)", path)
             return None
         norm_path = _normalize_mark_path(path)

@@ -31,7 +31,7 @@ def _get_header(headers: Any, name: str) -> str:
 
 
 class BrowserlessClient:
-    """Client for Browserless headless Chrome API."""
+    """Browserless headless Chrome API 클라이언트."""
 
     def __init__(self, base_url: str, token: str = "", timeout_s: float = 30) -> None:
         self.base_url = base_url.rstrip("/")
@@ -48,25 +48,24 @@ class BrowserlessClient:
         reject_resource_types: list[str] | None = None,
         reject_request_pattern: list[str] | None = None,
     ) -> str:
-        """Fetch the rendered HTML of a page using Browserless.
+        """Browserless로 page의 렌더링된 HTML을 가져온다.
 
-        Public string contract: this always returns either the rendered HTML or
-        an "Error: ..." string, never a richer result object. Callers that also
-        need the target page's real status (Browserless returns HTTP 200 for the
-        render request itself even when the target page responded with a 4xx/5xx
-        or an anti-bot block page) should use fetch_html_with_status() instead.
+        공개 문자열 계약: 항상 렌더링된 HTML 또는 "Error: ..." 문자열을 반환하며, 더 풍부한
+        결과 객체를 반환하지 않는다. 대상 page의 실제 status까지 필요하면
+        fetch_html_with_status()를 쓴다. Browserless는 대상 page가 4xx/5xx나 anti-bot 차단
+        page를 응답해도 렌더 요청 자체에는 HTTP 200을 준다.
 
         Args:
-            url: The URL to fetch.
-            wait_for_event: Wait for a page event (e.g. "networkidle", "load").
-            wait_for_timeout_ms: Extra wait after page load.
-            wait_for_selector: CSS selector to wait for.
-            wait_for_selector_timeout_ms: Timeout for selector wait.
-            reject_resource_types: Resource types to block (e.g. ["image"]).
-            reject_request_pattern: URL patterns to block.
+            url: 가져올 URL.
+            wait_for_event: 기다릴 page 이벤트(예: "networkidle", "load").
+            wait_for_timeout_ms: page load 후 추가 대기 시간.
+            wait_for_selector: 기다릴 CSS selector.
+            wait_for_selector_timeout_ms: selector 대기 timeout.
+            reject_resource_types: 차단할 리소스 타입(예: ["image"]).
+            reject_request_pattern: 차단할 URL 패턴.
 
         Returns:
-            Rendered HTML content, or an "Error: ..." string on failure.
+            렌더링된 HTML. 실패 시 "Error: ..." 문자열.
         """
         result = await self.fetch_html_with_status(
             url=url,
@@ -89,29 +88,27 @@ class BrowserlessClient:
         reject_resource_types: list[str] | None = None,
         reject_request_pattern: list[str] | None = None,
     ) -> BrowserlessFetchResult | str:
-        """Fetch the rendered HTML of a page using Browserless, with target status.
+        """Browserless로 page의 렌더링된 HTML을 대상 status와 함께 가져온다.
 
-        Same request/response handling as fetch_html(), except a successful fetch
-        returns a BrowserlessFetchResult carrying the target page's real status
-        headers instead of a bare string, so a caller can tell a genuine 200 apart
-        from a render-succeeded-but-target-errored (or anti-bot blocked) response.
-        Use fetch_html() instead when only the HTML/error string is needed.
+        요청/응답 처리는 fetch_html()과 같지만, 성공 시 문자열 대신 대상 page의 실제 status
+        헤더를 담은 BrowserlessFetchResult를 반환한다. 덕분에 호출자가 진짜 200과
+        "렌더는 성공했지만 대상이 에러(또는 anti-bot 차단)"인 응답을 구분할 수 있다.
+        HTML/에러 문자열만 필요하면 fetch_html()을 쓴다.
 
-        Only sends accepted parameters for the current Browserless API version.
-        Sets a default navigation timeout (30s) via query param.
+        현재 Browserless API 버전이 받는 파라미터만 보낸다. query param으로 기본 navigation
+        timeout(30s)을 설정한다.
 
         Args:
-            url: The URL to fetch.
-            wait_for_event: Wait for a page event (e.g. "networkidle", "load").
-            wait_for_timeout_ms: Extra wait after page load.
-            wait_for_selector: CSS selector to wait for.
-            wait_for_selector_timeout_ms: Timeout for selector wait.
-            reject_resource_types: Resource types to block (e.g. ["image"]).
-            reject_request_pattern: URL patterns to block.
+            url: 가져올 URL.
+            wait_for_event: 기다릴 page 이벤트(예: "networkidle", "load").
+            wait_for_timeout_ms: page load 후 추가 대기 시간.
+            wait_for_selector: 기다릴 CSS selector.
+            wait_for_selector_timeout_ms: selector 대기 timeout.
+            reject_resource_types: 차단할 리소스 타입(예: ["image"]).
+            reject_request_pattern: 차단할 URL 패턴.
 
         Returns:
-            Fetch result with the rendered HTML and target-page status headers,
-            or an "Error: ..." string on failure.
+            렌더링된 HTML과 대상 page status 헤더를 담은 결과. 실패 시 "Error: ..." 문자열.
         """
         payload: dict[str, Any] = {
             "url": url,
@@ -185,21 +182,21 @@ class BrowserlessClient:
         wait_for_timeout_ms: int = 0,
         best_attempt: bool = False,
     ) -> BrowserlessScreenshotResult | str:
-        """Capture a rendered screenshot of a URL using Browserless.
+        """Browserless로 URL을 렌더링해 screenshot을 캡처한다.
 
         Args:
-            url: URL to render.
-            full_page: Capture the full page instead of just the viewport.
-            output_format: Image format: png, jpeg, or webp.
-            quality: Optional quality for jpeg/webp outputs.
-            viewport: Optional browser viewport dictionary.
-            wait_for_selector: CSS selector to wait for before capture.
-            wait_for_selector_timeout_ms: Timeout for selector wait.
-            wait_for_timeout_ms: Extra wait after navigation.
-            best_attempt: Continue when waits time out.
+            url: 렌더링할 URL.
+            full_page: viewport만이 아니라 page 전체를 캡처한다.
+            output_format: 이미지 포맷. png, jpeg, webp 중 하나다.
+            quality: jpeg/webp 출력에 대한 선택적 품질값.
+            viewport: 선택적 browser viewport 딕셔너리.
+            wait_for_selector: 캡처 전에 기다릴 CSS selector.
+            wait_for_selector_timeout_ms: selector 대기 timeout.
+            wait_for_timeout_ms: navigation 후 추가 대기 시간.
+            best_attempt: 대기가 timeout되어도 계속 진행한다.
 
         Returns:
-            Screenshot result with binary content, or an error string.
+            바이너리 내용을 담은 screenshot 결과. 실패 시 에러 문자열.
         """
         payload: dict[str, Any] = {
             "url": url,

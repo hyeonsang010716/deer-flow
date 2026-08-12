@@ -1,4 +1,4 @@
-"""Logging setup helpers for DeerFlow."""
+"""DeerFlow의 logging 설정 헬퍼."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ _TRACE_FILTER_NAME = "deerflow_trace_context_filter"
 
 
 class TraceContextFilter(logging.Filter):
-    """Inject the current request trace id into every log record."""
+    """모든 log record에 현재 요청의 trace id를 주입한다."""
 
     name = _TRACE_FILTER_NAME
 
@@ -27,7 +27,7 @@ class TraceContextFilter(logging.Filter):
 
 
 class JsonTraceFormatter(logging.Formatter):
-    """Small JSON formatter used when ``logging.enhance.format=json``."""
+    """``logging.enhance.format=json``일 때 쓰는 작은 JSON formatter."""
 
     _deerflow_trace_formatter = True
 
@@ -49,7 +49,7 @@ class JsonTraceFormatter(logging.Formatter):
 
 
 class TraceTextFormatter(logging.Formatter):
-    """Marker subclass so trace formatting can be reverted cleanly in tests."""
+    """테스트에서 trace 포맷팅을 깔끔하게 되돌릴 수 있게 하는 표식용 서브클래스."""
 
     _deerflow_trace_formatter = True
 
@@ -84,12 +84,11 @@ def _trace_formatter(format_name: str | None) -> logging.Formatter:
 
 
 def configure_logging(config: object) -> None:
-    """Configure DeerFlow logging from an AppConfig-like object.
+    """AppConfig 형태의 객체로부터 DeerFlow logging을 설정한다.
 
-    With logging enhancement disabled this preserves the previous
-    ``basicConfig + apply_logging_level`` behavior. With enhancement enabled,
-    root handlers gain a trace-context filter and a formatter that includes
-    only the additional ``trace_id`` field.
+    logging 강화가 꺼져 있으면 기존의 ``basicConfig + apply_logging_level`` 동작을 그대로
+    유지한다. 켜져 있으면 root handler에 trace context filter와, ``trace_id`` 필드만 추가로
+    포함하는 formatter가 붙는다.
     """
     _ensure_root_handler()
 

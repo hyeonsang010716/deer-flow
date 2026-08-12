@@ -5,16 +5,15 @@ from deerflow.sandbox.search import should_ignore_name
 
 def list_dir(path: str, max_depth: int = 2) -> list[str]:
     """
-    List files and directories up to max_depth levels deep.
+    max_depth 단계까지 파일과 디렉터리를 나열한다.
 
     Args:
-        path: The root directory path to list.
-        max_depth: Maximum depth to traverse (default: 2).
-                   1 = only direct children, 2 = children + grandchildren, etc.
+        path: 나열할 루트 디렉터리 경로.
+        max_depth: 순회할 최대 깊이(기본값: 2).
+                   1 = 직계 자식만, 2 = 자식 + 손자, 이런 식이다.
 
     Returns:
-        A list of absolute paths for files and directories,
-        excluding items matching IGNORE_PATTERNS.
+        파일과 디렉터리의 절대 경로 리스트. IGNORE_PATTERNS에 걸리는 항목은 제외한다.
     """
     result: list[str] = []
     root_path = Path(path).resolve()
@@ -30,7 +29,7 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
             return False
 
     def _traverse(current_path: Path, current_depth: int) -> None:
-        """Recursively traverse directories up to max_depth."""
+        """max_depth까지 디렉터리를 재귀적으로 순회한다."""
         if current_depth > max_depth:
             return
 
@@ -57,7 +56,7 @@ def list_dir(path: str, max_depth: int = 2) -> list[str]:
                 post_fix = "/" if item.is_dir() else ""
                 result.append(str(item_resolved) + post_fix)
 
-                # Recurse into subdirectories if not at max depth
+                # 최대 깊이가 아니면 하위 디렉터리로 재귀한다
                 if item.is_dir() and current_depth < max_depth:
                     _traverse(item, current_depth + 1)
         except PermissionError:

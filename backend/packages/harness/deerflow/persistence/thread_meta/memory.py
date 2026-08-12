@@ -1,8 +1,7 @@
-"""In-memory ThreadMetaStore backed by LangGraph BaseStore.
+"""LangGraph BaseStore를 기반으로 하는 in-memory ThreadMetaStore.
 
-Used when database.backend=memory. Delegates to the LangGraph Store's
-``("threads",)`` namespace — the same namespace used by the Gateway
-router for thread records.
+database.backend=memory일 때 쓴다. LangGraph Store의 ``("threads",)`` namespace에 위임하며,
+이는 Gateway router가 thread 레코드에 쓰는 것과 같은 namespace다.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         user_id: str | None | _AutoSentinel,
         method_name: str,
     ) -> dict | None:
-        """Fetch a record and verify ownership. Returns a mutable copy, or None."""
+        """레코드를 가져와 소유권을 확인한다. 변경 가능한 복사본 또는 None을 반환한다."""
         resolved = resolve_user_id(user_id, method_name=method_name)
         item = await self._store.aget(THREADS_NS, thread_id)
         if item is None:
@@ -76,11 +75,11 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         offset: int = 0,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> list[dict[str, Any]]:
-        """Search threads by materializing matches, then sorting in Python.
+        """일치하는 항목을 모두 구체화한 뒤 Python에서 정렬해 thread를 검색한다.
 
-        The memory backend loads all matching rows in chunks before slicing so
-        it can mirror SQL's pinned-first ordering. Use the SQL store for
-        scalable paginated I/O.
+        memory backend는 SQL의 pinned 우선 정렬을 그대로 재현하기 위해, 자르기 전에 일치하는
+        모든 행을 청크 단위로 읽어 들인다. 확장 가능한 페이지네이션 I/O가 필요하면 SQL store를
+        쓴다.
         """
         resolved_user_id = resolve_user_id(user_id, method_name="MemoryThreadMetaStore.search")
         filter_dict: dict[str, Any] = {}
@@ -163,7 +162,7 @@ class MemoryThreadMetaStore(ThreadMetaStore):
 
     @staticmethod
     def _item_to_dict(item) -> dict[str, Any]:
-        """Convert a Store SearchItem to the dict format expected by callers."""
+        """Store SearchItem을 호출자가 기대하는 dict 형식으로 변환한다."""
         val = item.value
         return {
             "thread_id": item.key,
@@ -172,8 +171,8 @@ class MemoryThreadMetaStore(ThreadMetaStore):
             "display_name": val.get("display_name"),
             "status": val.get("status", "idle"),
             "metadata": val.get("metadata", {}),
-            # ``coerce_iso`` heals legacy unix-second values written by
-            # earlier Gateway versions that called ``str(time.time())``.
+            # ``coerce_iso``는 ``str(time.time())``을 호출하던 예전 Gateway 버전이 남긴
+            # unix 초 값을 보정한다.
             "created_at": coerce_iso(val.get("created_at", "")),
             "updated_at": coerce_iso(val.get("updated_at", "")),
         }

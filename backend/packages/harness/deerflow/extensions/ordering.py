@@ -1,11 +1,10 @@
-"""Declarative ordering invariants for the middleware stack.
+"""middleware 스택의 순서 불변식을 선언적으로 정의한다.
 
-Replaces hand-written index comparisons. Extension-contributed middlewares are
-merged before validation runs, so a contribution cannot slip past an invariant,
-and the failure names the extension responsible.
+손으로 쓰던 인덱스 비교를 대체한다. extension이 기여한 middleware도 검증 전에
+합쳐지므로 어떤 기여도 불변식을 우회할 수 없고, 실패 메시지가 원인 extension을 지목한다.
 
-A broken invariant is the one hard failure in this system: unlike a missing
-observation, it produces wrong behaviour without an error.
+깨진 불변식은 이 시스템에서 유일하게 치명적인 실패다. 관측이 누락되는 경우와 달리
+에러 없이 잘못된 동작을 만들어낸다.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ def assert_ordering(
     provenance: Mapping[int, str],
     constraints: Sequence[OrderingConstraint] | None = None,
 ) -> None:
-    """Raise when a constraint is violated. No-op when both sides are absent."""
+    """제약이 깨지면 예외를 던진다. 양쪽 모두 없으면 아무것도 하지 않는다."""
     for constraint in constraints if constraints is not None else core_ordering_constraints():
         outer_indices = _indices_of(middlewares, constraint.outer)
         inner_indices = _indices_of(middlewares, constraint.inner)
@@ -59,22 +58,20 @@ def assert_ordering(
 
 @cache
 def core_ordering_constraints() -> tuple[OrderingConstraint, ...]:
-    """The host's ordering invariants, resolved on first use.
+    """host의 순서 불변식을 첫 사용 시점에 해석한다.
 
-    Deferred deliberately, and the deferral is about dependency *direction*,
-    not just cycles: ``extensions/`` is the layer the middleware layer calls
-    into, so importing ``agents.middlewares`` at module scope here would point
-    the dependency backwards and close a cycle the moment any middleware
-    imports something under ``extensions/`` at module level. Resolution instead
-    happens at ``assert_ordering`` time, which already runs inside the
-    middleware builder — a forward reference within one layer.
+    지연 해석은 의도된 것이며, 단순한 순환 참조가 아니라 의존 *방향*의 문제다.
+    ``extensions/``는 middleware 계층이 호출해 들어오는 계층이므로 여기서
+    ``agents.middlewares``를 모듈 스코프에서 import하면 의존 방향이 거꾸로 향하고,
+    어떤 middleware든 ``extensions/`` 아래를 모듈 레벨에서 import하는 순간 순환이 닫힌다.
+    대신 ``assert_ordering`` 시점에 해석하는데, 이미 middleware 빌더 안에서 실행되므로
+    한 계층 내부의 전방 참조가 된다.
 
-    Returns a plain tuple. The predecessor deferred by way of a ``tuple``
-    subclass overriding only ``__iter__``; because a tuple cannot populate its
-    own storage after construction, every operation reading that storage
-    (``len``, ``bool``, ``in``, indexing, slicing, ``reversed``, ``==``)
-    reported an empty sequence while iteration yielded the real constraints.
-    Deferring the call instead of faking the value keeps one answer.
+    반환값은 평범한 tuple이다. 이전 구현은 ``__iter__``만 오버라이드한 ``tuple``
+    서브클래스로 지연을 흉내 냈다. tuple은 생성 후 자기 저장소를 채울 수 없으므로
+    그 저장소를 읽는 모든 연산(``len``, ``bool``, ``in``, 인덱싱, 슬라이싱,
+    ``reversed``, ``==``)이 빈 시퀀스를 보고했고 순회만 실제 제약을 내놓았다.
+    값을 위조하는 대신 호출 자체를 지연하면 답이 하나로 유지된다.
     """
     from deerflow.agents.middlewares.tool_error_handling_middleware import ToolErrorHandlingMiddleware
     from deerflow.agents.middlewares.tool_progress_middleware import ToolProgressMiddleware

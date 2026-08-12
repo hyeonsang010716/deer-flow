@@ -1,4 +1,4 @@
-"""Deterministic capture and rendering for task delegations."""
+"""task delegation을 결정적으로 캡처하고 렌더링한다."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _utc_now_iso() -> str:
 
 
 def _bound_text(text: str, cap: int = _RESULT_BRIEF_CAP) -> str:
-    """Deterministic head/tail truncation. This is not an LLM summary."""
+    """앞뒤를 남기는 결정적 truncation. LLM 요약이 아니다."""
     if len(text) <= cap:
         return text
     if cap <= 0:
@@ -52,11 +52,11 @@ def _escape_context_text(value: object) -> str:
 
 def _status_guidance(status: str, stop_reason: str | None = None) -> str:
     if stop_reason:
-        # A guardrail cap ended this run early (#3875 Phase 2): the status is
-        # still completed/failed, and ``stop_reason`` carries *why* it stopped
-        # (token_capped / turn_capped / loop_capped). The old contract surfaced
-        # this as a separate ``max_turns_reached`` status; the additive
-        # ``stop_reason`` field replaced it so v1 consumers keep working.
+        # guardrail 상한이 이 run을 조기에 끝냈다(#3875 Phase 2). status는 여전히
+        # completed/failed이고, ``stop_reason``이 *왜* 멈췄는지를
+        # (token_capped / turn_capped / loop_capped) 담는다. 예전 계약은 이를 별도의
+        # ``max_turns_reached`` status로 드러냈지만, v1 소비자가 계속 동작하도록 추가 필드인
+        # ``stop_reason``이 그 자리를 대신한다.
         if status == "completed":
             return "hit a guardrail cap with a partial result; reuse the partial result, retry with a tighter scope, or raise the per-agent budget (max_turns / token_budget)"
         return "hit a guardrail cap with no usable result; retry with a tighter scope or raise the per-agent budget (max_turns / token_budget)"
@@ -96,7 +96,7 @@ def _tool_call_args(tool_call: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_delegations(messages: list[AnyMessage]) -> list[DelegationEntry]:
-    """Enumerate `task` delegations from AI tool calls and paired results."""
+    """AI tool call과 그에 짝지어진 결과에서 `task` delegation을 열거한다."""
     entries_by_id: dict[str, DelegationEntry] = {}
     order: list[str] = []
     now = _utc_now_iso()
@@ -165,7 +165,7 @@ def _render_entry_line(entry: DelegationEntry) -> str:
 
 
 def render_delegation_ledger(entries: list[DelegationEntry], *, max_chars: int = _LEDGER_RENDER_CHAR_BUDGET) -> str:
-    """Render the delegation ledger as model-visible system context."""
+    """delegation ledger를 모델에 보이는 system context로 렌더링한다."""
     if not entries:
         return ""
 

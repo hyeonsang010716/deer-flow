@@ -1,4 +1,4 @@
-"""Checkpoint delta-history cache backends (delta mode only)."""
+"""checkpoint delta-history cache backend (delta mode 전용)."""
 
 from deerflow.runtime.checkpoint_cache.base import (
     CACHE_FORMAT_VERSION,

@@ -1,18 +1,16 @@
-"""DeerMem backend configuration (parsed from ``MemoryConfig.backend_config``).
+"""DeerMem backend 설정. ``MemoryConfig.backend_config``에서 파싱한다.
 
-DeerMem-private config lives here, NOT on the shared ``MemoryConfig`` (which
-only carries host-shared fields: ``enabled`` / ``injection_enabled`` /
-``manager_class`` / ``backend_config``). The factory passes ``backend_config``
-(a dict) to ``DeerMem.__init__``, which parses it into a ``DeerMemConfig``.
-Defaults let DeerMem run with zero ``backend_config``.
+DeerMem 전용 설정은 여기에 있고 공유 ``MemoryConfig``에는 두지 않는다. 공유 쪽은 host가
+함께 쓰는 필드(``enabled``/``injection_enabled``/``manager_class``/``backend_config``)만 담는다.
+factory가 dict인 ``backend_config``를 ``DeerMem.__init__``에 넘기고, 그것이 ``DeerMemConfig``로
+파싱된다. 기본값 덕분에 ``backend_config`` 없이도 DeerMem이 동작한다.
 
-Field names mirror the pre-abstraction ``MemoryConfig`` private fields so the
-migration is a pure move (config.yaml ``memory.<field>`` ->
-``memory.backend_config.<field>``). ``model`` is a nested ``DeerMemModelConfig``
-(provider/model/api_key/base_url/temperature) consumed by ``core/llm.py``;
-``should_keep_hidden_message`` is an optional host-injected hook (None =
-DeerMem default); tracing is via the base ``MemoryManager.callbacks`` field
-(``on_memory_llm_call`` before the LLM call), not a DeerMemConfig slot.
+필드 이름은 추상화 이전 ``MemoryConfig``의 비공개 필드를 그대로 따르므로 마이그레이션은 단순
+이동이다(config.yaml ``memory.<field>`` -> ``memory.backend_config.<field>``). ``model``은
+``core/llm.py``가 쓰는 중첩 ``DeerMemModelConfig``다(provider/model/api_key/base_url/temperature).
+``should_keep_hidden_message``는 host가 주입하는 선택적 hook이다(None이면 DeerMem 기본값).
+tracing은 DeerMemConfig 슬롯이 아니라 base의 ``MemoryManager.callbacks`` 필드로 처리한다
+(LLM 호출 전 ``on_memory_llm_call``).
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class DeerMemModelConfig(BaseModel):
-    """DeerMem's memory-update LLM config (langchain ``init_chat_model`` params)."""
+    """DeerMem의 memory 업데이트용 LLM 설정. langchain ``init_chat_model`` 인자다."""
 
     provider: str | None = Field(
         default=None,
@@ -43,9 +41,9 @@ class DeerMemModelConfig(BaseModel):
 
 
 class DeerMemConfig(BaseModel):
-    """DeerMem-private configuration (self-contained, host-agnostic)."""
+    """DeerMem 전용 설정. 독립적이며 host에 무관하다."""
 
-    # ── Storage ──────────────────────────────────────────────────────────
+    # ── 저장소 ───────────────────────────────────────────────────────────
     storage_path: str = Field(
         default="",
         description=("DeerMem data root. Empty = default (``$DEERMEM_DATA_DIR`` or ``~/.deermem/``); per-user memory at ``{root}/users/{user_id}/memory.json``. Any value (absolute or relative) is used as the root directory."),
@@ -72,7 +70,7 @@ class DeerMemConfig(BaseModel):
         default="fts5",
         description="Retrieval adapter factory: 'fts5' (default), an empty string to disable, or a dotted factory receiving DeerMemConfig and implementing RetrievalPort.",
     )
-    # ── Queue ────────────────────────────────────────────────────────────
+    # ── 큐 ───────────────────────────────────────────────────────────────
     debounce_seconds: int = Field(
         default=30,
         ge=1,
@@ -84,7 +82,7 @@ class DeerMemConfig(BaseModel):
         ge=0,
         description=("Backpressure cap on pending items. 0 = unlimited. When the cap is reached, new non-signal updates are rejected (QueueFull); signal updates are always admitted so important memories are never shed."),
     )
-    # ── Facts ────────────────────────────────────────────────────────────
+    # ── fact ─────────────────────────────────────────────────────────────
     max_facts: int = Field(default=100, ge=10, le=500, description="Maximum number of facts to store.")
     fact_confidence_threshold: float = Field(
         default=0.7,
@@ -92,7 +90,7 @@ class DeerMemConfig(BaseModel):
         le=1.0,
         description="Minimum confidence threshold for storing facts.",
     )
-    # ── Injection ────────────────────────────────────────────────────────
+    # ── 주입 ─────────────────────────────────────────────────────────────
     max_injection_tokens: int = Field(
         default=2000,
         ge=100,
@@ -113,7 +111,7 @@ class DeerMemConfig(BaseModel):
         le=2000,
         description="Token ceiling for guaranteed-category facts.",
     )
-    # ── Staleness review ─────────────────────────────────────────────────
+    # ── staleness 검토 ───────────────────────────────────────────────────
     staleness_review_enabled: bool = Field(
         default=True,
         description="Enable staleness review for aged facts.",
@@ -173,7 +171,7 @@ class DeerMemConfig(BaseModel):
             "candidate-selection pass. Default 3650 (10 years)."
         ),
     )
-    # ── Memory consolidation ────────────────────────────────────────────
+    # ── memory 통합 ──────────────────────────────────────────────────────
     consolidation_enabled: bool = Field(
         default=False,
         description=(
@@ -204,7 +202,7 @@ class DeerMemConfig(BaseModel):
         le=20,
         description=("Maximum number of source facts per consolidation group. Prevents the LLM from merging too many facts into one and losing important details."),
     )
-    # ── Extraction quality callback (post-invoke observability) ─────────
+    # ── 추출 품질 callback (호출 이후 관측) ──────────────────────────────
     extraction_callback: Any = Field(
         default=None,
         description=(
@@ -215,7 +213,7 @@ class DeerMemConfig(BaseModel):
             "post-invoke observability. Set programmatically (not from YAML)."
         ),
     )
-    # ── Watermark cache (in-memory, bounded LRU) ─────────────────────────
+    # ── watermark 캐시 (인메모리, 크기 제한 LRU) ─────────────────────────
     watermark_max_keys: int = Field(
         default=4096,
         ge=0,
@@ -227,7 +225,7 @@ class DeerMemConfig(BaseModel):
             "same as a restart). 0 = unbounded."
         ),
     )
-    # ── Message processing (externalized patterns / prompts) ──
+    # ── 메시지 처리 (외부화된 pattern/prompt) ──
     patterns_dir: str | None = Field(
         default=None,
         description=("Directory with correction.yaml / reinforcement.yaml overriding the bundled signal-detection patterns. None (default) = bundled core/message_patterns/. When set explicitly, both files must exist."),
@@ -236,7 +234,7 @@ class DeerMemConfig(BaseModel):
         default=None,
         description=("Directory with custom memory-extraction prompt templates (memory_update.chat.yaml, staleness_review.yaml, consolidation.yaml, fact_extraction.yaml). None (default) = bundled core/prompts/."),
     )
-    # ── LLM (structured model sub-config consumed by core/llm.py build_llm) ──
+    # ── LLM (core/llm.py의 build_llm이 쓰는 구조화된 model 하위 설정) ──
     model: DeerMemModelConfig = Field(
         default_factory=DeerMemModelConfig,
         description=(
@@ -247,9 +245,9 @@ class DeerMemConfig(BaseModel):
             "but non-LLM ops still work."
         ),
     )
-    # ── Hooks (optional host-injected callables; None = DeerMem defaults) ──
-    # Tracing is via the base ``MemoryManager.callbacks`` field
-    # (``on_memory_llm_call`` before the LLM call), not a DeerMemConfig slot.
+    # ── hook (host가 주입하는 선택적 callable. None이면 DeerMem 기본값) ──
+    # tracing은 DeerMemConfig 슬롯이 아니라 base의 ``MemoryManager.callbacks`` 필드로
+    # 처리한다(LLM 호출 전 ``on_memory_llm_call``).
     should_keep_hidden_message: Any = Field(
         default=None,
         description=("Optional ``hook(additional_kwargs) -> bool``; when set, ``hide_from_ui`` messages are kept if it returns True. None = skip all ``hide_from_ui`` (host-agnostic safe default). Set programmatically."),
@@ -279,15 +277,15 @@ class DeerMemConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_storage_path_is_directory(self) -> DeerMemConfig:
-        """DeerMem treats ``storage_path`` as a root DIRECTORY (per-user memory
-        under ``{storage_path}/users/{uid}/memory.json``). A file-style value
-        (e.g. a leftover ``.json`` from the pre-abstraction file-path semantics)
-        would make ``FileMemoryStorage.save``'s ``mkdir(parents=True)`` raise
-        ``NotADirectoryError`` (caught as OSError -> silent write failure). Fail
-        loud at construction instead (memory is persistent state -- a wrong root
-        is a data-integrity footgun). Lives here (not the host factory) so it
-        fires even when DeerMem is built standalone / bypassing the factory.
-        Empty storage_path (zero-config -> host injects a dir) is allowed.
+        """DeerMem은 ``storage_path``를 루트 디렉터리로 다룬다.
+
+        사용자별 memory는 ``{storage_path}/users/{uid}/memory.json``에 있다. 추상화 이전
+        파일 경로 의미에서 남은 ``.json`` 같은 파일 형태 값이 들어오면
+        ``FileMemoryStorage.save``의 ``mkdir(parents=True)``가 ``NotADirectoryError``를
+        던지고, 이는 OSError로 잡혀 조용한 쓰기 실패가 된다. 그래서 생성 시점에 크게 실패시킨다.
+        memory는 영속 상태라 잘못된 루트는 데이터 무결성 사고로 이어진다. host factory가 아니라
+        여기에 두어 DeerMem을 factory 없이 단독 생성해도 검증이 동작한다.
+        빈 storage_path는 허용한다(설정 없이 host가 디렉터리를 주입하는 경우).
         """
         if self.storage_path:
             resolved = Path(self.storage_path)
@@ -302,18 +300,16 @@ class DeerMemConfig(BaseModel):
 
     @classmethod
     def from_backend_config(cls, backend_config: dict[str, Any] | None) -> DeerMemConfig:
-        """Parse a ``backend_config`` dict.
+        """``backend_config`` dict를 파싱한다.
 
-        Unknown keys are ignored (forward-compat) but logged at WARNING so a
-        typo (e.g. ``storage_pat`` missing the ``h``) does not silently fall
-        back to the default and write memory to an unintended location --
-        mirrors the host layer's ``load_memory_config_from_dict`` warning.
+        알 수 없는 key는 상위 호환을 위해 무시하되 WARNING으로 남긴다. 그래야 오타
+        (예: ``h``가 빠진 ``storage_pat``)가 조용히 기본값으로 넘어가 의도치 않은 위치에
+        memory를 쓰는 일이 없다. host 계층의 ``load_memory_config_from_dict`` 경고와 같다.
 
-        ``None`` values are dropped so they fall back to the field default:
-        YAML renders an empty key (``model:`` with only commented children, as
-        shipped in ``config.example.yaml``) as ``None``, which non-Optional
-        fields like ``model`` would otherwise reject even though omitting the
-        key entirely is valid.
+        ``None`` 값은 버려서 필드 기본값으로 넘어가게 한다. YAML은 빈 key
+        (``config.example.yaml``에 있는, 자식이 전부 주석인 ``model:``)를 ``None``으로 만드는데,
+        key를 아예 생략하는 것은 유효한데도 ``model`` 같은 non-Optional 필드는 이를 거부하기
+        때문이다.
         """
         if not backend_config:
             return cls()

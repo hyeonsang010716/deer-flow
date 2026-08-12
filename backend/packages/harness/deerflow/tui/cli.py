@@ -1,10 +1,9 @@
-"""Command-line entry point and launch-mode planning for the DeerFlow TUI.
+"""DeerFlow TUI의 command-line 진입점과 실행 모드 결정.
 
-``plan_launch`` is a pure decision function (fully unit-tested): given argv, TTY
-state and the environment, it decides whether to open the terminal UI or run a
-headless one-shot. ``main`` wires that decision to the embedded ``DeerFlowClient``
-and lazily imports the Textual app only when actually launching the UI, so the
-``deerflow`` console script still runs headless commands without Textual present.
+``plan_launch``는 순수 결정 함수다(단위 테스트로 완전히 덮여 있다). argv, TTY 상태, 환경을 받아
+터미널 UI를 열지 headless 일회성 실행을 할지 결정한다. ``main``은 그 결정을 embedded
+``DeerFlowClient``에 연결하고, 실제로 UI를 띄울 때만 Textual app을 지연 import한다. 덕분에
+Textual이 없어도 ``deerflow`` 콘솔 스크립트로 headless command를 실행할 수 있다.
 """
 
 from __future__ import annotations
@@ -89,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _strip_chat(argv: Sequence[str]) -> list[str]:
-    """Accept an optional leading ``chat`` subcommand as an alias for the default surface."""
+    """맨 앞의 선택적 ``chat`` 하위 command를 기본 화면의 별칭으로 받아들인다."""
     argv = list(argv)
     if argv and argv[0] == "chat":
         return argv[1:]
@@ -107,7 +106,7 @@ def plan_launch(
     stdout_isatty: bool,
     env: dict[str, str],
 ) -> LaunchPlan:
-    """Decide what surface to launch. Pure: no I/O, no client construction."""
+    """어떤 화면을 띄울지 결정한다. 순수 함수라서 I/O도 client 생성도 하지 않는다."""
     parser = build_parser()
     args = parser.parse_args(_strip_chat(argv))
     positional = " ".join(args.message).strip() or None
@@ -152,7 +151,7 @@ def plan_launch(
                 continue_recent=continue_recent,
                 recursion_limit=args.recursion_limit,
             )
-        # Mirror --print: a piped message or --continue is enough to run headless.
+        # --print와 동일하게 동작한다. 파이프로 들어온 메시지나 --continue만 있어도 headless로 돌린다.
         if continue_recent or not stdin_isatty:
             return LaunchPlan(
                 mode="print",
@@ -189,7 +188,7 @@ def plan_launch(
 
 
 # --------------------------------------------------------------------------- #
-# Runtime dispatch (not unit-tested here; covered by smoke + integration).
+# runtime dispatch. 여기서는 단위 테스트하지 않고 smoke + 통합 테스트로 덮는다.
 # --------------------------------------------------------------------------- #
 
 _HEADLESS_HELP = """\
@@ -245,9 +244,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _make_session():
-    # Imported lazily so the pure planning path never imports the heavy harness.
-    # Headless one-shots never use the threads_meta writer, so skip persistence
-    # (no background loop / engine / connection pool just to discard it).
+    # 순수 planning 경로가 무거운 harness를 import하지 않도록 지연 import한다. headless 일회성
+    # 실행은 threads_meta writer를 쓰지 않으므로 persistence를 건너뛴다(버릴 background loop /
+    # engine / connection pool을 굳이 세우지 않는다).
     from .session import open_session
 
     return open_session(persistence=False)
@@ -281,11 +280,11 @@ def _run_json(plan: LaunchPlan) -> int:
 
 def _run_tui(plan: LaunchPlan) -> int:
     try:
-        # Absolute import (not `from .app`) so the harness import-boundary check,
-        # which records relative module names verbatim, doesn't mistake the sibling
-        # `deerflow.tui.app` module for the forbidden top-level `app` package.
+        # `from .app`이 아니라 절대 import를 쓴다. harness import 경계 검사는 상대 module
+        # 이름을 그대로 기록하므로, 형제 module인 `deerflow.tui.app`을 금지된 최상위 `app`
+        # 패키지로 오인하지 않게 하기 위함이다.
         from deerflow.tui.app import run_tui
-    except ModuleNotFoundError as exc:  # textual missing
+    except ModuleNotFoundError as exc:  # textual이 없는 경우
         if getattr(exc, "name", "") == "textual" or "textual" in str(exc):
             msg = "The terminal UI needs the optional 'textual' dependency.\nInstall it with:  uv pip install 'deerflow-harness[tui]'   (or: pip install textual)\n"
             if plan.forced_tui:

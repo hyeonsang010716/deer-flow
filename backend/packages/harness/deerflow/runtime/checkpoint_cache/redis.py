@@ -1,12 +1,11 @@
-"""Shared Redis backend. Entries are immutable, so a multi-worker shared
-cache needs no invalidation; the TTL is a leak safety net only.
+"""공유 Redis backend. 항목이 불변이므로 multi-worker 공유 cache에도 invalidation이 필요 없고,
+TTL은 누수 방지용 안전망일 뿐이다.
 
-Thread-scoped purge (``adelete_thread``) exists for data lifecycle: when a
-thread's checkpoints are deleted, its cached history payloads are removed
-immediately instead of lingering until TTL expiry.
+thread 범위 정리(``adelete_thread``)는 데이터 수명주기를 위해 존재한다. thread의 checkpoint가
+삭제되면 캐시된 history payload도 TTL 만료를 기다리지 않고 즉시 제거한다.
 
-The redis import is lazy (module is importable without the optional
-``redis`` extra), mirroring runtime/stream_bridge/redis.py.
+redis import는 지연 방식이다(선택 의존성인 ``redis`` extra 없이도 module을 import할 수 있다).
+runtime/stream_bridge/redis.py와 같은 방식이다.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ def _create_client(redis_url: str, *, max_connections: int | None) -> Any:
 
 
 def _redis_error() -> type[Exception]:
-    """Lazy RedisError import, mirroring the lazy client creation above."""
+    """RedisError를 지연 import한다. 위의 지연 client 생성과 같은 방식이다."""
     try:
         from redis.exceptions import RedisError
     except ImportError as exc:
@@ -54,8 +53,8 @@ class RedisCheckpointHistoryCache:
     ) -> None:
         self._client = _create_client(redis_url, max_connections=max_connections)
         self._serde = serde
-        # ttl_seconds=0 is an explicit opt-out of expiry (no SETEX) — not the
-        # default, and leaked/orphaned keys then rely on redis maxmemory only.
+        # ttl_seconds=0은 만료를 명시적으로 끄는 설정이다(SETEX를 쓰지 않는다). 기본값이 아니며,
+        # 이 경우 누수되거나 고아가 된 키는 redis maxmemory에만 의존하게 된다.
         self._ttl = ttl_seconds if ttl_seconds > 0 else None
         self._hits = 0
         self._misses = 0
@@ -66,7 +65,7 @@ class RedisCheckpointHistoryCache:
         try:
             raws = await self._client.mget(keys)
         except _redis_error() as exc:
-            # Performance-only bypass: a redis outage costs hits, never availability.
+            # 성능에만 영향을 주는 우회다. redis 장애는 hit를 잃게 할 뿐 가용성을 해치지 않는다.
             logger.warning("checkpoint history cache mget failed; treating as all-miss: %s", exc)
             self._misses += len(keys)
             return {}
@@ -90,13 +89,12 @@ class RedisCheckpointHistoryCache:
                 pipe.set(key, tag.encode() + _TAG_SEPARATOR + data, ex=self._ttl)
             await pipe.execute()
         except _redis_error() as exc:
-            # Writes are optional; the next read simply recomputes the history.
+            # 쓰기는 선택 사항이다. 실패해도 다음 읽기에서 history를 다시 계산할 뿐이다.
             logger.warning("checkpoint history cache write failed; skipping: %s", exc)
 
     async def adelete_thread(self, key_prefix: str, thread_id: str) -> None:
-        """SCAN+UNLINK every entry of one thread. Failure degrades to
-        TTL-bounded residual retention; the source-of-truth delete already
-        happened, so this never raises."""
+        """한 thread의 모든 항목을 SCAN+UNLINK한다. 실패하면 TTL로 제한된 잔여 보관으로
+        낮아진다. 원본 삭제는 이미 끝났으므로 이 함수는 절대 예외를 던지지 않는다."""
         stem = thread_key_stem(key_prefix, thread_id)
         try:
             cursor = 0

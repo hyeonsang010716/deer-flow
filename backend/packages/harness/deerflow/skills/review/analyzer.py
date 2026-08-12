@@ -1,4 +1,4 @@
-"""Deterministic skill package analyzer."""
+"""결정적 skill package analyzer."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from deerflow.skills.skillscan.orchestrator import scan_skill_dir
 
 
 def analyze_skill_package(snapshot: dict[str, Any], *, profile: ProfileName = "deerflow") -> dict[str, Any]:
-    """Produce review-facts.v1 from a PackageSnapshot."""
+    """PackageSnapshot으로부터 review-facts.v1을 만든다."""
     findings: list[dict[str, Any]] = []
     analyzer_errors: list[dict[str, Any]] = []
     files = {str(entry["path"]): entry for entry in snapshot.get("files", [])}

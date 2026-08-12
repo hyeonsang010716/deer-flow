@@ -1,49 +1,45 @@
-"""Middleware for task-level tool call progress tracking with a state machine.
+"""상태 기계로 task 수준의 도구 호출 진행 상황을 추적하는 middleware.
 
-Implements RFC #3177: structured tool result signals drive a per-(thread, tool)
-state machine that detects stagnation and repetition, injects hints early
-(WARNED), and hard-blocks the tool when it has stopped producing value (BLOCKED).
+RFC #3177 구현. 구조화된 도구 결과 신호가 (thread, tool)별 상태 기계를 구동해 정체와
+반복을 감지하고, 이른 시점에 힌트를 주입하며(WARNED), 도구가 더 이상 가치를 내지 못하면
+완전히 차단한다(BLOCKED).
 
-Architecture:
-  ToolProgressMiddleware (outer)
-    └── handler → ToolErrorHandlingMiddleware (inner) → actual tool
+구조:
+  ToolProgressMiddleware (바깥)
+    └── handler → ToolErrorHandlingMiddleware (안쪽) → 실제 도구
                                                               ↓
-  ToolProgressMiddleware reads deerflow_tool_meta from the normalized result
+  ToolProgressMiddleware가 정규화된 결과에서 deerflow_tool_meta를 읽는다
 
-State machine transitions per (thread_id, tool_name):
-  ACTIVE → WARNED (at stagnation_threshold problems)
-  Any problem-free call resets consecutive_problems=0 and reverts to ACTIVE.
+(thread_id, tool_name)별 상태 전이:
+  ACTIVE → WARNED (문제가 stagnation_threshold개 쌓일 때)
+  문제 없는 호출이 하나라도 들어오면 consecutive_problems=0으로 리셋하고 ACTIVE로 돌아간다.
 
-  Whether WARNED can escalate to BLOCKED depends on recoverable_by_model:
-  - recoverable_by_model=True  (no_results, not_found, permission, Jaccard-duplicate success):
-      WARNED is terminal. The model received a hint and is expected to change strategy;
-      blocking would prevent a legitimate retry with different parameters.
+  WARNED에서 BLOCKED로 승격 가능한지는 recoverable_by_model에 달려 있다.
+  - recoverable_by_model=True (no_results, not_found, permission, Jaccard 중복 success):
+      WARNED가 종착점이다. 모델이 힌트를 받았고 전략을 바꿀 것으로 기대되며, 차단하면
+      다른 파라미터로 하는 정당한 재시도까지 막힌다.
   - recoverable_by_model=False, action≠stop (transient, rate_limited):
-      WARNED → BLOCKED after warn_escalation_count more problems. The model cannot fix
-      these by retrying the same tool, so hard-blocking conserves API calls.
+      문제가 warn_escalation_count개 더 쌓이면 WARNED → BLOCKED. 같은 도구를 재시도해
+      해결할 수 없으므로 차단이 API 호출을 아낀다.
   - recoverable_by_model=False, action=stop (auth, config, internal):
-      Immediately BLOCKED on the first occurrence — no retry can help.
+      첫 발생에서 즉시 BLOCKED. 재시도가 도움이 되지 않는다.
 
-Division of labor with LoopDetectionMiddleware (middleware position 23):
-  ToolProgressMiddleware (position 10) is a result-quality guard — it fires
-  after a tool executes, inspects what came back, and blocks *specific tools*
-  that have stopped producing new information.
+LoopDetectionMiddleware(middleware 위치 23)와의 역할 분담:
+  ToolProgressMiddleware(위치 10)는 결과 품질 guard다. 도구 실행 후 발동해 돌아온 내용을
+  검사하고, 새 정보를 못 내놓는 *특정 도구*를 차단한다.
 
-  LoopDetectionMiddleware is a call-pattern guard — it fires after the model
-  responds (before tools execute), inspects the tool_calls signature in the
-  AIMessage, and forces the *whole turn* to stop when the model keeps issuing
-  the same calls regardless of results.
+  LoopDetectionMiddleware는 호출 패턴 guard다. 모델 응답 후(도구 실행 전) 발동해 AIMessage의
+  tool_calls 서명을 검사하고, 결과와 무관하게 같은 호출을 반복하면 *턴 전체*를 멈춘다.
 
-  They are complementary, not competing:
-  - ToolProgressMiddleware is fine-grained (per-tool BLOCK, other tools normal).
-  - LoopDetectionMiddleware is coarse-grained (strips all tool_calls, ends turn).
-  - Both can inject HumanMessage hints in the same model call without conflict;
-    the model sees both sets of hints and can reason about them.
-  - If LoopDetectionMiddleware hard-stops (strips tool_calls), no wrap_tool_call
-    is issued so ToolProgressMiddleware never fires — there is no double-stop.
-  - If ToolProgressMiddleware BLOCKs a tool (returns an error ToolMessage),
-    the model still makes a tool call that LoopDetectionMiddleware tracks; both
-    continue to operate on their own independent state.
+  둘은 경쟁이 아니라 보완 관계다.
+  - ToolProgressMiddleware는 세밀하다(도구 단위 BLOCK, 나머지 도구는 정상).
+  - LoopDetectionMiddleware는 거칠다(모든 tool_calls 제거, 턴 종료).
+  - 둘 다 같은 모델 호출에서 HumanMessage 힌트를 주입해도 충돌하지 않는다.
+    모델은 두 힌트를 모두 보고 판단할 수 있다.
+  - LoopDetectionMiddleware가 hard-stop하면(tool_calls 제거) wrap_tool_call이 발생하지 않아
+    ToolProgressMiddleware는 아예 발동하지 않는다. 이중 정지는 없다.
+  - ToolProgressMiddleware가 도구를 BLOCK해도(error ToolMessage 반환) 모델은 여전히
+    LoopDetectionMiddleware가 추적하는 도구 호출을 하므로, 둘은 각자의 독립 상태로 계속 동작한다.
 """
 
 from __future__ import annotations
@@ -72,37 +68,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAX_PENDING_PER_RUN = 3
-# Jaccard word-set computation is capped to avoid O(n) regex work on very large tool results.
+# 아주 큰 도구 결과에 O(n) 정규식 작업을 하지 않도록 Jaccard word-set 계산 크기를 제한한다.
 _MAX_CONTENT_FOR_WORDSET = 8192
 
 
 # ---------------------------------------------------------------------------
-# State data structures
+# 상태 자료 구조
 
 
 @dataclass(slots=True)
 class ToolPhaseState:
-    """Per (thread_id, tool_name) tracking state."""
+    """(thread_id, tool_name)별 추적 상태."""
 
     phase: Literal["active", "warned", "blocked"] = "active"
     consecutive_problems: int = 0
     block_reason: str | None = None
-    # Immutable tuple so that dataclasses.replace() calls that omit recent_word_sets
-    # (problem paths) cannot accidentally share a mutable list between the old and new
-    # state objects and cause silent cross-state corruption via .append().
+    # 불변 tuple이다. recent_word_sets를 생략한 dataclasses.replace() 호출(문제 경로)이
+    # 이전 상태와 새 상태 사이에서 가변 리스트를 공유해 .append()로 조용히 서로를
+    # 오염시키는 일을 막는다.
     recent_word_sets: tuple[frozenset[str], ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
-# Content helpers
+# 콘텐츠 헬퍼
 
 
 def word_set(content: str) -> frozenset[str]:
-    """Extract lowercase words of length >= 3 for Jaccard similarity.
+    """Jaccard 유사도를 위해 길이 3 이상의 소문자 단어를 추출한다.
 
-    Content is capped at _MAX_CONTENT_FOR_WORDSET chars to bound memory and CPU cost on
-    large tool results (e.g. web pages).  Tail content beyond the cap is omitted from the
-    set, which is acceptable because duplicate-detection is a heuristic, not a guarantee.
+    큰 도구 결과(예: 웹 페이지)에서 메모리와 CPU 비용을 제한하려고 콘텐츠를
+    _MAX_CONTENT_FOR_WORDSET 문자로 자른다. 그 뒤 내용은 집합에서 빠지지만, 중복 감지는
+    보장이 아니라 휴리스틱이므로 문제없다.
     """
     return frozenset(re.findall(r"\b\w{3,}\b", content[:_MAX_CONTENT_FOR_WORDSET].lower()))
 
@@ -113,7 +109,7 @@ def is_near_duplicate(
     threshold: float,
     min_words: int,
 ) -> bool:
-    """Return True if current is similar to any of the last 3 recent word sets."""
+    """current가 최근 word set 3개 중 하나와 유사하면 True를 반환한다."""
     if len(current) < min_words:
         return False
     for prev in recent[-3:]:
@@ -132,7 +128,7 @@ def _message_content_str(msg: ToolMessage) -> str:
 
 
 def _parse_tool_meta(meta_dict: object) -> ToolResultMeta | None:
-    """Safely deserialize a ToolResultMeta from a raw dict; returns None on schema mismatch."""
+    """raw dict에서 ToolResultMeta를 안전하게 역직렬화한다. 스키마가 맞지 않으면 None."""
     if not isinstance(meta_dict, dict):
         return None
     try:
@@ -143,7 +139,7 @@ def _parse_tool_meta(meta_dict: object) -> ToolResultMeta | None:
 
 
 # ---------------------------------------------------------------------------
-# Hint / block reason formatting
+# 힌트 / 차단 사유 포맷팅
 
 
 def _format_hint(meta: ToolResultMeta) -> str:
@@ -152,8 +148,8 @@ def _format_hint(meta: ToolResultMeta) -> str:
         "try_alternative": "Consider using a different tool or strategy.",
         "summarize": "Consider summarizing your current findings and moving forward.",
         "stop": "Do not retry this operation — it is not recoverable.",
-        # Near-duplicate success results: recommended_next_action is "continue" by default,
-        # but the model should still change strategy to avoid re-fetching the same content.
+        # 거의 중복인 success 결과: recommended_next_action은 기본이 "continue"지만,
+        # 같은 콘텐츠를 다시 가져오지 않도록 모델은 전략을 바꿔야 한다.
         "continue": "Try rephrasing your query or using a different search term.",
     }
     base = {
@@ -162,7 +158,7 @@ def _format_hint(meta: ToolResultMeta) -> str:
         "rate_limited": "[PROGRESS HINT] The tool is being rate-limited.",
         "transient": "[PROGRESS HINT] The tool encountered repeated transient failures.",
         "partial_success": "[PROGRESS HINT] The tool has returned incomplete results multiple times.",
-        # Jaccard near-duplicate success: the tool is returning the same content repeatedly.
+        # Jaccard 기준 거의 중복인 success: 도구가 같은 콘텐츠를 반복해서 돌려주고 있다.
         "success": "[PROGRESS HINT] The tool is returning duplicate results.",
     }.get(
         meta.error_type or meta.status,
@@ -192,7 +188,7 @@ def _block_reason(meta: ToolResultMeta) -> str:
 
 
 class ToolProgressMiddleware(AgentMiddleware[AgentState]):
-    """State-machine-based tool stagnation guard (RFC #3177)."""
+    """상태 기계 기반 도구 정체 guard (RFC #3177)."""
 
     def __init__(
         self,
@@ -213,15 +209,15 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         self._exempt_tools: set[str] = exempt_tools if exempt_tools is not None else {"ask_clarification", "write_todos", "present_files", "task"}
         self._max_tracked_threads = max_tracked_threads
 
-        # threading.Lock (not asyncio.Lock): critical sections are short in-memory dict
-        # ops with no I/O, so event-loop stall risk is negligible.  asyncio.Lock would
-        # not protect the sync wrap_tool_call path used by subagent executor thread
-        # pools — two separate locks would be required instead.  This matches the
-        # existing LoopDetectionMiddleware pattern; see module docstring for details.
+        # asyncio.Lock이 아닌 threading.Lock을 쓴다. 임계 구역은 I/O 없는 짧은 in-memory
+        # dict 연산이라 event loop 지연 위험이 무시할 수준이다. asyncio.Lock은 subagent
+        # executor thread pool이 쓰는 동기 wrap_tool_call 경로를 보호하지 못해 락이 둘
+        # 필요해진다. 기존 LoopDetectionMiddleware와 같은 방식이며 자세한 내용은 모듈
+        # docstring을 참고한다.
         self._lock = threading.Lock()
-        # LRU-evicting store: thread_id → {tool_name → ToolPhaseState}
+        # LRU 방식 저장소: thread_id → {tool_name → ToolPhaseState}
         self._phase_states: OrderedDict[str, dict[str, ToolPhaseState]] = OrderedDict()
-        # Pending hint queue: (thread_id, run_id) → [hint texts]
+        # 대기 중 힌트 큐: (thread_id, run_id) → [힌트 텍스트]
         self._pending: dict[tuple[str, str], list[str]] = defaultdict(list)
 
     @classmethod
@@ -237,7 +233,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         )
 
     # ------------------------------------------------------------------
-    # Runtime helpers
+    # Runtime 헬퍼
 
     @staticmethod
     def _thread_id(runtime: Runtime) -> str:
@@ -253,14 +249,14 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         return self._thread_id(runtime), self._run_id(runtime)
 
     # ------------------------------------------------------------------
-    # State store (caller holds lock)
+    # 상태 저장소(호출자가 lock을 잡고 있다)
 
     def _get_state(self, thread_id: str, tool_name: str) -> ToolPhaseState:
         if thread_id not in self._phase_states:
             self._phase_states[thread_id] = {}
             while len(self._phase_states) > self._max_tracked_threads:
                 evicted_thread, _ = self._phase_states.popitem(last=False)
-                # Evict pending hints for the evicted thread to prevent unbounded growth.
+                # 무한정 커지지 않도록 제거된 thread의 대기 힌트도 함께 제거한다.
                 for key in [k for k in self._pending if k[0] == evicted_thread]:
                     del self._pending[key]
         self._phase_states.move_to_end(thread_id)
@@ -275,9 +271,9 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
             thread_tools = self._phase_states.get(thread_id)
             if thread_tools is None:
                 return None
-            # Read-only check: do NOT call move_to_end here. Bumping recency on the read path
-            # would keep blocked threads permanently warm in the LRU, preventing healthy active
-            # threads from occupying those slots. Recency is updated only on _get_state writes.
+            # 읽기 전용 검사다. 여기서 move_to_end를 호출하면 안 된다. 읽기 경로에서
+            # 최신성을 갱신하면 차단된 thread가 LRU에 영구히 남아 정상 thread가 그 자리를
+            # 차지하지 못한다. 최신성은 _get_state 쓰기에서만 갱신한다.
             tool_state = thread_tools.get(tool_name)
             return tool_state.block_reason if tool_state is not None and tool_state.phase == "blocked" else None
 
@@ -304,7 +300,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         tool_name: str,
         runtime: Runtime,
     ) -> ToolMessage | Command:
-        """Update the state machine from a tool result; queue hints if warranted."""
+        """도구 결과로 상태 기계를 갱신하고, 필요하면 힌트를 큐에 넣는다."""
         if not isinstance(result, ToolMessage):
             return result
         meta = _parse_tool_meta((result.additional_kwargs or {}).get(TOOL_META_KEY))
@@ -347,7 +343,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         return result
 
     # ------------------------------------------------------------------
-    # State machine
+    # 상태 기계
 
     def _assess_and_transition(
         self,
@@ -355,27 +351,24 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         meta: ToolResultMeta,
         content: str,
     ) -> tuple[ToolPhaseState, str | None]:
-        """Return (new_state, hint_text_or_None).
+        """(new_state, 힌트 텍스트 또는 None)을 반환한다.
 
-        The outer wrap_tool_call gate intercepts already-blocked states before
-        the handler is called, so this function is normally reached only for
-        active/warned states. If a blocked state arrives (e.g., concurrent
-        transition), the function returns it unchanged — no counter inflation,
-        no phase regression.
+        바깥의 wrap_tool_call gate가 handler 호출 전에 이미 blocked인 상태를 가로채므로,
+        이 함수는 보통 active/warned 상태에서만 도달한다. blocked 상태가 들어오면(예:
+        동시 전이) 그대로 반환한다. 카운터를 부풀리지도, phase를 되돌리지도 않는다.
         """
-        # Guard: blocked is a terminal state; nothing should change it here.
-        # (In normal flow this branch is unreachable because wrap_tool_call
-        # intercepts blocked tools before calling the handler.  The check exists
-        # to make concurrent-race semantics well-defined and prevent a
-        # recoverable-error result from silently demoting the phase back to warned.)
+        # 가드: blocked는 종착 상태이고 여기서 바뀌면 안 된다.
+        # (정상 흐름에서는 wrap_tool_call이 handler 호출 전에 차단된 도구를 가로채므로
+        # 이 분기에 도달하지 않는다. 동시성 race의 의미를 명확히 하고, 복구 가능한 오류
+        # 결과가 phase를 조용히 warned로 되돌리는 일을 막기 위해 남겨 둔다.)
         if state.phase == "blocked":
             return state, None
 
-        # Count this call as a problem before branching so all exit paths leave
-        # consecutive_problems in a consistent state (never 0 when the tool has failed).
+        # 분기 전에 이 호출을 문제로 계산해 모든 종료 경로가 consecutive_problems를 일관된
+        # 상태로 남기게 한다(도구가 실패했는데 0인 경우가 없다).
         new_count = state.consecutive_problems + 1
 
-        # Immediately block on unrecoverable stop signals (auth, config, internal).
+        # 복구 불가능한 stop 신호(auth, config, internal)는 즉시 차단한다.
         if not meta.recoverable_by_model and meta.recommended_next_action == "stop":
             return replace(
                 state,
@@ -384,13 +377,13 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                 block_reason=_block_reason(meta),
             ), None
 
-        # Compute word_set only for success results: error/partial_success are problems by
-        # definition and never reach the Jaccard check, so the O(n) regex is wasted on them.
+        # word_set은 success 결과에만 계산한다. error/partial_success는 정의상 문제라
+        # Jaccard 검사에 도달하지 않으므로 O(n) 정규식이 낭비된다.
         ws = word_set(content) if meta.status == "success" else frozenset()
         is_problem = meta.status in ("error", "partial_success") or (meta.status == "success" and is_near_duplicate(ws, state.recent_word_sets, self._jaccard_threshold, self._min_words))
 
         if not is_problem:
-            # Good result: reset consecutive count, return to active.
+            # 정상 결과: 연속 카운트를 리셋하고 active로 돌아간다.
             new_recent = (*state.recent_word_sets, ws)[-3:]
             return replace(state, consecutive_problems=0, phase="active", recent_word_sets=new_recent), None
 
@@ -398,12 +391,12 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
 
         if new_count >= self._stagnation_threshold + self._warn_escalation:
             if meta.recoverable_by_model:
-                # Model can fix this by changing strategy — keep warned, re-inject hint.
-                # BLOCKED would prevent a legitimate retry with different parameters.
+                # 모델이 전략을 바꿔 해결할 수 있으므로 warned를 유지하고 힌트를 다시 넣는다.
+                # BLOCKED로 두면 다른 파라미터로 하는 정당한 재시도까지 막힌다.
                 hint = _format_hint(meta)
                 new_state = replace(state, consecutive_problems=new_count, phase="warned")
             else:
-                # Model cannot fix this by retrying — block the tool.
+                # 재시도로는 해결할 수 없으므로 도구를 차단한다.
                 reason = _block_reason(meta)
                 new_state = replace(state, consecutive_problems=new_count, phase="blocked", block_reason=reason)
         elif new_count >= self._stagnation_threshold:
@@ -415,15 +408,15 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         return new_state, hint
 
     # ------------------------------------------------------------------
-    # Pending queue helpers
+    # 대기 큐 헬퍼
 
     def _queue_assessment(self, runtime: Runtime, text: str) -> None:
         key = self._pending_key(runtime)
         thread_id = key[0]
         with self._lock:
-            # Guard against creating a phantom _pending entry for a thread that was just
-            # evicted from _phase_states by the LRU.  Such entries can never be cleaned up
-            # by the eviction loop (which only walks _phase_states) and accumulate silently.
+            # 방금 LRU로 _phase_states에서 제거된 thread에 대해 유령 _pending 항목이
+            # 생기지 않게 막는다. 그런 항목은 _phase_states만 도는 eviction 루프가 절대
+            # 정리하지 못해 조용히 쌓인다.
             if thread_id not in self._phase_states:
                 return
             queue = self._pending[key]
@@ -443,26 +436,25 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
                     del self._pending[key]
 
     def _reset_run_states(self, runtime: Runtime) -> None:
-        """Reset all per-run tool state for the thread at the start of a new agent run.
+        """새 agent run 시작 시 해당 thread의 run 단위 도구 상태를 모두 리셋한다.
 
-        Every tool's consecutive_problems counter and recent_word_sets Jaccard window are
-        cleared unconditionally so state from a previous run never bleeds into the next:
-        - BLOCKED/WARNED tools are reset to ACTIVE (they re-block immediately if the root
-          cause persists, and the model has no memory of the prior-run hint).
-        - ACTIVE tools with non-zero consecutive_problems or non-empty recent_word_sets from
-          the previous run are also cleared so a single first-call problem in the new run
-          cannot falsely trip WARNED against stale context from a run the model no longer sees.
+        이전 run의 상태가 다음 run으로 새지 않도록 모든 도구의 consecutive_problems 카운터와
+        recent_word_sets Jaccard 창을 무조건 비운다.
 
-        **Cross-run scoping vs LoopDetectionMiddleware**: this per-run reset is an intentional
-        policy choice, not an oversight.  Errors like ``rate_limited`` and ``transient`` are
-        time-bound: their root cause may resolve between user turns, so carrying a stale
-        counter forward risks a false-positive BLOCKED on calls that would now succeed.
-        LoopDetectionMiddleware takes the opposite stance — it retains ``_history`` across
-        runs (only clearing other-run *pending* warnings at ``before_agent``), because
-        call-pattern loops are time-invariant: a model that keeps issuing the same tool_calls
-        regardless of results does so regardless of when the run started.  The two middlewares
-        therefore guard different failure modes (result quality vs. call pattern) and their
-        cross-run scoping policies intentionally differ as a consequence.
+        - BLOCKED/WARNED 도구는 ACTIVE로 되돌린다(근본 원인이 남아 있으면 즉시 다시 차단되고,
+          모델은 이전 run의 힌트를 기억하지 못한다).
+        - 이전 run에서 consecutive_problems가 0이 아니거나 recent_word_sets가 비어 있지 않은
+          ACTIVE 도구도 비운다. 그러지 않으면 새 run의 첫 호출 문제 하나가 모델이 더는 보지
+          못하는 오래된 context 때문에 잘못 WARNED로 넘어갈 수 있다.
+
+        **LoopDetectionMiddleware와의 run 간 범위 차이**: 이 run 단위 리셋은 의도한 정책이지
+        누락이 아니다. ``rate_limited``, ``transient`` 같은 오류는 시간에 종속적이라 사용자 턴
+        사이에 원인이 해소될 수 있고, 오래된 카운터를 이어가면 지금은 성공할 호출에 대해
+        BLOCKED 오탐이 난다. LoopDetectionMiddleware는 반대 입장이다. ``_history``를 run 간에
+        유지한다(``before_agent``에서 다른 run의 *대기* 경고만 지운다). 호출 패턴 루프는 시간과
+        무관하기 때문이다. 결과와 무관하게 같은 tool_calls를 반복하는 모델은 run이 언제
+        시작됐든 똑같이 반복한다. 두 middleware는 서로 다른 실패 양상(결과 품질 대 호출 패턴)을
+        막으므로 run 간 범위 정책도 의도적으로 다르다.
         """
         thread_id = self._thread_id(runtime)
         with self._lock:
@@ -528,7 +520,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         return self._update_state_from_result(await handler(request), tool_name, runtime)
 
     # ------------------------------------------------------------------
-    # wrap_model_call: drain pending hints and inject before model sees messages
+    # wrap_model_call: 대기 힌트를 꺼내 모델이 메시지를 보기 전에 주입한다
 
     def _augment_request(self, request: ModelRequest) -> ModelRequest:
         hints = self._drain_pending(request.runtime)
@@ -563,7 +555,7 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
         return await handler(self._augment_request(request))
 
     # ------------------------------------------------------------------
-    # before_agent: clean up stale pending hints from previous runs
+    # before_agent: 이전 run에서 남은 대기 힌트를 정리한다
 
     @override
     def before_agent(self, state: AgentState, runtime: Runtime) -> dict | None:

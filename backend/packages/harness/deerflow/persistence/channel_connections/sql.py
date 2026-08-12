@@ -1,4 +1,4 @@
-"""SQL repository for user-owned IM channel connections."""
+"""사용자 소유 IM channel connection용 SQL repository."""
 
 from __future__ import annotations
 
@@ -25,15 +25,14 @@ from deerflow.utils.time import coerce_iso
 
 logger = logging.getLogger(__name__)
 
-# Bounded retries for upsert_connection when a concurrent writer commits a
-# conflicting row first (same owner identity, or the same active external
-# identity guarded by the partial unique index). Each retry re-reads the
-# now-visible state, so a small bound converges under realistic contention.
+# 동시 writer가 충돌하는 row(같은 owner identity, 또는 partial unique index가 보호하는
+# 같은 active external identity)를 먼저 커밋했을 때 upsert_connection이 수행하는 제한된 retry
+# 횟수. 각 retry는 이제 보이는 state를 다시 읽으므로, 현실적인 경합에서는 작은 값으로 수렴한다.
 _UPSERT_MAX_ATTEMPTS = 3
 
 
 class ChannelCredentialCipher:
-    """Encrypts provider credentials before they are persisted."""
+    """provider credential을 저장하기 전에 암호화한다."""
 
     def __init__(self, fernet: Fernet) -> None:
         self._fernet = fernet
@@ -56,7 +55,7 @@ class ChannelCredentialCipher:
 
 
 class ChannelConnectionRepository:
-    """Persistence facade for channel connections, credentials, and conversations."""
+    """channel connection, credential, conversation에 대한 persistence facade."""
 
     def __init__(
         self,
@@ -165,9 +164,9 @@ class ChannelConnectionRepository:
             for _ in range(_UPSERT_MAX_ATTEMPTS):
                 try:
                     row = (await session.execute(stmt)).scalar_one_or_none()
-                    # Revoke any other owner's active row for this external identity
-                    # *before* our connected row is flushed, so the partial unique
-                    # index on active identities is satisfied at commit time.
+                    # 이 external identity에 대한 다른 owner의 active row를 우리 connected row가
+                    # flush되기 *전에* 회수한다. 그래야 commit 시점에 active identity에 걸린
+                    # partial unique index를 만족한다.
                     await _revoke_other_active_owners(session)
                     if row is None:
                         row = ChannelConnectionRow(
@@ -183,10 +182,9 @@ class ChannelConnectionRepository:
                     await session.refresh(row)
                     return self._connection_to_dict(row)
                 except IntegrityError as exc:
-                    # A concurrent writer committed a conflicting row first (this
-                    # owner's identity, or the same active external identity). Roll
-                    # back and retry: the next pass re-reads the now-visible state,
-                    # revokes the newly-committed owner, and writes our row.
+                    # 동시 writer가 충돌하는 row(이 owner의 identity, 또는 같은 active external
+                    # identity)를 먼저 커밋했다. rollback 후 retry한다. 다음 회차는 이제 보이는
+                    # state를 다시 읽고, 새로 커밋된 owner를 회수한 뒤 우리 row를 쓴다.
                     last_error = exc
                     await session.rollback()
             raise last_error  # type: ignore[misc]  # loop runs at least once
@@ -210,7 +208,7 @@ class ChannelConnectionRepository:
             return True
 
     async def disconnect_provider_connections(self, *, provider: str) -> int:
-        """Revoke all active user connections for an instance-wide provider removal."""
+        """instance 전역 provider 제거를 위해 모든 active 사용자 connection을 회수한다."""
         async with self.session_factory() as session:
             result = await session.execute(
                 select(ChannelConnectionRow.id).where(
@@ -326,26 +324,23 @@ class ChannelConnectionRepository:
         requested_scopes: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> bool:
-        """Atomically enforce the per-(owner, provider) pending cap, then insert.
+        """(owner, provider)별 pending cap을 원자적으로 강제한 뒤 insert한다.
 
-        delete-expired + count + insert run in a single transaction serialized
-        per (owner, provider), so concurrent connect requests cannot each
-        observe ``count < max_pending`` and all insert (which would leak past
-        the cap). PostgreSQL takes a transaction-scoped advisory lock; SQLite
-        serializes writers through the write lock the leading DELETE acquires.
+        만료 삭제 + count + insert가 (owner, provider) 단위로 직렬화된 단일 transaction에서
+        실행되므로, 동시 connect 요청들이 각각 ``count < max_pending``을 관찰하고 모두
+        insert하는(= cap을 넘겨버리는) 일이 생기지 않는다. PostgreSQL은 transaction 범위
+        advisory lock을 잡고, SQLite는 선행 DELETE가 획득하는 write lock으로 writer를 직렬화한다.
 
-        Returns ``True`` when the row was inserted, ``False`` when the cap is
-        already reached.
+        row를 넣었으면 ``True``, 이미 cap에 도달했으면 ``False``를 반환한다.
         """
         current_time = now or datetime.now(UTC)
         async with self.session_factory() as session:
             await self._serialize_oauth_owner_scope(session, owner_user_id, provider)
-            # Prune only this owner/provider's expired codes (the ones that affect
-            # this cap), not every user's — avoids a global DELETE on each connect
-            # POST. Issuing this write first also takes the SQLite database write
-            # lock so the count below cannot race a concurrent inserter between
-            # count and commit. Stale codes for other owners are pruned globally
-            # by consume_oauth_state / delete_expired_oauth_states.
+            # 모든 사용자가 아니라 이 owner/provider의 만료 code(이 cap에 영향을 주는 것)만
+            # 정리한다. connect POST마다 전역 DELETE가 도는 것을 피하기 위해서다. 이 write를
+            # 먼저 내면 SQLite database write lock도 잡히므로, 아래 count가 count와 commit
+            # 사이에서 동시 inserter와 경합하지 않는다. 다른 owner의 오래된 code는
+            # consume_oauth_state / delete_expired_oauth_states가 전역으로 정리한다.
             await session.execute(
                 delete(ChannelOAuthStateRow).where(
                     ChannelOAuthStateRow.owner_user_id == owner_user_id,
@@ -383,12 +378,11 @@ class ChannelConnectionRepository:
             return True
 
     async def _serialize_oauth_owner_scope(self, session: AsyncSession, owner_user_id: str, provider: str) -> None:
-        """Serialize concurrent pending-cap transactions for one (owner, provider).
+        """한 (owner, provider)에 대한 동시 pending-cap transaction을 직렬화한다.
 
-        On PostgreSQL this takes a transaction-scoped advisory lock so concurrent
-        issuers run their count+insert one at a time. On SQLite the leading
-        DELETE in the caller's transaction already acquires the database write
-        lock, which serializes writers, so no extra lock is required.
+        PostgreSQL에서는 transaction 범위 advisory lock을 잡아 동시 발급자들이 count+insert를
+        한 번에 하나씩 수행하게 한다. SQLite에서는 호출자 transaction의 선행 DELETE가 이미
+        database write lock을 획득해 writer를 직렬화하므로 추가 lock이 필요 없다.
         """
         try:
             dialect = session.bind.dialect.name if session.bind is not None else ""
@@ -400,7 +394,7 @@ class ChannelConnectionRepository:
     @staticmethod
     def _oauth_scope_lock_key(owner_user_id: str, provider: str) -> int:
         digest = hashlib.sha256(f"{owner_user_id}\x00{provider}".encode()).digest()
-        # 63-bit non-negative key for pg_advisory_xact_lock(bigint).
+        # pg_advisory_xact_lock(bigint)용 63비트 음이 아닌 key.
         return int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
 
     async def delete_expired_oauth_states(self, *, now: datetime | None = None) -> int:
@@ -455,9 +449,8 @@ class ChannelConnectionRepository:
                 await session.commit()
                 return None
 
-            # Conditional UPDATE so two concurrent workers cannot both consume
-            # the same binding code: only the writer that flips consumed_at
-            # from NULL wins.
+            # 조건부 UPDATE라서 두 동시 worker가 같은 binding code를 함께 소비할 수 없다.
+            # consumed_at을 NULL에서 뒤집는 writer만 이긴다.
             result = await session.execute(
                 update(ChannelOAuthStateRow)
                 .where(

@@ -16,48 +16,50 @@ logger = logging.getLogger(__name__)
 
 
 class ThreadDataMiddlewareState(AgentState):
-    """Compatible with the `ThreadState` schema."""
+    """`ThreadState` 스키마와 호환된다."""
 
     thread_data: NotRequired[ThreadDataState | None]
 
 
 class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
-    """Create thread data directories for each thread execution.
+    """thread 실행마다 thread 데이터 디렉터리를 만든다.
 
-    Creates the following directory structure:
+    다음 디렉터리 구조를 만든다.
+
     - {base_dir}/threads/{thread_id}/user-data/workspace
     - {base_dir}/threads/{thread_id}/user-data/uploads
     - {base_dir}/threads/{thread_id}/user-data/outputs
 
-    Lifecycle Management:
-    - With lazy_init=True (default): Only compute paths, directories created on-demand
-    - With lazy_init=False: Eagerly create directories in before_agent()
+    생명주기 관리:
+
+    - lazy_init=True(기본값): 경로만 계산하고 디렉터리는 필요할 때 만든다.
+    - lazy_init=False: before_agent()에서 디렉터리를 즉시 만든다.
     """
 
     state_schema = ThreadDataMiddlewareState
 
     def __init__(self, base_dir: str | None = None, lazy_init: bool = True):
-        """Initialize the middleware.
+        """미들웨어를 초기화한다.
 
         Args:
-            base_dir: Base directory for thread data. Defaults to Paths resolution.
-            lazy_init: If True, defer directory creation until needed.
-                      If False, create directories eagerly in before_agent().
-                      Default is True for optimal performance.
+            base_dir: thread 데이터의 기준 디렉터리. 기본값은 Paths가 해석한 경로다.
+            lazy_init: True면 디렉터리 생성을 필요할 때까지 미룬다.
+                      False면 before_agent()에서 즉시 만든다.
+                      성능을 위해 기본값은 True다.
         """
         super().__init__()
         self._paths = Paths(base_dir) if base_dir else get_paths()
         self._lazy_init = lazy_init
 
     def _get_thread_paths(self, thread_id: str, user_id: str | None = None) -> dict[str, str]:
-        """Get the paths for a thread's data directories.
+        """thread 데이터 디렉터리 경로를 반환한다.
 
         Args:
-            thread_id: The thread ID.
-            user_id: Optional user ID for per-user path isolation.
+            thread_id: thread ID.
+            user_id: 사용자별 경로 격리를 위한 선택적 user ID.
 
         Returns:
-            Dictionary with workspace_path, uploads_path, and outputs_path.
+            workspace_path, uploads_path, outputs_path를 담은 dict.
         """
         return {
             "workspace_path": str(self._paths.sandbox_work_dir(thread_id, user_id=user_id)),
@@ -66,14 +68,14 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
         }
 
     def _create_thread_directories(self, thread_id: str, user_id: str | None = None) -> dict[str, str]:
-        """Create the thread data directories.
+        """thread 데이터 디렉터리를 생성한다.
 
         Args:
-            thread_id: The thread ID.
-            user_id: Optional user ID for per-user path isolation.
+            thread_id: thread ID.
+            user_id: 사용자별 경로 격리를 위한 선택적 user ID.
 
         Returns:
-            Dictionary with the created directory paths.
+            생성된 디렉터리 경로를 담은 dict.
         """
         self._paths.ensure_thread_dirs(thread_id, user_id=user_id)
         return self._get_thread_paths(thread_id, user_id=user_id)
@@ -92,10 +94,10 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
         user_id = resolve_runtime_user_id(runtime)
 
         if self._lazy_init:
-            # Lazy initialization: only compute paths, don't create directories
+            # 지연 초기화: 경로만 계산하고 디렉터리는 만들지 않는다.
             paths = self._get_thread_paths(thread_id, user_id=user_id)
         else:
-            # Eager initialization: create directories immediately
+            # 즉시 초기화: 디렉터리를 바로 만든다.
             paths = self._create_thread_directories(thread_id, user_id=user_id)
             logger.debug("Created thread data directories for thread %s", thread_id)
 

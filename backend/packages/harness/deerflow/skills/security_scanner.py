@@ -1,4 +1,4 @@
-"""Security screening for agent-managed skill writes."""
+"""agent가 관리하는 skill 쓰기에 대한 보안 검사."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class ScanResult:
 
 
 def _resolve_fail_closed(app_config: AppConfig | None) -> bool:
-    """Resolve the fail-closed policy, defaulting to True if config is unavailable."""
+    """fail-closed 정책을 해석한다. config를 읽을 수 없으면 True로 본다."""
     try:
         config = app_config or get_app_config()
         return bool(getattr(config.skill_evolution, "security_fail_closed", True))
@@ -37,7 +37,7 @@ def _resolve_fail_closed(app_config: AppConfig | None) -> bool:
 def _extract_json_object(raw: str) -> dict | None:
     raw = raw.strip()
 
-    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    # markdown code fence(```json ... ``` 또는 ``` ... ```)를 제거한다
     fence_match = re.match(r"^```(?:json)?\s*\n?(.*?)\n?\s*```$", raw, re.DOTALL)
     if fence_match:
         raw = fence_match.group(1).strip()
@@ -47,7 +47,7 @@ def _extract_json_object(raw: str) -> dict | None:
     except json.JSONDecodeError:
         pass
 
-    # Brace-balanced extraction with string-awareness
+    # 문자열을 인식하면서 중괄호 짝을 맞춰 추출한다
     start = raw.find("{")
     if start == -1:
         return None
@@ -101,16 +101,14 @@ async def scan_skill_content(
     static_findings: list[dict[str, Any]] | None = None,
     attach_tracing: bool = True,
 ) -> ScanResult:
-    """Screen skill content before it is written to disk.
+    """skill 내용을 디스크에 쓰기 전에 검사한다.
 
-    ``attach_tracing`` follows the tracing INVARIANT in
-    ``agents/lead_agent/agent.py``: in-graph callers must pass ``False`` because
-    the graph root already attached the callbacks, and attaching again at the
-    model emits duplicate spans *and* blocks the Langfuse handler's
-    ``propagate_attributes`` path. This function is dual-use, so the flag is the
-    caller's to set — the in-graph choke point is ``_scan_or_raise`` in
-    ``tools/skill_manage_tool.py``. Standalone callers (Gateway skill routes,
-    ``skills/installer.py``) have no root to inherit from and keep the default.
+    ``attach_tracing``은 ``agents/lead_agent/agent.py``의 tracing INVARIANT를 따른다. graph
+    내부 호출자는 반드시 ``False``를 넘겨야 한다. graph root가 이미 callback을 붙였으므로 model에서
+    다시 붙이면 span이 중복될 뿐 아니라 Langfuse handler의 ``propagate_attributes`` 경로가
+    막힌다. 이 함수는 두 용도로 쓰이므로 플래그 설정은 호출자의 몫이며, graph 내부의 단일 통로는
+    ``tools/skill_manage_tool.py``의 ``_scan_or_raise``다. 독립 호출자(Gateway skill route,
+    ``skills/installer.py``)는 상속받을 root가 없으므로 기본값을 유지한다.
     """
     rubric = (
         "You are a security reviewer for AI agent skills. "
@@ -130,15 +128,13 @@ async def scan_skill_content(
         model = create_chat_model(name=model_name, **model_kwargs) if model_name else create_chat_model(**model_kwargs)
         invoke_config: dict[str, Any] = {"run_name": "security_agent"}
         if attach_tracing:
-            # Standalone callers own the trace root, so they must inject their own
-            # Langfuse attribution -- the other half of the standalone pattern that
-            # already attaches model-level callbacks here (attach_tracing default),
-            # mirroring oneshot_llm.run_oneshot_llm / MemoryUpdater / the goal
-            # evaluator (see the Tracing System INVARIANT in backend/AGENTS.md).
-            # In-graph callers pass attach_tracing=False: the graph root already
-            # lifts session/user attribution, so injecting here is inert at best
-            # and diverges from that documented split. thread_id=None because the
-            # skill-moderation call is not thread-scoped (same as oneshot_llm).
+            # 독립 호출자는 trace root를 직접 소유하므로 Langfuse attribution도 직접 주입해야
+            # 한다. 여기서 이미 model 수준 callback을 붙이는(attach_tracing 기본값) 독립 패턴의
+            # 나머지 절반이며, oneshot_llm.run_oneshot_llm / MemoryUpdater / goal evaluator와
+            # 같다(backend/AGENTS.md의 Tracing System INVARIANT 참고). graph 내부 호출자는
+            # attach_tracing=False를 넘긴다. graph root가 이미 session/user attribution을
+            # 올리므로 여기서 주입해봐야 무의미하고 문서화된 구분에서 벗어난다. skill 검열 호출은
+            # thread 범위가 아니므로 thread_id=None이다(oneshot_llm과 동일).
             inject_langfuse_metadata(
                 invoke_config,
                 thread_id=None,

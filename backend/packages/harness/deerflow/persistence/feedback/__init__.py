@@ -1,4 +1,4 @@
-"""Feedback persistence — ORM and SQL repository."""
+"""feedback 영속화 — ORM과 SQL repository."""
 
 from deerflow.persistence.feedback.model import FeedbackRow
 from deerflow.persistence.feedback.sql import FeedbackRepository

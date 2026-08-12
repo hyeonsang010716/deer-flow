@@ -1,7 +1,7 @@
-"""Shared SKILL.md frontmatter parsing helpers.
+"""공유 SKILL.md frontmatter 파싱 헬퍼.
 
-The runtime parser, install-time validator, and review core all use this module
-as the schema source for DeerFlow SKILL.md metadata.
+runtime 파서, 설치 시점 validator, review core가 모두 이 모듈을 DeerFlow SKILL.md metadata의
+schema 기준으로 사용한다.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
 @dataclass(frozen=True)
 class SkillMarkdownParts:
-    """Parsed pieces of a SKILL.md document."""
+    """SKILL.md 문서를 파싱한 조각들."""
 
     metadata: dict[str, Any]
     frontmatter_text: str
@@ -38,11 +38,10 @@ class SkillMarkdownParts:
 
 
 def split_skill_markdown(content: str) -> tuple[SkillMarkdownParts | None, str | None]:
-    """Split a SKILL.md document into frontmatter and body.
+    """SKILL.md 문서를 frontmatter와 body로 나눈다.
 
-    Returns ``(parts, None)`` on success and ``(None, message)`` on failure. The
-    message intentionally avoids host paths so callers can reuse it in
-    deterministic review output.
+    성공하면 ``(parts, None)``을, 실패하면 ``(None, message)``를 반환한다. message는 host 경로를
+    의도적으로 담지 않으므로, 호출자가 결정적인 review 출력에 그대로 재사용할 수 있다.
     """
     match = _FRONTMATTER_RE.match(content)
     if not match:
@@ -57,8 +56,7 @@ def split_skill_markdown(content: str) -> tuple[SkillMarkdownParts | None, str |
     if not isinstance(metadata, dict):
         return None, "Frontmatter must be a YAML dictionary"
 
-    # YAML permits non-string keys, but downstream validation expects field
-    # names to be strings.
+    # YAML은 문자열이 아닌 키도 허용하지만, 이후 검증은 필드 이름이 문자열이라고 가정한다.
     metadata = {str(key): value for key, value in metadata.items()}
 
     return (

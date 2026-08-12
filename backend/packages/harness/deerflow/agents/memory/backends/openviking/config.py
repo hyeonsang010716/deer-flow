@@ -1,4 +1,4 @@
-"""Validated configuration for the official OpenViking memory adapter."""
+"""공식 OpenViking memory adapter의 검증된 설정."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ _REMOVED_CUSTOM_HTTP_FIELDS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class OpenVikingConfig:
-    """Credential-bound connection settings and existing DeerFlow policy."""
+    """자격 증명에 묶인 접속 설정과 기존 DeerFlow 정책."""
 
     base_url: str
     storage_path: str
@@ -144,7 +144,7 @@ class OpenVikingConfig:
 
 
 def is_safe_peer_id(value: str) -> bool:
-    """Return whether *value* is valid for an OpenViking actor peer."""
+    """*value*가 OpenViking actor peer로 쓸 수 있는 값인지 반환한다."""
 
     return _SAFE_PEER_RE.fullmatch(value) is not None
 

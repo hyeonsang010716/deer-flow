@@ -9,12 +9,12 @@ MODULE_TO_PACKAGE_HINTS = {
 
 
 def _build_missing_dependency_hint(module_path: str, err: ImportError) -> str:
-    """Build an actionable hint when module import fails."""
+    """module import 실패 시 바로 조치 가능한 힌트를 만든다."""
     module_root = module_path.split(".", 1)[0]
     missing_module = getattr(err, "name", None) or module_root
 
-    # Prefer provider package hints for known integrations, even when the import
-    # error is triggered by a transitive dependency (e.g. `google`).
+    # 알려진 integration은 provider 패키지 힌트를 우선한다. import 에러가 전이 의존성(예:
+    # `google`) 때문에 발생한 경우에도 마찬가지다.
     package_name = MODULE_TO_PACKAGE_HINTS.get(module_root)
     if package_name is None:
         package_name = MODULE_TO_PACKAGE_HINTS.get(missing_module, missing_module.replace("_", "-"))
@@ -26,19 +26,19 @@ def resolve_variable[T](
     variable_path: str,
     expected_type: type[T] | tuple[type, ...] | None = None,
 ) -> T:
-    """Resolve a variable from a path.
+    """경로로부터 변수를 해석한다.
 
     Args:
-        variable_path: The path to the variable (e.g. "parent_package_name.sub_package_name.module_name:variable_name").
-        expected_type: Optional type or tuple of types to validate the resolved variable against.
-            If provided, uses isinstance() to check if the variable is an instance of the expected type(s).
+        variable_path: 변수 경로(예: "parent_package_name.sub_package_name.module_name:variable_name").
+        expected_type: 해석된 변수를 검증할 타입 또는 타입 튜플(선택). 주어지면 isinstance()로
+            해당 타입의 인스턴스인지 확인한다.
 
     Returns:
-        The resolved variable.
+        해석된 변수.
 
     Raises:
-        ImportError: If the module path is invalid or the attribute doesn't exist.
-        ValueError: If the resolved variable doesn't pass the validation checks.
+        ImportError: module 경로가 잘못됐거나 해당 속성이 없을 때.
+        ValueError: 해석된 변수가 검증을 통과하지 못했을 때.
     """
     try:
         module_path, variable_name = variable_path.rsplit(":", 1)
@@ -53,7 +53,7 @@ def resolve_variable[T](
         if isinstance(err, ModuleNotFoundError) or err_name == module_root:
             hint = _build_missing_dependency_hint(module_path, err)
             raise ImportError(f"Could not import module {module_path}. {hint}") from err
-        # Preserve the original ImportError message for non-missing-module failures.
+        # module 누락이 아닌 실패는 원래 ImportError 메시지를 그대로 보존한다.
         raise ImportError(f"Error importing module {module_path}: {err}") from err
 
     try:
@@ -61,7 +61,7 @@ def resolve_variable[T](
     except AttributeError as err:
         raise ImportError(f"Module {module_path} does not define a {variable_name} attribute/class") from err
 
-    # Type validation
+    # 타입 검증
     if expected_type is not None:
         if not isinstance(variable, expected_type):
             type_name = expected_type.__name__ if isinstance(expected_type, type) else " or ".join(t.__name__ for t in expected_type)
@@ -71,18 +71,18 @@ def resolve_variable[T](
 
 
 def resolve_class[T](class_path: str, base_class: type[T] | None = None) -> type[T]:
-    """Resolve a class from a module path and class name.
+    """module 경로와 class 이름으로부터 class를 해석한다.
 
     Args:
-        class_path: The path to the class (e.g. "langchain_openai:ChatOpenAI").
-        base_class: The base class to check if the resolved class is a subclass of.
+        class_path: class 경로(예: "langchain_openai:ChatOpenAI").
+        base_class: 해석된 class가 이 class의 하위 class인지 확인할 기준 class.
 
     Returns:
-        The resolved class.
+        해석된 class.
 
     Raises:
-        ImportError: If the module path is invalid or the attribute doesn't exist.
-        ValueError: If the resolved object is not a class or not a subclass of base_class.
+        ImportError: module 경로가 잘못됐거나 해당 속성이 없을 때.
+        ValueError: 해석된 객체가 class가 아니거나 base_class의 하위 class가 아닐 때.
     """
     model_class = resolve_variable(class_path, expected_type=type)
 

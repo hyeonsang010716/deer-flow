@@ -1,4 +1,4 @@
-"""Utilities for invoking async tools from synchronous agent paths."""
+"""동기 agent 경로에서 async tool을 호출하기 위한 유틸리티."""
 
 import asyncio
 import atexit
@@ -13,14 +13,14 @@ from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
 
-# Shared thread pool for sync tool invocation in async environments.
+# async 환경에서 sync tool을 호출할 때 공용으로 쓰는 thread pool.
 _SYNC_TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="tool-sync")
 
 atexit.register(lambda: _SYNC_TOOL_EXECUTOR.shutdown(wait=False))
 
 
 def _get_runnable_config_param(func: Callable[..., Any]) -> str | None:
-    """Return the coroutine parameter that expects LangChain RunnableConfig."""
+    """LangChain RunnableConfig를 기대하는 coroutine 파라미터 이름을 반환한다."""
     if isinstance(func, functools.partial):
         func = func.func
 
@@ -36,28 +36,25 @@ def _get_runnable_config_param(func: Callable[..., Any]) -> str | None:
 
 
 def make_sync_tool_wrapper(coro: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
-    """Build a synchronous wrapper for an asynchronous tool coroutine.
+    """async tool coroutine에 대한 동기 wrapper를 만든다.
 
     Args:
-        coro: Async callable backing a LangChain tool.
-        tool_name: Tool name used in error logs.
+        coro: LangChain tool을 뒷받침하는 async callable.
+        tool_name: 에러 로그에 쓰는 tool 이름.
 
     Returns:
-        A sync callable suitable for ``BaseTool.func``.
+        ``BaseTool.func``에 넣을 수 있는 sync callable.
 
     Notes:
-        If ``coro`` declares a ``RunnableConfig`` parameter, this wrapper
-        exposes ``config: RunnableConfig`` so LangChain can inject runtime
-        config and then forwards it to the coroutine's detected config
-        parameter. This covers DeerFlow's current config-sensitive tools, such
-        as ``invoke_acp_agent``.
+        ``coro``가 ``RunnableConfig`` 파라미터를 선언하면 이 wrapper는
+        ``config: RunnableConfig``를 노출해 LangChain이 runtime config를 주입할 수 있게 하고,
+        이를 coroutine에서 탐지한 config 파라미터로 전달한다. ``invoke_acp_agent``처럼 config에
+        의존하는 현재 DeerFlow tool들이 여기에 해당한다.
 
-        This wrapper intentionally does not synthesize a dynamic function
-        signature. A future async tool with a normal user-facing argument named
-        ``config`` and a separate ``RunnableConfig`` parameter named something
-        else, such as ``run_config``, may collide with LangChain's injected
-        ``config`` argument. Rename that user-facing field or extend this
-        helper before using that signature.
+        이 wrapper는 의도적으로 동적 함수 시그니처를 만들지 않는다. 앞으로 사용자에게 노출되는 일반
+        인자 이름이 ``config``이면서 ``RunnableConfig`` 파라미터는 ``run_config`` 같은 다른 이름으로
+        가진 async tool이 생기면, LangChain이 주입하는 ``config`` 인자와 충돌할 수 있다. 그런
+        시그니처를 쓰기 전에 사용자 노출 필드 이름을 바꾸거나 이 헬퍼를 확장한다.
     """
     config_param = _get_runnable_config_param(coro)
 

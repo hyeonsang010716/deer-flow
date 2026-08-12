@@ -1,5 +1,5 @@
 """
-Web Search Tool - Search the web using DuckDuckGo (no API key required).
+Web Search 도구 — DuckDuckGo로 웹을 검색한다. API key가 필요 없다.
 """
 
 import json
@@ -47,7 +47,7 @@ def _contains_codepoint(query: str, ranges: tuple[tuple[int, int], ...]) -> bool
 
 
 def _infer_wikipedia_region(query: str) -> str:
-    """Pick a valid Wikipedia language region when DDGS' worldwide region is used."""
+    """DDGS의 worldwide region을 쓸 때 유효한 Wikipedia 언어 region을 고른다."""
     if _contains_codepoint(query, ((0x3040, 0x30FF), (0x31F0, 0x31FF))):
         return "jp-ja"
     if _contains_codepoint(query, ((0xAC00, 0xD7AF), (0x1100, 0x11FF), (0x3130, 0x318F))):
@@ -67,8 +67,8 @@ def _infer_wikipedia_region(query: str) -> str:
 
 def _resolve_ddgs_region(query: str, region: str | None, backend: str | list[str] | tuple[str, ...] | None) -> str:
     """
-    DDGS' wikipedia engine treats the second part of region as a Wikipedia
-    subdomain. Its default worldwide region, wt-wt, becomes wt.wikipedia.org.
+    DDGS의 wikipedia 엔진은 region의 뒷부분을 Wikipedia subdomain으로 해석한다.
+    기본 worldwide region인 wt-wt는 wt.wikipedia.org가 되어 버린다.
     """
     normalized_region = _normalize_setting(region, DEFAULT_REGION).lower()
     if not _backend_includes_wikipedia(backend):
@@ -92,17 +92,17 @@ def _search_text(
     backend: str | list[str] | tuple[str, ...] | None = DEFAULT_BACKEND,
 ) -> list[dict]:
     """
-    Execute text search using DuckDuckGo.
+    DuckDuckGo로 텍스트 검색을 수행한다.
 
     Args:
-        query: Search keywords
-        max_results: Maximum number of results
-        region: Search region
-        safesearch: Safe search level
-        backend: DDGS backend(s), e.g. "auto", "duckduckgo", or "duckduckgo,brave"
+        query: 검색 키워드
+        max_results: 최대 결과 개수
+        region: 검색 region
+        safesearch: safe search 수준
+        backend: DDGS backend. 예: "auto", "duckduckgo", "duckduckgo,brave"
 
     Returns:
-        List of search results
+        검색 결과 목록
     """
     try:
         from ddgs import DDGS
@@ -135,11 +135,11 @@ def web_search_tool(
     query: str,
     max_results: int = 5,
 ) -> str:
-    """Search the web for information. Use this tool to find current information, news, articles, and facts from the internet.
+    """웹에서 정보를 검색한다. 인터넷에서 최신 정보, 뉴스, 기사, 사실을 찾을 때 이 도구를 사용하라.
 
     Args:
-        query: Search keywords describing what you want to find. Be specific for better results.
-        max_results: Maximum number of results to return. Default is 5.
+        query: 찾으려는 내용을 설명하는 검색 키워드. 구체적으로 쓸수록 결과가 좋아진다.
+        max_results: 반환할 최대 결과 개수. 기본값은 5.
     """
     config = get_app_config().get_tool_config("web_search")
     region = DEFAULT_REGION
@@ -147,7 +147,7 @@ def web_search_tool(
     backend = DEFAULT_BACKEND
 
     if config is not None:
-        # Override tool call defaults from config if set.
+        # 설정에 값이 있으면 도구 호출 기본값을 덮어쓴다.
         max_results = config.model_extra.get("max_results", max_results)
         region = config.model_extra.get("region", region)
         safesearch = config.model_extra.get("safesearch", safesearch)

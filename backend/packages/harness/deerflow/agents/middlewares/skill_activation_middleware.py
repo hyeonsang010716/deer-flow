@@ -1,4 +1,4 @@
-"""Middleware for skill activation: explicit slash + in-context secret binding."""
+"""skill 활성화 미들웨어 — 명시적 slash 활성화와 in-context secret 바인딩을 담당한다."""
 
 from __future__ import annotations
 
@@ -43,22 +43,19 @@ logger = logging.getLogger(__name__)
 _SLASH_SKILL_ACTIVATION_KEY = "slash_skill_activation"
 _SLASH_SKILL_ACTIVATION_TARGET_ID_KEY = "slash_skill_activation_target_id"
 
-# _SECRETS_BINDING_AUDIT_KEY: last audited binding (skill and secret names only,
-# never values) so unchanged bindings are not re-recorded each call.
-# The shared slash-source context contract holds the latest slash activation,
-# ONLY the activated skill's canonical container path (never its declared
-# secrets — those are read from the live registry on each call, #3938). The
-# injection set is recomputed every model call, but a slash-activated skill must
-# stay bound for the rest of the run — the model's tool loop issues many model
-# calls after the single activation call (#3861 semantics).
-# _SLASH_SKILL_ACTIVATION_RUN_KEY: identity of the slash message already activated
-# in this run, so the reminder injection + skill disk read + "activate" audit event
-# fire once per user slash command instead of on every model call. The reminder is
-# added via request.override(messages=...) for a single model call and never
-# persisted to graph state, so the 2nd..Nth model call of a turn rebuilds
-# request.messages from state without it — the run context is the only signal that
-# survives the tool loop. All three live in secret_context so they are covered by
-# REDACTED_CONTEXT_KEYS in one place.
+# _SECRETS_BINDING_AUDIT_KEY: 마지막으로 감사한 바인딩(skill명과 secret명만, 값은 절대 저장하지 않는다).
+# 바뀌지 않은 바인딩을 매 호출마다 다시 기록하지 않기 위한 것이다.
+# 공유 slash-source context 계약은 최신 slash 활성화 정보를 담되, 활성화된 skill의 canonical container
+# path만 저장한다(선언된 secret은 절대 저장하지 않는다 — 매 호출마다 live registry에서 읽는다, #3938).
+# 주입 집합은 매 model 호출마다 다시 계산되지만, slash로 활성화된 skill은 run이 끝날 때까지 바인딩을
+# 유지해야 한다. 단 한 번의 활성화 호출 뒤에도 model의 tool loop가 여러 번 model을 호출하기 때문이다
+# (#3861 의미론).
+# _SLASH_SKILL_ACTIVATION_RUN_KEY: 이 run에서 이미 활성화한 slash 메시지의 식별자. 덕분에 reminder 주입,
+# skill 디스크 읽기, "activate" 감사 이벤트가 매 model 호출이 아니라 사용자 slash 커맨드당 한 번만 발생한다.
+# reminder는 단일 model 호출용으로 request.override(messages=...)를 통해 추가될 뿐 graph state에는
+# 저장되지 않는다. 따라서 한 턴의 2번째 이후 model 호출은 reminder 없이 state에서 request.messages를
+# 재구성하며, run context만이 tool loop를 넘어 살아남는 유일한 신호다.
+# 세 키 모두 secret_context에 두어 REDACTED_CONTEXT_KEYS가 한곳에서 처리하게 한다.
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +77,7 @@ class _ActivationResolution:
 
 
 def is_slash_skill_activation_reminder(message: object) -> bool:
-    """Return whether a message is hidden slash-skill activation context."""
+    """메시지가 숨겨진 slash-skill 활성화 context인지 반환한다."""
     return isinstance(message, HumanMessage) and bool(message.additional_kwargs.get(_SLASH_SKILL_ACTIVATION_KEY))
 
 
@@ -89,7 +86,7 @@ def _is_user_activation_target(message: object) -> bool:
 
 
 class SkillActivationMiddleware(AgentMiddleware):
-    """Inject full SKILL.md content when the user explicitly types /skill-name."""
+    """사용자가 /skill-name을 명시적으로 입력하면 SKILL.md 전체 내용을 주입한다."""
 
     def __init__(
         self,
@@ -118,11 +115,9 @@ class SkillActivationMiddleware(AgentMiddleware):
     def _read_skill_content(skill_file: Path, skills_root: Path, *, storage: SkillStorage | None = None) -> str:
         if skill_file.name != SKILL_MD_FILE:
             raise ValueError(f"Expected {SKILL_MD_FILE}, got {skill_file.name}")
-        # Use the storage's path validation if available — UserScopedSkillStorage
-        # stores custom skills in a per-user directory that is not a sub-path of
-        # the global skills root, so the simple relative_to check would reject them.
-        # Fall back to the relative_to check when the storage is a mock (e.g. tests)
-        # that doesn't implement validate_skill_file_path.
+        # 가능하면 storage의 경로 검증을 쓴다. UserScopedSkillStorage는 custom skill을 전역 skills root의
+        # 하위 경로가 아닌 사용자별 디렉터리에 저장하므로, 단순 relative_to 검사로는 거부되기 때문이다.
+        # storage가 validate_skill_file_path를 구현하지 않은 mock(예: 테스트)이면 relative_to 검사로 돌아간다.
         if storage is not None and hasattr(storage, "validate_skill_file_path"):
             resolved_file = storage.validate_skill_file_path(skill_file)
         else:
@@ -167,7 +162,7 @@ class SkillActivationMiddleware(AgentMiddleware):
             return _ActivationResolution(failure_message=f"Skill `/{reference.name}` could not be loaded safely. Please check the skill installation.")
 
         content_hash = hashlib.sha256(skill_content.encode("utf-8")).hexdigest()
-        # CUSTOM skills are editable; PUBLIC and LEGACY are read-only
+        # CUSTOM skill은 편집 가능하고 PUBLIC과 LEGACY는 읽기 전용이다.
         editable = resolved.skill.category == SkillCategory.CUSTOM
         return _ActivationResolution(
             activation=_Activation(
@@ -226,12 +221,11 @@ Follow this skill before choosing a general workflow. Load supporting resources 
 
     @staticmethod
     def _activation_run_key(target: HumanMessage) -> str:
-        """Stable identity for a user slash message, used to activate once per run.
+        """run당 한 번만 활성화하기 위한 사용자 slash 메시지의 안정적 식별자를 만든다.
 
-        Prefers the message id (LangGraph assigns and preserves a stable id once a
-        message is in graph state); falls back to a digest of the genuine user text
-        so an id-less message still dedupes within a run. A new user slash message
-        (new id / new text) yields a new key, so it is not suppressed.
+        메시지 id를 우선 쓴다(LangGraph는 메시지가 graph state에 들어가면 안정적인 id를 부여하고 유지한다).
+        id가 없으면 실제 사용자 텍스트의 digest로 대체해 run 안에서 중복을 제거한다.
+        새 slash 메시지(새 id 또는 새 텍스트)는 새 키를 만들므로 억제되지 않는다.
         """
         if target.id:
             return target.id
@@ -246,16 +240,14 @@ Follow this skill before choosing a general workflow. Load supporting resources 
 
     @staticmethod
     def _already_activated(run_context: dict | None, run_key: str) -> bool:
-        """Whether ``run_key`` was already recorded as activated earlier in this run.
+        """이 run에서 ``run_key``가 이미 활성화된 것으로 기록되었는지 반환한다.
 
-        Sibling to ``_has_existing_activation_for_target``: that helper catches an
-        activation reminder still present in the scanned ``messages`` window; this
-        one catches a prior activation recorded on ``run_context`` whose reminder
-        already fell out of that window (the tool-loop case — see
-        ``_SLASH_SKILL_ACTIVATION_RUN_KEY``). ``run_key`` is computed once by the
-        caller (``_find_activation_target``) and reused as-is at the write site in
-        ``_prepare_model_request``, so the same key is always used to check and to
-        record — this helper only ever checks membership, never computes the key.
+        ``_has_existing_activation_for_target``의 형제 함수다. 그쪽은 스캔한 ``messages`` 구간에 아직 남아
+        있는 활성화 reminder를 잡고, 이쪽은 reminder가 이미 그 구간 밖으로 밀려난 상태에서
+        ``run_context``에 기록된 이전 활성화를 잡는다(tool loop 상황 — ``_SLASH_SKILL_ACTIVATION_RUN_KEY``
+        참고). ``run_key``는 호출자(``_find_activation_target``)가 한 번 계산해 ``_prepare_model_request``의
+        기록 지점까지 그대로 전달하므로, 검사와 기록에 항상 같은 키가 쓰인다. 이 헬퍼는 키를 계산하지 않고
+        포함 여부만 확인한다.
         """
         return isinstance(run_context, dict) and run_context.get(_SLASH_SKILL_ACTIVATION_RUN_KEY) == run_key
 
@@ -272,13 +264,11 @@ Follow this skill before choosing a general workflow. Load supporting resources 
             return None
         if self._has_existing_activation_for_target(messages, target_index, target):
             return None
-        # This exact slash message may have already activated earlier in the run.
-        # The message scan above cannot catch it because the reminder lives only in
-        # a per-call request override, never in state — the run context is the
-        # durable signal (see _already_activated / _SLASH_SKILL_ACTIVATION_RUN_KEY).
-        # Skipping here avoids the redundant skill disk read, reminder re-injection,
-        # and duplicate "activate" audit. run_key is computed once here and threaded
-        # through to the write site in _prepare_model_request.
+        # 이 slash 메시지가 run 앞부분에서 이미 활성화됐을 수 있다. reminder는 호출별 request override에만
+        # 존재하고 state에는 없으므로 위의 메시지 스캔으로는 잡지 못하며, run context가 유일한 durable 신호다
+        # (_already_activated / _SLASH_SKILL_ACTIVATION_RUN_KEY 참고).
+        # 여기서 건너뛰면 불필요한 skill 디스크 읽기, reminder 재주입, "activate" 감사 중복을 피할 수 있다.
+        # run_key는 여기서 한 번 계산해 _prepare_model_request의 기록 지점까지 전달한다.
         run_key = self._activation_run_key(target)
         if self._already_activated(run_context, run_key):
             return None
@@ -334,15 +324,12 @@ Follow this skill before choosing a general workflow. Load supporting resources 
             activation.content_hash,
         )
         self._record_activation(request, activation, hook=hook)
-        # Mark this slash message as activated for the run so the tool loop's later
-        # model calls skip the redundant re-activation (#3861: one activation call,
-        # many follow-up model calls). A new user slash message keys differently and
-        # still activates. Overwrite (`=`), not append/accumulate, is intentional:
-        # _find_activation_target only ever considers the latest real user message as
-        # an activation target, so there is nothing earlier in the run worth
-        # remembering once a new activation replaces it — do not "fix" this into a
-        # set. run_key is the same value already checked in _find_activation_target
-        # (computed once there, threaded through here) rather than recomputed.
+        # 이 slash 메시지를 run 기준으로 활성화됨으로 표시해, tool loop의 이후 model 호출이 중복 재활성화를
+        # 건너뛰게 한다(#3861: 활성화 호출 한 번, 후속 model 호출 다수). 새 slash 메시지는 키가 달라 여전히
+        # 활성화된다. 누적이 아니라 덮어쓰기(`=`)인 것은 의도적이다. _find_activation_target은 항상 가장
+        # 최근의 실제 사용자 메시지만 활성화 대상으로 보므로, 새 활성화가 덮어쓴 뒤에는 run 앞부분에
+        # 기억할 것이 없다. 이를 set으로 "고치지" 말 것. run_key는 _find_activation_target에서 이미 검사한
+        # 값을 그대로 넘겨받은 것이며 다시 계산하지 않는다.
         if run_context is not None:
             run_context[_SLASH_SKILL_ACTIVATION_RUN_KEY] = run_key
         activation_msg = self._make_activation_message(target, self._build_activation_reminder(activation))
@@ -359,40 +346,32 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         return effective
 
     def _resolve_secret_bindings(self, request: ModelRequest, activation: _Activation | None, *, hook: str) -> None:
-        """Recompute the per-run secret injection set (binding point A+, #3861/#3914).
+        """run 단위 secret 주입 집합을 다시 계산한다(binding point A+, #3861/#3914).
 
-        Sources, unioned on every model call:
+        매 model 호출마다 다음 두 source를 합집합으로 사용한다.
 
-        - the most recent slash activation of this run (persisted as a source on
-          the run context so the whole tool loop after the activation call keeps
-          the binding — a new slash activation replaces it). The slash source is
-          validated once, at activation (enabled + allowlist checks in
-          ``_resolve_activation``), and deliberately NOT re-validated per call:
-          slash is a run-scoped commitment made by the user, and it dies with
-          the run anyway;
-        - skills the model loaded earlier in the thread (``ThreadState.skill_context``),
-          re-validated against the live registry on each call: enabled,
-          runtime-allowed for this agent, and not opted out via
-          ``secrets-autonomous: false``. Slash activation is exempt from the
-          opt-out — it is the explicit-ceremony path.
+        - 이 run의 가장 최근 slash 활성화. 활성화 호출 이후의 tool loop 전체가 바인딩을 유지하도록
+          run context에 source로 저장하며, 새 slash 활성화가 이를 대체한다. slash source는 활성화 시점에
+          한 번만 검증하고(``_resolve_activation``의 enabled + allowlist 검사) 호출마다 재검증하지
+          않는다. slash는 사용자가 run 범위로 내린 명시적 결정이고 run과 함께 사라지기 때문이다.
+        - 모델이 이 thread에서 앞서 로드한 skill(``ThreadState.skill_context``). 매 호출마다 live registry로
+          재검증한다: enabled 여부, 이 agent에 대한 runtime 허용 여부, ``secrets-autonomous: false``로
+          opt-out하지 않았는지. slash 활성화는 이 opt-out에서 면제된다. 명시적 절차를 거친 경로이기 때문이다.
 
-        The set is recomputed and REPLACED each call, so a skill evicted from
-        skill_context, or a caller that stops supplying a value, loses its
-        injection on the next call automatically. Injected values always come
-        from the caller's request (``context.secrets``) — never the host
-        environment, which ``env_policy.build_sandbox_env`` scrubs before
-        injection — so a skill can never harvest a host platform credential.
-        Secret *values* are never logged; the audit journal records names only.
+        집합은 매 호출마다 다시 계산되어 통째로 교체된다. 따라서 skill_context에서 밀려난 skill이나
+        값 공급을 중단한 호출자는 다음 호출에서 자동으로 주입을 잃는다. 주입되는 값은 항상 호출자의
+        요청(``context.secrets``)에서 오며 호스트 환경에서 오지 않는다. 호스트 환경은
+        ``env_policy.build_sandbox_env``가 주입 전에 제거하므로 skill이 호스트 플랫폼 자격 증명을 가져갈 수 없다.
+        secret *값*은 절대 로그에 남기지 않으며, 감사 journal에는 이름만 기록한다.
         """
         runtime = getattr(request, "runtime", None)
         context = getattr(runtime, "context", None)
         if not isinstance(context, dict):
             return
 
-        # The slash source records the canonical container path plus a
-        # middleware-chain-local owner token — never declared secrets. Both
-        # consumers authenticate the source and resolve the live registry skill
-        # by path, so caller-mergeable context cannot forge an activation.
+        # slash source에는 canonical container path와 middleware chain 내부용 owner token만 기록하고
+        # 선언된 secret은 절대 기록하지 않는다. 두 소비자 모두 source를 인증한 뒤 path로 live registry의
+        # skill을 조회하므로, 호출자가 병합할 수 있는 context로는 활성화를 위조할 수 없다.
         if activation is not None:
             write_slash_skill_source_path(
                 context,
@@ -405,8 +384,8 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         if request_secrets:
             registry = self._load_skill_registry_by_path()
             if registry is not None:
-                # Slash source: exempt from the ``secrets-autonomous`` opt-out
-                # (explicit ceremony), but still enabled + allowlist checked.
+                # slash source는 명시적 절차이므로 ``secrets-autonomous`` opt-out에서 면제되지만,
+                # enabled와 allowlist 검사는 그대로 받는다.
                 slash_path = read_slash_skill_source_path(context, owner_token=self._slash_source_owner_token)
                 slash_skill = self._resolve_registry_skill(registry, slash_path, require_autonomous=False)
                 if slash_skill is not None:
@@ -449,23 +428,19 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         self._record_secret_binding(context, audit_state, hook=hook)
 
     def _load_skill_registry_by_path(self) -> dict[str, Skill] | None:
-        """Load the live skill registry keyed by normalized container file path.
+        """정규화된 container file path를 키로 하는 live skill registry를 로드한다.
 
-        Reloaded every call on purpose (not cached): load_skills re-reads the
-        enabled state from extensions_config so an operator disabling a skill
-        revokes its secret binding on the very next model call. A cache keyed on
-        file mtimes would miss enable/disable toggles (which do not touch
-        SKILL.md) and keep injecting after a disable — trading the
-        immediate-revocation security property for speed. The cost is gated: the
-        only caller runs this only when the caller supplied secrets.
+        캐시하지 않고 매 호출마다 다시 읽는 것은 의도적이다. load_skills가 extensions_config에서 enabled
+        상태를 다시 읽으므로, 운영자가 skill을 비활성화하면 바로 다음 model 호출에서 secret 바인딩이
+        해제된다. 파일 mtime 기반 캐시는 SKILL.md를 건드리지 않는 enable/disable 토글을 놓쳐 비활성화 후에도
+        주입을 계속하게 되며, 즉시 해제라는 보안 속성을 속도와 맞바꾸는 셈이다. 비용은 제한적이다.
+        유일한 호출자가 호출자로부터 secret이 제공된 경우에만 이 함수를 실행한다.
 
-        Paths are normalized so a non-canonical ``container_path`` config (e.g. a
-        trailing slash) still matches the canonical path captured in
-        ``skill_context`` (#3938). Returns ``None`` if the registry can't load —
-        both the slash and in-context sources then bind nothing for that call
-        (fail closed). This is a deliberate availability-for-security trade-off:
-        a transient registry read failure mid-run drops the injection for that
-        call rather than trusting stale caller-supplied data.
+        path를 정규화하므로 canonical하지 않은 ``container_path`` 설정(예: 끝에 슬래시)도
+        ``skill_context``에 담긴 canonical path와 매칭된다(#3938). registry를 로드하지 못하면 ``None``을
+        반환하고, 그 호출에서는 slash와 in-context source 모두 아무것도 바인딩하지 않는다(fail closed).
+        이는 의도적인 가용성-보안 트레이드오프다. run 도중 일시적 registry 읽기 실패는 오래된 호출자 제공
+        데이터를 신뢰하는 대신 그 호출의 주입을 포기한다.
         """
         try:
             storage = self._storage()
@@ -477,21 +452,17 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         return {posixpath.normpath(skill.get_container_file_path(container_root)): skill for skill in skills}
 
     def _resolve_registry_skill(self, registry: dict[str, Skill], path: object, *, require_autonomous: bool) -> Skill | None:
-        """Resolve a container path to a live registry skill eligible for secret
-        binding, or ``None``.
+        """container path를 secret 바인딩 자격이 있는 live registry skill로 해석하거나 ``None``을 반환한다.
 
-        Match strictly by normalized container file path — never by name. A
-        by-name fallback would be a confused deputy: DeerFlow lets a custom skill
-        shadow a same-named public/legacy one (load_skills de-dupes by name,
-        custom wins), so a reference to public/foo could bind the custom foo's
-        secrets. A path that does not resolve simply binds nothing (the safe
-        direction), which also fails closed on a caller-forged path (#3938).
+        정규화된 container file path로만 매칭하고 이름으로는 절대 매칭하지 않는다. 이름 fallback은
+        confused deputy가 된다. DeerFlow는 custom skill이 같은 이름의 public/legacy skill을 가리도록
+        허용하므로(load_skills가 이름으로 중복 제거하며 custom이 이긴다), public/foo 참조가 custom foo의
+        secret을 바인딩할 수 있다. 해석되지 않는 path는 아무것도 바인딩하지 않으며(안전한 방향),
+        호출자가 위조한 path에도 fail closed로 동작한다(#3938).
 
-        Gates: the skill must be enabled, declare secrets, and be allowlisted for
-        this agent. ``require_autonomous`` additionally enforces the
-        ``secrets-autonomous`` opt-out for the in-context path; the slash path
-        passes ``False`` because explicit activation is the ceremony that opt-out
-        is meant to preserve.
+        조건: skill이 enabled여야 하고, secret을 선언해야 하며, 이 agent의 allowlist에 있어야 한다.
+        ``require_autonomous``는 in-context 경로에 ``secrets-autonomous`` opt-out을 추가로 강제한다.
+        slash 경로는 ``False``를 넘기는데, opt-out이 지키려는 것이 바로 명시적 활성화라는 절차이기 때문이다.
         """
         if not isinstance(path, str) or not path:
             return None
@@ -505,12 +476,10 @@ Follow this skill before choosing a general workflow. Load supporting resources 
         return skill
 
     def _in_context_secret_sources(self, request: ModelRequest, registry: dict[str, Skill]) -> list[tuple[str, tuple[SecretRequirement, ...]]]:
-        """Map ``ThreadState.skill_context`` entries to declared-secret sources.
+        """``ThreadState.skill_context`` 항목을 선언된 secret source로 매핑한다.
 
-        Entries are references to skills the model actually loaded in this
-        thread. Each is re-validated against the live registry so a skill that
-        was disabled, uninstalled, opted out, or removed from the agent's
-        allowlist after being read stops binding immediately.
+        각 항목은 모델이 이 thread에서 실제로 로드한 skill에 대한 참조다. 매번 live registry로 재검증하므로,
+        읽힌 뒤 비활성화·삭제·opt-out되었거나 agent allowlist에서 빠진 skill은 즉시 바인딩을 멈춘다.
         """
         state = getattr(request, "state", None) or {}
         try:

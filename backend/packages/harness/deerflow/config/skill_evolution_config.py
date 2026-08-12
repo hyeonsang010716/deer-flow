@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class SkillEvolutionConfig(BaseModel):
-    """Configuration for agent-managed skill evolution."""
+    """에이전트가 직접 skill을 진화시키는 기능의 설정."""
 
     enabled: bool = Field(
         default=False,

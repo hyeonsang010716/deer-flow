@@ -30,7 +30,7 @@ def test_build_subagent_section_hides_bash_examples_when_unavailable(monkeypatch
     assert "**bash**" not in section
     assert 'bash("npm test")' not in section
     assert 'read_file("/mnt/user-data/workspace/README.md")' in section
-    assert "available tools (ls, read_file, web_search, etc.)" in section
+    assert "사용 가능한 tool(ls, read_file, web_search 등)" in section
 
 
 def test_build_subagent_section_includes_bash_when_available(monkeypatch) -> None:
@@ -38,23 +38,23 @@ def test_build_subagent_section_includes_bash_when_available(monkeypatch) -> Non
 
     section = prompt_module._build_subagent_section(3)
 
-    assert "Routine git, build, test, or deploy operations are not sufficient reason to delegate" in section
+    assert "일상적인 git, build, test, deploy 작업은 위임 사유로 충분하지 않다" in section
     assert 'bash("npm test")' in section
-    assert "available tools (bash, ls, read_file, web_search, etc.)" in section
+    assert "사용 가능한 tool(bash, ls, read_file, web_search 등)" in section
 
 
 def test_bash_subagent_prompt_mentions_workspace_relative_paths() -> None:
     from deerflow.subagents.builtins.bash_agent import BASH_AGENT_CONFIG
 
-    assert "Treat `/mnt/user-data/workspace` as the default working directory for file IO" in BASH_AGENT_CONFIG.system_prompt
-    assert "`hello.txt`, `../uploads/input.csv`, and `../outputs/result.md`" in BASH_AGENT_CONFIG.system_prompt
+    assert "`/mnt/user-data/workspace`를 file IO의 기본 작업 디렉터리로 삼아라" in BASH_AGENT_CONFIG.system_prompt
+    assert "`hello.txt`, `../uploads/input.csv`, `../outputs/result.md`" in BASH_AGENT_CONFIG.system_prompt
 
 
 def test_general_purpose_subagent_prompt_mentions_workspace_relative_paths() -> None:
     from deerflow.subagents.builtins.general_purpose import GENERAL_PURPOSE_CONFIG
 
-    assert "Treat `/mnt/user-data/workspace` as the default working directory for coding and file IO" in GENERAL_PURPOSE_CONFIG.system_prompt
-    assert "`hello.txt`, `../uploads/input.csv`, and `../outputs/result.md`" in GENERAL_PURPOSE_CONFIG.system_prompt
+    assert "`/mnt/user-data/workspace`를 coding과 file IO의 기본 작업 디렉터리로 삼아라" in GENERAL_PURPOSE_CONFIG.system_prompt
+    assert "`hello.txt`, `../uploads/input.csv`, `../outputs/result.md`" in GENERAL_PURPOSE_CONFIG.system_prompt
 
 
 def test_general_purpose_subagent_prompt_prohibits_task_tool() -> None:

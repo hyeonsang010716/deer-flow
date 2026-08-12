@@ -68,12 +68,11 @@ class GrepMatch:
     line: str
 
 
-# ``should_ignore_name`` runs once per directory entry during glob/grep tree
-# walks, so we avoid ~50 ``fnmatch`` calls per name. Most ignore patterns are
-# literal names (O(1) set lookup after normcase); the few glob patterns are
-# pre-translated into a single combined regex. ``os.path.normcase`` keeps the
-# same case behavior ``fnmatch`` applies (case-sensitive on POSIX, folded on
-# Windows).
+# ``should_ignore_name``은 glob/grep 트리 순회 중 디렉터리 항목마다 한 번씩 실행되므로,
+# 이름당 ~50번의 ``fnmatch`` 호출을 피한다. 대부분의 무시 패턴은 리터럴 이름이라
+# normcase 후 O(1) set 조회로 끝나고, 소수의 glob 패턴만 미리 하나의 정규식으로 합친다.
+# ``os.path.normcase``는 ``fnmatch``와 같은 대소문자 동작을 유지한다(POSIX에서는 구분,
+# Windows에서는 접기).
 _EXACT_IGNORE_NAMES = frozenset(os.path.normcase(p) for p in IGNORE_PATTERNS if not any(c in p for c in "*?["))
 _GLOB_IGNORE_PATTERNS = [p for p in IGNORE_PATTERNS if any(c in p for c in "*?[")]
 _GLOB_IGNORE_RE = re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in _GLOB_IGNORE_PATTERNS)) if _GLOB_IGNORE_PATTERNS else None
@@ -126,8 +125,8 @@ def find_glob_matches(root: Path, pattern: str, *, include_dirs: bool = False, m
 
     for current_root, dirs, files in os.walk(root):
         dirs[:] = [name for name in dirs if not should_ignore_name(name)]
-        # root is already resolved; os.walk builds current_root by joining under root,
-        # so relative_to() works without an extra stat()/resolve() per directory.
+        # root는 이미 resolve되어 있고 os.walk는 root 아래를 이어 붙여 current_root를 만들므로,
+        # 디렉터리마다 stat()/resolve()를 더 하지 않아도 relative_to()가 동작한다.
         rel_dir = Path(current_root).relative_to(root)
 
         if include_dirs:
@@ -177,7 +176,7 @@ def find_grep_matches(
     flags = 0 if case_sensitive else re.IGNORECASE
     regex = re.compile(regex_source, flags)
 
-    # Skip lines longer than this to prevent ReDoS on minified / no-newline files.
+    # 이 길이를 넘는 줄은 건너뛴다. minify되었거나 줄바꿈이 없는 파일에서 ReDoS를 막기 위해서다.
     _max_line_chars = line_summary_length * 10
 
     def candidate_files():

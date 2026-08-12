@@ -22,7 +22,7 @@ from .browserless_client import BrowserlessClient, BrowserlessFetchResult, Brows
 
 logger = logging.getLogger(__name__)
 
-# readability_extractor runs CPU-bound parsing; always call via asyncio.to_thread
+# readability_extractor는 CPU 바운드 파싱을 수행하므로 항상 asyncio.to_thread로 호출한다
 _readability_extractor = ReadabilityExtractor()
 _OUTPUTS_VIRTUAL_PREFIX = f"{VIRTUAL_PATH_PREFIX}/outputs"
 _OUTPUT_FORMAT_TO_EXTENSION = {
@@ -31,12 +31,12 @@ _OUTPUT_FORMAT_TO_EXTENSION = {
     "webp": "webp",
 }
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
-# Cap collision-suffix probing so a saturated outputs directory cannot spin forever.
+# 충돌 접미사 탐색 횟수를 제한해, 포화된 outputs 디렉터리에서 무한 반복하지 않게 한다.
 _MAX_FILENAME_COLLISION_PROBES = 1000
 
 
 def _get_tool_config(tool_name: str) -> dict | None:
-    """Get tool config extras safely, returning None if not configured."""
+    """도구 설정의 extra 필드를 안전하게 읽는다. 설정이 없으면 None을 반환한다."""
     config = get_app_config().get_tool_config(tool_name)
     if config is None:
         return None
@@ -45,12 +45,12 @@ def _get_tool_config(tool_name: str) -> dict | None:
 
 
 def _coerce_timeout(value: object, default: float) -> float:
-    """Coerce a config timeout into seconds, falling back to ``default`` on bad input.
+    """설정의 timeout을 초 단위로 변환한다. 잘못된 입력이면 ``default``로 되돌린다.
 
-    Mirrors ``crawl4ai._coerce_timeout`` / ``jina_ai._coerce_timeout``: booleans and
-    non-numeric strings fall back to the default, so ``timeout_s: off`` (YAML ``False``)
-    does not become ``0.0`` and time out every request against a healthy server, and a
-    typo'd value does not raise out of tool construction.
+    ``crawl4ai._coerce_timeout`` / ``jina_ai._coerce_timeout``과 같은 방식이다. bool과
+    숫자가 아닌 문자열은 기본값으로 떨어뜨린다. 그래야 ``timeout_s: off``(YAML의 ``False``)가
+    ``0.0``이 되어 정상 서버에 대한 모든 요청을 timeout시키지 않고, 오타 값이 도구 생성 도중
+    예외를 던지지도 않는다.
     """
     if isinstance(value, bool):
         return default
@@ -65,12 +65,12 @@ def _coerce_timeout(value: object, default: float) -> float:
 
 
 def _resolve_timeout(cfg: dict, default: float) -> float:
-    """Read the timeout, accepting this provider's key and the sibling providers' key.
+    """timeout을 읽되 이 provider의 키와 형제 provider들의 키를 모두 받아들인다.
 
-    ``browserless`` documents ``timeout_s`` while ``crawl4ai`` and ``jina_ai`` read
-    ``timeout``. An unrecognised key is dropped silently by the extra-fields tool config,
-    so someone adapting another provider's snippet got the default with no diagnostic.
-    Accept both, preferring the documented ``timeout_s`` when both are present.
+    ``browserless``는 ``timeout_s``를 문서화하지만 ``crawl4ai``와 ``jina_ai``는 ``timeout``을
+    읽는다. 인식되지 않는 키는 extra 필드 도구 설정이 조용히 버리므로, 다른 provider의 예시를
+    가져다 쓴 사람은 아무 진단 없이 기본값을 받았다. 둘 다 받아들이되 함께 있으면 문서화된
+    ``timeout_s``를 우선한다.
     """
     if "timeout_s" in cfg:
         return _coerce_timeout(cfg["timeout_s"], default)
@@ -127,12 +127,11 @@ def _normalize_output_format(value: object) -> str:
 
 
 def _validate_capture_url(url: str, allow_private_addresses: bool = False) -> str | None:
-    """Validate a capture URL for scheme and (unless opted out) SSRF safety.
+    """capture URL의 scheme과 (opt-out하지 않은 한) SSRF 안전성을 검증한다.
 
-    Blocks requests that resolve to loopback, private, link-local (incl. the
-    169.254.169.254 cloud-metadata endpoint), reserved, multicast, or
-    unspecified addresses. Operators who intentionally point the tool at an
-    internal Browserless target can opt out via ``allow_private_addresses``.
+    loopback, 사설, link-local(169.254.169.254 cloud metadata endpoint 포함), 예약,
+    멀티캐스트, unspecified 주소로 resolve되는 요청을 차단한다. 내부 Browserless 대상을
+    의도적으로 지정하는 운영자는 ``allow_private_addresses``로 opt-out할 수 있다.
     """
     return validate_public_http_url(
         url,
@@ -177,12 +176,11 @@ def _tool_message(content: str, tool_call_id: str) -> Command:
 
 
 def _dedupe_output_name(outputs_path: Path, output_name: str) -> str:
-    """Return a non-colliding filename under ``outputs_path``.
+    """``outputs_path`` 아래에서 충돌하지 않는 파일명을 반환한다.
 
-    Keeps the original name when free, otherwise appends ``-1``, ``-2``, ...
-    before the extension so an explicit filename never silently overwrites an
-    earlier capture. Falls back to a timestamp suffix if the directory is
-    saturated with the bounded probe range.
+    비어 있으면 원래 이름을 그대로 쓰고, 아니면 확장자 앞에 ``-1``, ``-2``, ... 를 붙인다.
+    그래야 명시적 파일명이 이전 capture를 조용히 덮어쓰지 않는다. 제한된 탐색 범위 안에서
+    디렉터리가 포화되면 timestamp 접미사로 대체한다.
     """
     candidate = outputs_path / output_name
     if not candidate.exists():
@@ -200,7 +198,7 @@ def _dedupe_output_name(outputs_path: Path, output_name: str) -> str:
 
 
 def _write_capture_output(outputs_path: Path, output_name: str, content: bytes) -> str:
-    """Write ``content`` into ``outputs_path`` and return the actual filename used."""
+    """``content``를 ``outputs_path``에 쓰고 실제로 사용한 파일명을 반환한다."""
     outputs_path.mkdir(parents=True, exist_ok=True)
     final_name = _dedupe_output_name(outputs_path, output_name)
     (outputs_path / final_name).write_bytes(content)
@@ -208,12 +206,11 @@ def _write_capture_output(outputs_path: Path, output_name: str, content: bytes) 
 
 
 def _target_status_warning(result: BrowserlessScreenshotResult | BrowserlessFetchResult) -> str:
-    """Return a human-readable warning when the fetched/captured page itself errored.
+    """가져오거나 캡처한 page 자체가 에러였다면 사람이 읽을 수 있는 경고를 반환한다.
 
-    Browserless returns HTTP 200 for the render request even when the target
-    page responded with a 4xx/5xx (or was an error/anti-bot page), so the raw
-    content alone cannot be trusted as a normal successful response. The
-    target's real status is surfaced via the X-Response-Code header.
+    Browserless는 대상 page가 4xx/5xx를 응답했거나 에러/anti-bot page였어도 렌더 요청 자체에는
+    HTTP 200을 준다. 따라서 원본 내용만으로는 정상 성공 응답이라고 믿을 수 없다. 대상의 실제
+    status는 X-Response-Code 헤더로 드러난다.
     """
     code = result.target_status_code.strip()
     if not code or code.startswith(("2", "3")):
@@ -225,14 +222,14 @@ def _target_status_warning(result: BrowserlessScreenshotResult | BrowserlessFetc
 
 @tool("web_fetch", parse_docstring=True)
 async def web_fetch_tool(url: str) -> str:
-    """Fetch the contents of a web page at a given URL using Browserless (headless Chrome).
-    Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
-    This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
-    Do NOT add www. to URLs that do NOT have them.
-    URLs must include the schema: https://example.com is a valid URL while example.com is an invalid URL.
+    """Browserless(headless Chrome)를 사용해 주어진 URL의 web page 내용을 가져온다.
+    사용자가 직접 제공했거나 web_search와 web_fetch 도구의 결과로 반환된 URL만 정확히 그대로 가져와라.
+    이 도구는 비공개 Google Docs나 로그인 장벽 뒤의 page처럼 인증이 필요한 콘텐츠에는 접근할 수 없다.
+    www.가 없는 URL에 www.를 임의로 붙이지 마라.
+    URL에는 schema를 반드시 포함해야 한다. https://example.com은 유효하지만 example.com은 유효하지 않다.
 
     Args:
-        url: The URL to fetch the contents of.
+        url: 내용을 가져올 URL.
     """
     try:
         cfg = _get_tool_config("web_fetch") or {}
@@ -290,19 +287,19 @@ async def web_capture_tool(
     viewport_width: int | None = None,
     viewport_height: int | None = None,
 ) -> Command:
-    """Capture a rendered webpage screenshot and present it as an artifact.
+    """렌더링된 webpage의 screenshot을 캡처해 artifact로 제시한다.
 
-    Use this tool when you need a visual capture of a public webpage, especially JavaScript-heavy pages, UI states, dashboards, or visual evidence for a report.
-    Only capture exact URLs provided by the user or discovered through other tools. Do not use this for private pages behind login unless the user has explicitly configured Browserless outside DeerFlow.
-    URLs must include the schema: https://example.com is valid while example.com is invalid.
+    공개된 webpage의 시각적 캡처가 필요할 때, 특히 JavaScript 비중이 큰 page, UI 상태, dashboard, 보고서에 넣을 시각적 증거가 필요할 때 사용하라.
+    사용자가 제공했거나 다른 도구로 찾아낸 URL만 정확히 그대로 캡처하라. 사용자가 DeerFlow 외부에서 Browserless를 명시적으로 설정하지 않은 한, 로그인 뒤의 비공개 page에는 사용하지 마라.
+    URL에는 schema를 반드시 포함해야 한다. https://example.com은 유효하지만 example.com은 유효하지 않다.
 
     Args:
-        url: The http(s) URL to capture.
-        filename: Optional output filename. Directories are ignored and the extension is determined by output_format.
-        full_page: Optional override for full-page capture.
-        output_format: Optional image format: png, jpeg, or webp.
-        viewport_width: Optional viewport width in pixels.
-        viewport_height: Optional viewport height in pixels.
+        url: 캡처할 http(s) URL.
+        filename: 선택적 출력 파일명. 디렉터리는 무시되며 확장자는 output_format으로 결정된다.
+        full_page: 전체 page 캡처 여부의 선택적 override.
+        output_format: 선택적 이미지 포맷: png, jpeg, webp 중 하나.
+        viewport_width: 선택적 viewport 너비(픽셀).
+        viewport_height: 선택적 viewport 높이(픽셀).
     """
     try:
         cfg = _get_tool_config("web_capture") or {}

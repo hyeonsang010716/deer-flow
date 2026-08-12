@@ -1,4 +1,4 @@
-"""Helpers for keeping AIMessage tool-call metadata consistent."""
+"""AIMessage의 tool-call metadata를 일관되게 유지하는 헬퍼."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def clone_ai_message_with_tool_calls(
     *,
     content: Any | None = None,
 ) -> AIMessage:
-    """Clone an AIMessage while keeping raw provider tool-call metadata in sync."""
+    """provider의 raw tool-call metadata를 함께 맞추면서 AIMessage를 복제한다."""
     kept_ids = {tc["id"] for tc in tool_calls if isinstance(tc.get("id"), str) and tc["id"]}
 
     update: dict[str, Any] = {"tool_calls": tool_calls}

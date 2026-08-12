@@ -1,4 +1,4 @@
-"""Cache for MCP tools to avoid repeated loading."""
+"""MCP 도구를 반복 로딩하지 않도록 캐싱한다."""
 
 import asyncio
 import logging
@@ -15,42 +15,37 @@ _mcp_tools_cache: list[BaseTool] | None = None
 _cache_initialized = False
 _initialization_lock = asyncio.Lock()
 
-# Cache-invalidation key for the resolved extensions config file. We track the
-# resolved path *and* a ``(mtime, size, sha256)`` content signature — via the
-# shared ``deerflow.config.file_signature`` helper also used by
-# ``deerflow.config.app_config`` for the sibling runtime-editable config file —
-# rather than only the mtime. A strict mtime ``>`` comparison misses same-second
-# edits and mtime that stays put or moves backward (object-store / network
-# mounts, ``git checkout``, ``cp -p`` / backup restore, ``tar`` / ``rsync`` that
-# preserve timestamps), and tracking no path at all makes a switch to a
-# different config file with an equal-or-older mtime structurally invisible.
-_config_path: Path | None = None  # Resolved extensions config path at init time
-_config_signature: _ConfigSignature | None = None  # (mtime, size, sha256) at init time
+# resolve된 extensions config 파일에 대한 캐시 무효화 키. mtime만 보지 않고 resolve된 경로와
+# ``(mtime, size, sha256)`` 콘텐츠 signature를 함께 추적한다 — signature는
+# ``deerflow.config.app_config``가 런타임 편집 가능한 형제 config 파일에 쓰는 것과 같은 공용
+# ``deerflow.config.file_signature`` 헬퍼로 계산한다. mtime ``>`` 비교만으로는 같은 초 안의 편집과
+# mtime이 그대로거나 뒤로 가는 경우(object-store / network 마운트, ``git checkout``,
+# ``cp -p`` / 백업 복원, 타임스탬프를 보존하는 ``tar`` / ``rsync``)를 놓치고, 경로를 전혀 추적하지
+# 않으면 mtime이 같거나 더 오래된 다른 config 파일로 전환한 것을 구조적으로 감지할 수 없다.
+_config_path: Path | None = None  # init 시점에 resolve된 extensions config 경로
+_config_signature: _ConfigSignature | None = None  # init 시점의 (mtime, size, sha256)
 
 
 def _resolve_config_path() -> Path | None:
-    """Resolve the extensions config file path, or ``None`` when unconfigured.
+    """extensions config 파일 경로를 resolve한다. 설정되지 않았으면 ``None``을 반환한다.
 
-    ``ExtensionsConfig.resolve_config_path()`` raises ``FileNotFoundError``
-    when an explicit `config_path` or `DEER_FLOW_EXTENSIONS_CONFIG_PATH`
-    points at a file that does not exist. That is deliberate for callers that
-    load the config for actual use (e.g. ``ExtensionsConfig.from_file()`` via
-    ``get_mcp_tools()``): an operator-asserted explicit path going missing is
-    a real misconfiguration and must be surfaced loudly.
+    ``ExtensionsConfig.resolve_config_path()``는 명시적 `config_path`나
+    `DEER_FLOW_EXTENSIONS_CONFIG_PATH`가 존재하지 않는 파일을 가리키면
+    ``FileNotFoundError``를 던진다. config를 실제로 사용하려고 로드하는 호출자
+    (예: ``get_mcp_tools()``를 통한 ``ExtensionsConfig.from_file()``)에게는 의도된 동작이다.
+    운영자가 명시한 경로가 사라진 것은 실제 설정 오류이므로 크게 드러내야 한다.
 
-    This helper is not one of those callers — it only backs the cache's own
-    staleness check (``_is_cache_stale``, via ``_current_config_state``),
-    which runs on every ``get_cached_mcp_tools()`` call and just wants to know
-    whether the previously loaded config is still current. If the file behind
-    a previously-valid explicit/env-var path becomes unreadable later
-    (deleted mid-run, a Docker mount hiccup, ...), raising here would crash
-    every subsequent call to that hot per-request path instead of leaving the
-    cache serving its last-known-good MCP tools. So this wrapper catches that
-    specific failure and treats it the same as "unconfigured", matching
-    ``_is_cache_stale()``'s existing fail-soft handling of a ``None`` config
-    state (see its docstring). Scoping the catch here — rather than making
-    ``resolve_config_path()`` itself return ``None`` for every caller — keeps
-    the loud failure intact for callers that actually need the file.
+    이 헬퍼는 그런 호출자가 아니다. 캐시 자체의 staleness 검사
+    (``_current_config_state``를 통한 ``_is_cache_stale``)만 뒷받침하며, 이 검사는
+    ``get_cached_mcp_tools()`` 호출마다 실행되어 이전에 로드한 config가 여전히 최신인지만
+    확인한다. 이전에 유효했던 명시적/env-var 경로의 파일이 나중에 읽을 수 없게 되면
+    (실행 중 삭제, Docker 마운트 문제 등) 여기서 예외를 던지는 것은 캐시가 마지막 정상 MCP
+    도구를 계속 제공하게 두는 대신, 요청마다 도는 hot path의 이후 모든 호출을 실패시킨다.
+    그래서 이 wrapper는 그 특정 실패만 잡아 "설정되지 않음"과 동일하게 취급하며, 이는
+    ``_is_cache_stale()``이 ``None`` config state를 fail-soft로 다루는 기존 방식과 일치한다
+    (해당 docstring 참고). ``resolve_config_path()`` 자체가 모든 호출자에게 ``None``을
+    반환하게 만들지 않고 여기서만 catch 범위를 좁힘으로써, 파일이 실제로 필요한 호출자에게는
+    시끄러운 실패가 그대로 유지된다.
     """
     from deerflow.config.extensions_config import ExtensionsConfig
 
@@ -65,7 +60,7 @@ def _resolve_config_path() -> Path | None:
 
 
 def _current_config_state() -> tuple[Path | None, _ConfigSignature | None]:
-    """Return the currently resolved extensions config path and its signature."""
+    """현재 resolve된 extensions config 경로와 그 signature를 반환한다."""
     config_path = _resolve_config_path()
     if config_path is None:
         return None, None
@@ -73,32 +68,28 @@ def _current_config_state() -> tuple[Path | None, _ConfigSignature | None]:
 
 
 def _is_cache_stale() -> bool:
-    """Check if the cache is stale due to config file changes.
+    """config 파일 변경으로 캐시가 stale해졌는지 확인한다.
 
-    The cache is stale when the resolved extensions config path changed, or when
-    the ``(mtime, size, sha256)`` content signature differs from the one recorded
-    at initialization. Using content equality (``!=``) instead of a strict mtime
-    ``>`` comparison detects same-second edits and backward mtime moves, and
-    tracking the resolved path detects a switch to a different config file.
+    resolve된 extensions config 경로가 바뀌었거나, ``(mtime, size, sha256)`` 콘텐츠
+    signature가 초기화 시점에 기록한 값과 다르면 캐시는 stale이다. 엄격한 mtime ``>`` 비교
+    대신 콘텐츠 동등성(``!=``)을 쓰면 같은 초 안의 편집과 mtime이 뒤로 가는 경우를 감지하고,
+    resolve된 경로를 추적하면 다른 config 파일로의 전환을 감지한다.
 
     Returns:
-        True if the cache should be invalidated, False otherwise.
+        캐시를 무효화해야 하면 True, 아니면 False.
     """
     if not _cache_initialized:
-        return False  # Not initialized yet, not stale
+        return False  # 아직 초기화 전이므로 stale이 아니다
 
     current_path, current_signature = _current_config_state()
 
-    # Preserve the original "config missing / not yet recorded" behavior: if
-    # there was no readable config when the cache was populated, or there is
-    # none now, do not invalidate. This also covers the config being deleted
-    # entirely after a successful init (current_signature flips to None): the
-    # cache intentionally keeps serving its last-known-good MCP tools rather
-    # than invalidating into an unconfigured state, matching the pre-fix
-    # mtime-only contract (which also returned False once the file could no
-    # longer be stat-ed). Treat this as a deliberate fail-soft choice, not an
-    # oversight — a future change that wants "config deleted" to tear down
-    # MCP tools needs its own explicit signal here, not an inferred one.
+    # 기존의 "config 없음 / 아직 기록 안 됨" 동작을 유지한다. 캐시를 채울 때 읽을 수 있는
+    # config가 없었거나 지금 없으면 무효화하지 않는다. init 성공 후 config가 완전히 삭제된
+    # 경우(current_signature가 None이 되는 경우)도 여기에 포함된다. 캐시는 설정되지 않은 상태로
+    # 무효화되는 대신 마지막 정상 MCP 도구를 계속 제공하며, 이는 수정 전 mtime-only 계약
+    # (파일을 stat할 수 없게 되면 마찬가지로 False를 반환했다)과 일치한다. 실수가 아니라 의도된
+    # fail-soft 선택이다. "config 삭제"로 MCP 도구를 내리고 싶은 향후 변경은 추론이 아니라
+    # 여기에 자체 명시적 신호를 두어야 한다.
     if _config_signature is None or current_signature is None:
         return False
 
@@ -114,12 +105,12 @@ def _is_cache_stale() -> bool:
 
 
 async def initialize_mcp_tools() -> list[BaseTool]:
-    """Initialize and cache MCP tools.
+    """MCP 도구를 초기화하고 캐싱한다.
 
-    This should be called once at application startup.
+    애플리케이션 startup에서 한 번만 호출해야 한다.
 
     Returns:
-        List of LangChain tools from all enabled MCP servers.
+        활성화된 모든 MCP 서버의 LangChain 도구 목록.
     """
     global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature
 
@@ -133,28 +124,27 @@ async def initialize_mcp_tools() -> list[BaseTool]:
         logger.info("Initializing MCP tools...")
         _mcp_tools_cache = await get_mcp_tools()
         _cache_initialized = True
-        _config_path, _config_signature = _current_config_state()  # Record config path + content signature
+        _config_path, _config_signature = _current_config_state()  # config 경로 + 콘텐츠 signature 기록
         logger.info("MCP tools initialized: %d tool(s) loaded (config path: %s)", len(_mcp_tools_cache), _config_path)
 
         return _mcp_tools_cache
 
 
 def get_cached_mcp_tools() -> list[BaseTool]:
-    """Get cached MCP tools with lazy initialization.
+    """캐싱된 MCP 도구를 lazy initialization과 함께 반환한다.
 
-    If tools are not initialized, automatically initializes them.
-    This ensures MCP tools work in both FastAPI and LangGraph Studio contexts.
+    도구가 초기화되지 않았으면 자동으로 초기화한다. 덕분에 FastAPI와 LangGraph Studio
+    양쪽 context에서 MCP 도구가 동작한다.
 
-    Also checks if the config file has been modified since last initialization,
-    and re-initializes if needed. This ensures that changes made through the
-    Gateway API are reflected in the Gateway-embedded LangGraph runtime.
+    마지막 초기화 이후 config 파일이 수정되었는지도 확인해 필요하면 재초기화한다. 덕분에
+    Gateway API로 변경한 내용이 Gateway 내장 LangGraph runtime에 반영된다.
 
     Returns:
-        List of cached MCP tools.
+        캐싱된 MCP 도구 목록.
     """
     global _cache_initialized
 
-    # Check if cache is stale due to config file changes
+    # config 파일 변경으로 캐시가 stale해졌는지 확인
     if _is_cache_stale():
         logger.info("MCP cache is stale, resetting for re-initialization...")
         reset_mcp_tools_cache()
@@ -162,21 +152,21 @@ def get_cached_mcp_tools() -> list[BaseTool]:
     if not _cache_initialized:
         logger.info("MCP tools not initialized, performing lazy initialization...")
         try:
-            # Try to initialize in the current event loop
+            # 현재 event loop에서 초기화를 시도한다
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # If loop is already running (e.g., in LangGraph Studio),
-                # we need to create a new loop in a thread
+                # loop가 이미 실행 중이면(예: LangGraph Studio) 별도 thread에서
+                # 새 loop를 만들어야 한다
                 import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, initialize_mcp_tools())
                     future.result()
             else:
-                # If no loop is running, we can use the current loop
+                # 실행 중인 loop가 없으면 현재 loop를 그대로 쓴다
                 loop.run_until_complete(initialize_mcp_tools())
         except RuntimeError:
-            # No event loop exists, create one
+            # event loop가 없으므로 새로 만든다
             try:
                 asyncio.run(initialize_mcp_tools())
             except Exception:
@@ -190,11 +180,10 @@ def get_cached_mcp_tools() -> list[BaseTool]:
 
 
 def reset_mcp_tools_cache() -> None:
-    """Reset the MCP tools cache.
+    """MCP 도구 캐시를 리셋한다.
 
-    This is useful for testing or when you want to reload MCP tools.
-    Also closes all persistent MCP sessions so they are recreated on
-    the next tool load.
+    테스트나 MCP 도구를 다시 로드하고 싶을 때 쓴다. 지속 MCP session도 모두 닫아서
+    다음 도구 로드 때 재생성되게 한다.
     """
     global _mcp_tools_cache, _cache_initialized, _config_path, _config_signature
     _mcp_tools_cache = None
@@ -202,18 +191,17 @@ def reset_mcp_tools_cache() -> None:
     _config_path = None
     _config_signature = None
 
-    # Close persistent sessions – they will be recreated by the next
-    # get_mcp_tools() call with the (possibly updated) connection config.
+    # 지속 session을 닫는다. 다음 get_mcp_tools() 호출이 (갱신되었을 수 있는) 연결 config로
+    # 다시 만든다.
     #
-    # close_all_sync() already picks the correct strategy per owning loop:
-    #   * sessions owned by the *current* running loop are only *signalled*
-    #     (their owner task runs __aexit__ once the loop regains control –
-    #     this is correct and leak-free, since the loop keeps the task alive),
-    #   * sessions on other threads' loops are torn down deterministically,
-    #   * idle/closed loops are handled or skipped.
-    # We deliberately do NOT try to synchronously wait for the current running
-    # loop to finish teardown here: that is a self-deadlock (the loop can only
-    # run the teardown after this synchronous call returns control to it).
+    # close_all_sync()는 이미 소유 loop별로 올바른 전략을 고른다:
+    #   * *현재* 실행 중인 loop가 소유한 session은 *신호만* 보낸다
+    #     (loop가 제어권을 되찾으면 소유 task가 __aexit__을 실행한다 — loop가 task를
+    #     살려두므로 올바르고 leak도 없다),
+    #   * 다른 thread의 loop에 있는 session은 결정적으로 정리한다,
+    #   * idle/닫힌 loop는 처리하거나 건너뛴다.
+    # 현재 실행 중인 loop의 teardown 완료를 여기서 동기적으로 기다리지는 않는다. 그것은
+    # self-deadlock이다(loop는 이 동기 호출이 제어권을 돌려준 뒤에야 teardown을 실행할 수 있다).
     try:
         from deerflow.mcp.session_pool import get_session_pool
 

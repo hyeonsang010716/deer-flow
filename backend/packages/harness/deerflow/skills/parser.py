@@ -8,12 +8,12 @@ from .types import SKILL_MD_FILE, SecretRequirement, Skill, SkillCategory
 
 logger = logging.getLogger(__name__)
 
-# Valid POSIX environment-variable name.
+# 유효한 POSIX 환경 변수 이름.
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _format_yaml_error(skill_file: Path, exc: yaml.YAMLError, source: str) -> str:
-    """Render a developer-friendly explanation of a YAML front-matter error."""
+    """YAML front-matter 오류를 개발자가 이해하기 쉬운 형태로 렌더링한다."""
 
     lines = [f"Invalid YAML front-matter in {skill_file}: {exc}"]
 
@@ -22,9 +22,8 @@ def _format_yaml_error(skill_file: Path, exc: yaml.YAMLError, source: str) -> st
     if mark is not None and 0 <= mark.line < len(source_lines):
         offending = source_lines[mark.line]
 
-        # mark.line is 0-based within the front-matter body; +1 makes it
-        # 1-based, +1 more accounts for the leading `---` fence that the
-        # front-matter regex strips before yaml.safe_load sees it.
+        # mark.line은 front-matter 본문 기준 0-based다. +1로 1-based가 되고, front-matter
+        # regex가 yaml.safe_load 전에 제거하는 선행 `---` fence를 위해 +1을 더한다.
         file_line_number = mark.line + 2
         lines.append(f"  line {file_line_number}: {offending}")
 
@@ -39,11 +38,10 @@ def _format_yaml_error(skill_file: Path, exc: yaml.YAMLError, source: str) -> st
 
 
 def parse_allowed_tools(raw: object, skill_file: Path) -> tuple[str, ...] | None:
-    """Parse the optional allowed-tools frontmatter field.
+    """선택 항목인 allowed-tools frontmatter 필드를 파싱한다.
 
-    Returns None when the field is omitted. Returns a tuple when the field is a
-    YAML sequence of strings, including an empty tuple for explicit no-tool
-    skills. Raises ValueError for malformed values.
+    필드가 없으면 None을 반환한다. 필드가 문자열 YAML sequence면 tuple을 반환하며, tool을
+    명시적으로 하나도 쓰지 않는 skill은 빈 tuple이 된다. 값이 잘못되면 ValueError를 던진다.
     """
     if raw is None:
         return None
@@ -62,14 +60,12 @@ def parse_allowed_tools(raw: object, skill_file: Path) -> tuple[str, ...] | None
 
 
 def parse_required_secrets(raw: object, skill_file: Path) -> tuple[SecretRequirement, ...]:
-    """Parse the optional required-secrets frontmatter field (issue #3861).
+    """선택 항목인 required-secrets frontmatter 필드를 파싱한다(issue #3861).
 
-    Accepts a YAML sequence whose items are either a string (the secret / env
-    variable name) or a mapping (``{name, optional}``). Returns an empty tuple
-    when the field is omitted. Entries whose name is missing or is not a valid
-    environment-variable name are dropped with a warning, so one malformed
-    declaration does not invalidate the whole skill. Raises ValueError only when
-    the field is present but is not a list.
+    항목이 문자열(secret / 환경 변수 이름)이거나 mapping(``{name, optional}``)인 YAML sequence를
+    받는다. 필드가 없으면 빈 tuple을 반환한다. 이름이 없거나 유효한 환경 변수 이름이 아닌 항목은
+    경고와 함께 버려서, 잘못된 선언 하나가 skill 전체를 무효화하지 않게 한다. 필드가 있지만
+    list가 아닐 때만 ValueError를 던진다.
     """
     if raw is None:
         return ()
@@ -99,12 +95,11 @@ def parse_required_secrets(raw: object, skill_file: Path) -> tuple[SecretRequire
 
 
 def parse_secrets_autonomous(raw: object, skill_file: Path) -> bool:
-    """Parse the optional ``secrets-autonomous`` frontmatter field (issue #3914).
+    """선택 항목인 ``secrets-autonomous`` frontmatter 필드를 파싱한다(issue #3914).
 
-    ``True`` (the default) lets declared secrets bind while the skill is
-    in-context via an autonomous model load; ``False`` restricts binding to
-    explicit ``/slash`` activation. A malformed (non-boolean) value fails
-    closed to ``False`` — the safer, less-injection direction.
+    ``True``(기본값)면 모델이 자율적으로 로드해 skill이 context에 들어와 있는 동안에도 선언된
+    secret이 바인딩된다. ``False``면 명시적인 ``/slash`` activation으로만 바인딩된다. 형식이
+    잘못된(boolean이 아닌) 값은 더 안전하고 injection 위험이 낮은 ``False``로 fail-closed된다.
     """
     if raw is None:
         return True
@@ -115,16 +110,16 @@ def parse_secrets_autonomous(raw: object, skill_file: Path) -> bool:
 
 
 def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: Path | None = None) -> Skill | None:
-    """Parse a SKILL.md file and extract metadata.
+    """SKILL.md 파일을 파싱해 metadata를 추출한다.
 
     Args:
-        skill_file: Path to the SKILL.md file.
-        category: Category of the skill.
-        relative_path: Relative path from the category root to the skill
-            directory.  Defaults to the skill directory name when omitted.
+        skill_file: SKILL.md 파일 경로.
+        category: skill의 category.
+        relative_path: category root에서 skill 디렉터리까지의 상대 경로. 생략하면 skill
+            디렉터리 이름을 쓴다.
 
     Returns:
-        Skill object if parsing succeeds, None otherwise.
+        파싱에 성공하면 Skill 객체, 아니면 None.
     """
     if not skill_file.exists() or skill_file.name != SKILL_MD_FILE:
         return None
@@ -132,8 +127,8 @@ def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: P
     try:
         content = skill_file.read_text(encoding="utf-8")
 
-        # Keep parser diagnostics richer than the pure helper's host-path-free
-        # error string; tests and authoring UX depend on the line-specific hint.
+        # parser 진단은 host 경로가 없는 순수 helper의 오류 문자열보다 풍부하게 유지한다.
+        # 테스트와 저작 UX가 줄 단위 힌트에 의존한다.
         front_matter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?", content, re.DOTALL)
         if not front_matter_match:
             return None
@@ -147,7 +142,7 @@ def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: P
             logger.error("Invalid SKILL.md front-matter in %s: Frontmatter must be a YAML dictionary", skill_file)
             return None
 
-        # Extract required fields.  Both must be non-empty strings.
+        # 필수 필드를 추출한다. 둘 다 비어 있지 않은 문자열이어야 한다.
         name = metadata.get("name")
         description = metadata.get("description")
 
@@ -156,7 +151,7 @@ def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: P
         if not description or not isinstance(description, str):
             return None
 
-        # Normalise: strip surrounding whitespace that YAML may preserve.
+        # 정규화: YAML이 남길 수 있는 앞뒤 공백을 제거한다.
         name = name.strip()
         description = description.strip()
 
@@ -190,7 +185,7 @@ def parse_skill_file(skill_file: Path, category: SkillCategory, relative_path: P
             relative_path=relative_path or Path(skill_file.parent.name),
             category=category,
             allowed_tools=allowed_tools,
-            enabled=True,  # Actual state comes from the extensions config file.
+            enabled=True,  # 실제 상태는 extensions config 파일에서 온다.
             required_secrets=required_secrets,
             secrets_autonomous=secrets_autonomous,
         )

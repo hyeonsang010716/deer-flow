@@ -1,9 +1,9 @@
-"""Remote sandbox backend — delegates Pod lifecycle to the provisioner service.
+"""Remote sandbox backend — Pod lifecycle을 provisioner 서비스에 위임한다.
 
-The provisioner dynamically creates per-sandbox-id Pods + NodePort Services
-in k3s.  The backend accesses sandbox pods directly via ``k3s:{NodePort}``.
+provisioner는 k3s에 sandbox id별 Pod와 NodePort Service를 동적으로 만든다. backend는
+``k3s:{NodePort}``로 sandbox pod에 직접 접근한다.
 
-Architecture:
+구조:
     ┌────────────┐  HTTP   ┌─────────────┐  K8s API  ┌──────────┐
     │ this file  │ ──────▸ │ provisioner │ ────────▸ │   k3s    │
     │ (backend)  │         │ :8002       │           │ :6443    │
@@ -50,22 +50,19 @@ def _provisioner_extra_mounts_payload(
     provision_lark_cli_runtime: bool = False,
     provision_lark_cli_broker: bool = False,
 ) -> list[dict[str, object]]:
-    """Return only extra mounts the provisioner knows how to recreate safely.
+    """provisioner가 안전하게 재생성할 수 있는 extra mount만 반환한다.
 
-    When ``provision_lark_cli_runtime`` is set, the provisioner supplies the
-    lark-cli runtime via an init container + emptyDir, so the runtime extra mount
-    is dropped here to avoid a colliding hostPath/PVC mount at the same path. The
-    per-user config/locks/data mounts are still forwarded (they are mounted into
-    the sandbox in Pattern A). The config root remains read-only while its
-    nested locks mount is writable for lark-cli's coordination files.
+    ``provision_lark_cli_runtime``이 설정되면 provisioner가 init container + emptyDir로
+    lark-cli runtime을 공급하므로, 같은 경로에 hostPath/PVC mount가 충돌하지 않도록 여기서
+    runtime extra mount를 뺀다. 사용자별 config/locks/data mount는 그대로 전달한다
+    (Pattern A에서는 sandbox에 mount된다). config 루트는 read-only로 두고, 중첩된 locks
+    mount만 lark-cli 조정 파일을 위해 쓰기 가능하게 둔다.
 
-    When ``provision_lark_cli_broker`` is set (Pattern B, issue #4338), the
-    provisioner runs a broker sidecar that holds the credentials, so the
-    config/locks/data mounts are **forwarded** (the provisioner wires them into
-    the sidecar, not the sandbox) while the runtime mount is dropped. Nothing
-    changes in this payload beyond keeping those credential-related mounts
-    available for the provisioner to place; the runtime entry is dropped in
-    both modes.
+    ``provision_lark_cli_broker``가 설정되면(Pattern B, issue #4338) provisioner가 자격
+    증명을 보유하는 broker sidecar를 띄우므로, config/locks/data mount는 **전달**하고
+    (provisioner가 sandbox가 아니라 sidecar에 연결한다) runtime mount는 뺀다. 이 payload에서
+    달라지는 건 provisioner가 배치할 수 있도록 해당 자격 증명 mount를 남겨 두는 것뿐이며,
+    runtime 항목은 두 모드 모두에서 제외된다.
     """
     if not extra_mounts:
         return []
@@ -89,12 +86,11 @@ def _provisioner_extra_mounts_payload(
 
 
 class RemoteSandboxBackend(SandboxBackend):
-    """Backend that delegates sandbox lifecycle to the provisioner service.
+    """sandbox lifecycle을 provisioner 서비스에 위임하는 backend.
 
-    All Pod creation, destruction, and discovery are handled by the
-    provisioner.  This backend is a thin HTTP client.
+    Pod 생성, 파괴, 탐색은 모두 provisioner가 처리한다. 이 backend는 얇은 HTTP 클라이언트다.
 
-    Typical config.yaml::
+    전형적인 config.yaml::
 
         sandbox:
           use: deerflow.community.aio_sandbox:AioSandboxProvider
@@ -103,13 +99,13 @@ class RemoteSandboxBackend(SandboxBackend):
     """
 
     def __init__(self, provisioner_url: str, api_key: str = ""):
-        """Initialize with the provisioner service URL and optional API key.
+        """provisioner 서비스 URL과 선택적 API key로 초기화한다.
 
         Args:
-            provisioner_url: URL of the provisioner service
-                             (e.g., ``http://provisioner:8002``).
-            api_key: Value sent as ``X-API-Key`` header on every request.
-                     Leave empty to send no authentication header.
+            provisioner_url: provisioner 서비스 URL
+                             (예: ``http://provisioner:8002``).
+            api_key: 매 요청에 ``X-API-Key`` 헤더로 보낼 값.
+                     비워 두면 인증 헤더를 보내지 않는다.
         """
         self._provisioner_url = provisioner_url.rstrip("/")
         self._api_key = api_key
@@ -121,7 +117,7 @@ class RemoteSandboxBackend(SandboxBackend):
     def _auth_headers(self) -> dict[str, str]:
         return {"X-API-Key": self._api_key} if self._api_key else {}
 
-    # ── SandboxBackend interface ──────────────────────────────────────────
+    # ── SandboxBackend 인터페이스 ──────────────────────────────────────────
 
     def create(
         self,
@@ -133,10 +129,10 @@ class RemoteSandboxBackend(SandboxBackend):
         provision_lark_cli_runtime: bool = False,
         provision_lark_cli_broker: bool = False,
     ) -> SandboxInfo:
-        """Create a sandbox Pod + Service via the provisioner.
+        """provisioner를 통해 sandbox Pod와 Service를 생성한다.
 
-        Calls ``POST /api/sandboxes`` which creates a dedicated Pod +
-        NodePort Service in k3s.
+        ``POST /api/sandboxes``를 호출하며, 이 API가 k3s에 전용 Pod와 NodePort Service를
+        만든다.
         """
         return self._provisioner_create(
             thread_id,
@@ -148,37 +144,34 @@ class RemoteSandboxBackend(SandboxBackend):
         )
 
     def destroy(self, info: SandboxInfo) -> None:
-        """Destroy a sandbox Pod + Service via the provisioner."""
+        """provisioner를 통해 sandbox Pod와 Service를 파괴한다."""
         self._provisioner_destroy(info.sandbox_id)
 
     def is_alive(self, info: SandboxInfo) -> bool:
-        """Check whether the sandbox Pod is running."""
+        """sandbox Pod가 실행 중인지 확인한다."""
         return self._provisioner_is_alive(info.sandbox_id)
 
     def discover(self, sandbox_id: str) -> SandboxInfo | None:
-        """Discover an existing sandbox via the provisioner.
+        """provisioner를 통해 기존 sandbox를 찾는다.
 
-        Calls ``GET /api/sandboxes/{sandbox_id}`` and returns info if
-        the Pod exists.
+        ``GET /api/sandboxes/{sandbox_id}``를 호출하고, Pod가 있으면 정보를 반환한다.
         """
         return self._provisioner_discover(sandbox_id)
 
     def list_running(self) -> list[SandboxInfo]:
-        """Return all sandboxes currently managed by the provisioner.
+        """provisioner가 현재 관리하는 모든 sandbox를 반환한다.
 
-        Calls ``GET /api/sandboxes`` so that ``AioSandboxProvider._reconcile_orphans()``
-        can adopt pods that were created by a previous process and were never
-        explicitly destroyed.
-        Without this, a process restart silently orphans all existing k8s Pods —
-        they stay running forever because the idle checker only
-        tracks in-process state.
+        ``GET /api/sandboxes``를 호출해 ``AioSandboxProvider._reconcile_orphans()``가
+        이전 프로세스가 만들고 명시적으로 파괴되지 않은 pod를 흡수할 수 있게 한다.
+        이게 없으면 프로세스 재시작 시 기존 k8s Pod가 전부 조용히 orphan이 된다. idle
+        checker는 in-process 상태만 추적하므로 그 pod들은 영원히 남는다.
         """
         return self._provisioner_list()
 
-    # ── Provisioner API calls ─────────────────────────────────────────────
+    # ── Provisioner API 호출 ─────────────────────────────────────────────
 
     def _provisioner_list(self) -> list[SandboxInfo]:
-        """GET /api/sandboxes → list all running sandboxes."""
+        """GET /api/sandboxes → 실행 중인 sandbox를 모두 나열한다."""
         try:
             resp = requests.get(f"{self._provisioner_url}/api/sandboxes", headers=self._auth_headers(), timeout=10)
             resp.raise_for_status()
@@ -219,7 +212,7 @@ class RemoteSandboxBackend(SandboxBackend):
         provision_lark_cli_runtime: bool = False,
         provision_lark_cli_broker: bool = False,
     ) -> SandboxInfo:
-        """POST /api/sandboxes → create Pod + Service."""
+        """POST /api/sandboxes → Pod와 Service를 생성한다."""
         effective_user_id = user_id or get_effective_user_id()
         include_legacy_skills = user_should_see_legacy_skills(effective_user_id)
         payload = {
@@ -256,7 +249,7 @@ class RemoteSandboxBackend(SandboxBackend):
             raise RuntimeError(f"Provisioner create failed: {exc}") from exc
 
     def _provisioner_destroy(self, sandbox_id: str) -> None:
-        """DELETE /api/sandboxes/{sandbox_id} → destroy Pod + Service."""
+        """DELETE /api/sandboxes/{sandbox_id} → Pod와 Service를 파괴한다."""
         try:
             resp = requests.delete(
                 f"{self._provisioner_url}/api/sandboxes/{sandbox_id}",
@@ -271,7 +264,7 @@ class RemoteSandboxBackend(SandboxBackend):
             logger.warning(f"Provisioner destroy failed for {sandbox_id}: {exc}")
 
     def _provisioner_is_alive(self, sandbox_id: str) -> bool:
-        """GET /api/sandboxes/{sandbox_id} → check Pod phase."""
+        """GET /api/sandboxes/{sandbox_id} → Pod phase를 확인한다."""
         try:
             resp = requests.get(
                 f"{self._provisioner_url}/api/sandboxes/{sandbox_id}",
@@ -290,7 +283,7 @@ class RemoteSandboxBackend(SandboxBackend):
         return data.get("status") == "Running"
 
     def _provisioner_discover(self, sandbox_id: str) -> SandboxInfo | None:
-        """GET /api/sandboxes/{sandbox_id} → discover existing sandbox."""
+        """GET /api/sandboxes/{sandbox_id} → 기존 sandbox를 찾는다."""
         try:
             resp = requests.get(
                 f"{self._provisioner_url}/api/sandboxes/{sandbox_id}",

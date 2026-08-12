@@ -1,18 +1,17 @@
-"""Built-in guardrail providers that ship with DeerFlow."""
+"""DeerFlow에 기본 탑재된 guardrail provider."""
 
 from deerflow.guardrails.provider import GuardrailDecision, GuardrailReason, GuardrailRequest
 
 
 class AllowlistProvider:
-    """Simple allowlist/denylist provider. No external dependencies."""
+    """단순 allowlist/denylist provider. 외부 의존성이 없다."""
 
     name = "allowlist"
 
     def __init__(self, *, allowed_tools: list[str] | None = None, denied_tools: list[str] | None = None):
-        # Distinguish "no allowlist configured" (None -> allow all) from an
-        # explicitly empty allowlist ([] -> allow nothing). A truthiness test
-        # would collapse [] into None and fail open, letting every tool through
-        # when the operator intended to permit none.
+        # "allowlist 미설정"(None -> 전부 허용)과 "명시적 빈 allowlist"([] -> 전부 거부)를
+        # 구분한다. 진리값 검사를 쓰면 []가 None으로 뭉개져 fail open이 되고, 운영자가
+        # 아무것도 허용하지 않으려 했는데 모든 도구가 통과한다.
         self._allowed = set(allowed_tools) if allowed_tools is not None else None
         self._denied = set(denied_tools) if denied_tools else set()
 

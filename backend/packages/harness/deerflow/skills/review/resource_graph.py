@@ -1,4 +1,4 @@
-"""Deterministic package resource graph checks."""
+"""package resource graph에 대한 결정적 검사."""
 
 from __future__ import annotations
 

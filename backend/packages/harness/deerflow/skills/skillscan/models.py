@@ -1,11 +1,9 @@
-"""Data contracts for DeerFlow SkillScan.
+"""DeerFlow SkillScan의 데이터 계약.
 
-Every ``SecurityFinding`` field has a Phase 1 consumer: the blocking policy
-reads ``severity``; the Gateway rejection response, the agent tool error, and
-the LLM scanner context read the rest. The rule category and owning analyzer
-are encoded in the ``rule_id`` prefix (``package-``, ``secret-``,
-``declaration-``, ``python-``, ``shell-``, ``network-``/``resource-``), not
-duplicated as separate fields.
+``SecurityFinding``의 모든 필드에는 Phase 1 소비자가 있다. 차단 정책은 ``severity``를 읽고,
+Gateway 거부 응답과 agent tool 오류, LLM 스캐너 context가 나머지를 읽는다. rule 카테고리와
+담당 analyzer는 ``rule_id`` 접두사(``package-``, ``secret-``, ``declaration-``, ``python-``,
+``shell-``, ``network-``/``resource-``)에 인코딩되며, 별도 필드로 중복하지 않는다.
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ class ScanResult(TypedDict):
 
 @dataclass(frozen=True)
 class RuleSpec:
-    """Static definition of one SkillScan rule; ``remediation`` is authored here once and copied into findings."""
+    """SkillScan rule 하나의 정적 정의. ``remediation``은 여기서 한 번 작성해 finding으로 복사한다."""
 
     rule_id: str
     severity: FindingSeverity
@@ -43,11 +41,11 @@ class RuleSpec:
 
 
 class StaticScannerError(RuntimeError):
-    """Raised when SkillScan cannot evaluate its input at the package boundary."""
+    """SkillScan이 패키지 경계에서 입력을 평가할 수 없을 때 발생한다."""
 
 
 class StaticScanBlockedError(ValueError):
-    """Raised when deterministic findings block a skill write or install."""
+    """결정적 finding이 skill 쓰기나 설치를 차단할 때 발생한다."""
 
     findings: list[SecurityFinding]
     skill_name: str | None

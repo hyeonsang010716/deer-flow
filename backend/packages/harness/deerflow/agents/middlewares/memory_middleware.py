@@ -1,4 +1,4 @@
-"""Middleware for memory mechanism."""
+"""memory 메커니즘을 담당하는 middleware."""
 
 import asyncio
 import logging
@@ -21,42 +21,41 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryMiddlewareState(AgentState):
-    """Compatible with the `ThreadState` schema."""
+    """`ThreadState` 스키마와 호환된다."""
 
     pass
 
 
 class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
-    """Middleware that queues conversation for memory update after agent execution.
+    """에이전트 실행이 끝난 뒤 대화를 memory 갱신 큐에 넣는 middleware.
 
-    This middleware:
-    1. After each agent execution, queues the conversation for memory update
-    2. Only includes user inputs and final assistant responses (ignores tool calls)
-    3. The queue uses debouncing to batch multiple updates together
-    4. Memory is updated asynchronously via LLM summarization
+    동작은 다음과 같다.
+    1. 에이전트 실행마다 대화를 memory 갱신 큐에 넣는다.
+    2. 사용자 입력과 최종 assistant 응답만 포함한다(tool call은 무시한다).
+    3. 큐는 debounce로 여러 갱신을 묶는다.
+    4. memory는 LLM 요약을 통해 비동기로 갱신된다.
     """
 
     state_schema = MemoryMiddlewareState
 
     def __init__(self, agent_name: str | None = None, *, memory_config: "MemoryConfig | None" = None):
-        """Initialize the MemoryMiddleware.
+        """MemoryMiddleware를 초기화한다.
 
         Args:
-            agent_name: If provided, memory is stored per-agent. If None, uses global memory.
-            memory_config: Explicit memory config. When omitted, legacy global
-                config fallback is used.
+            agent_name: 지정하면 에이전트별로 memory를 저장한다. None이면 전역 memory를 쓴다.
+            memory_config: 명시적인 memory config. 생략하면 기존 전역 config로 대체한다.
         """
         super().__init__()
         self._agent_name = agent_name
         self._memory_config = memory_config
 
     def _resolve_add_args(self, state: MemoryMiddlewareState, runtime: Runtime) -> tuple[str, list, str, str | None] | None:
-        """Resolve one write request without invoking the manager."""
+        """manager를 호출하지 않고 쓰기 요청 하나를 구성한다."""
         config = self._memory_config or get_memory_config()
         if not config.enabled:
             return None
 
-        # Get thread ID from runtime context first, then fall back to LangGraph's configurable metadata
+        # thread ID를 먼저 runtime context에서 찾고, 없으면 LangGraph의 configurable metadata로 대체한다
         thread_id = runtime.context.get("thread_id") if runtime.context else None
         if thread_id is None:
             config_data = get_config()
@@ -65,15 +64,15 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
             logger.debug("No thread_id in context, skipping memory update")
             return None
 
-        # Get messages from state
+        # state에서 메시지를 가져온다
         messages = state.get("messages", [])
         if not messages:
             logger.debug("No messages in state, skipping memory update")
             return None
 
-        # Capture user_id at enqueue time while the request context is still alive.
-        # threading.Timer fires on a different thread where ContextVar values are not
-        # propagated, so we must store user_id explicitly in ConversationContext.
+        # 요청 context가 살아 있는 enqueue 시점에 user_id를 캡처한다. threading.Timer는
+        # ContextVar 값이 전파되지 않는 다른 thread에서 실행되므로, user_id를
+        # ConversationContext에 명시적으로 저장해야 한다.
         user_id = resolve_runtime_user_id(runtime)
         runtime_context = runtime.context if isinstance(runtime.context, dict) else {}
         trace_id = normalize_trace_id(runtime_context.get(DEERFLOW_TRACE_METADATA_KEY))
@@ -91,14 +90,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
 
     @override
     def after_agent(self, state: MemoryMiddlewareState, runtime: Runtime) -> dict | None:
-        """Queue conversation for memory update after agent completes."""
+        """에이전트가 끝난 뒤 대화를 memory 갱신 큐에 넣는다."""
         add_args = self._resolve_add_args(state, runtime)
         if add_args is None:
             return None
         thread_id, messages, user_id, trace_id = add_args
 
-        # Hand raw messages to the manager; the backend filters to user + final-AI
-        # turns, validates, detects correction/reinforcement, and enqueues.
+        # 원본 메시지를 manager에 넘긴다. backend가 사용자 + 최종 AI 턴만 걸러 내고 검증한 뒤
+        # 정정/강화 여부를 판별하고 큐에 넣는다.
         get_memory_manager().add(
             thread_id,
             messages,
@@ -111,7 +110,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
 
     @override
     async def aafter_agent(self, state: MemoryMiddlewareState, runtime: Runtime) -> dict | None:
-        """Use the manager's async boundary on LangGraph's async execution path."""
+        """LangGraph의 async 실행 경로에서는 manager의 async 경계를 사용한다."""
         add_args = self._resolve_add_args(state, runtime)
         if add_args is None:
             return None

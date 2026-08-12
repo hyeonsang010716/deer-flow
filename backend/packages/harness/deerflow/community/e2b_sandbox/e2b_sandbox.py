@@ -16,9 +16,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
-# Where DeerFlow's ``/mnt/user-data`` virtual prefix is materialised inside
-# the e2b sandbox.  e2b code-interpreter templates default to ``/home/user``
-# as the working directory.
+# DeerFlow의 ``/mnt/user-data`` 가상 prefix가 e2b sandbox 안에서 실제로 위치하는 곳.
+# e2b code-interpreter 템플릿의 기본 작업 디렉터리는 ``/home/user``다.
 DEFAULT_E2B_HOME_DIR = "/home/user"
 
 _E2B_NOT_FOUND_SIGNATURES = (
@@ -34,17 +33,15 @@ def _is_sandbox_gone_error(exc: BaseException) -> bool:
 
 
 class E2BSandbox(Sandbox):
-    """DeerFlow Sandbox adapter that delegates to an e2b cloud sandbox.
+    """e2b 클라우드 sandbox에 위임하는 DeerFlow Sandbox 어댑터.
 
     Args:
-        id: DeerFlow-side sandbox id (used as cache key in the provider).
-        client: A live ``e2b_code_interpreter.Sandbox`` (sync) instance.
-            The caller owns the connection and is responsible for ``kill()``;
-            this wrapper only calls ``close()`` on its host-side HTTP client
-            during release.
-        home_dir: Directory inside the sandbox that backs the
-            ``VIRTUAL_PATH_PREFIX`` (``/mnt/user-data``) prefix.  Defaults to
-            :data:`DEFAULT_E2B_HOME_DIR`.
+        id: DeerFlow 쪽 sandbox id. provider에서 캐시 키로 쓴다.
+        client: 살아 있는 ``e2b_code_interpreter.Sandbox``(sync) 인스턴스.
+            연결의 소유권과 ``kill()`` 책임은 호출자에게 있다. 이 wrapper는
+            release 시 호스트 쪽 HTTP client에 ``close()``만 호출한다.
+        home_dir: sandbox 안에서 ``VIRTUAL_PATH_PREFIX``(``/mnt/user-data``)를
+            받쳐 주는 디렉터리. 기본값은 :data:`DEFAULT_E2B_HOME_DIR`.
     """
 
     def __init__(
@@ -61,7 +58,7 @@ class E2BSandbox(Sandbox):
         self._closed = False
         self._dead = False
 
-    # ── Properties / lifecycle ───────────────────────────────────────────
+    # ── 프로퍼티 / lifecycle ─────────────────────────────────────────────
 
     @property
     def client(self) -> E2BClientSandbox:
@@ -73,7 +70,7 @@ class E2BSandbox(Sandbox):
 
     @property
     def sandbox_id(self) -> str:
-        """e2b-side sandbox id (different from DeerFlow's ``self.id`` cache key)."""
+        """e2b 쪽 sandbox id. DeerFlow의 ``self.id`` 캐시 키와는 다르다."""
         return getattr(self._client, "sandbox_id", None) or self.id
 
     def close(self) -> None:
@@ -99,13 +96,13 @@ class E2BSandbox(Sandbox):
                 return
 
     def _resolve_path(self, path: str) -> str:
-        """Map DeerFlow virtual paths into the e2b sandbox filesystem.
+        """DeerFlow 가상 경로를 e2b sandbox 파일시스템 경로로 변환한다.
 
-        ``VIRTUAL_PATH_PREFIX`` (``/mnt/user-data``) is rewritten under
-        :attr:`home_dir`, mirroring how ``LocalContainerBackend`` bind-mounts
-        the host workspace into the AIO container at ``/mnt/user-data``.
-        Other absolute paths are returned verbatim so the sandbox can reach
-        system directories (``/tmp``, ``/etc``, …) when needed.
+        ``VIRTUAL_PATH_PREFIX``(``/mnt/user-data``)는 :attr:`home_dir` 아래로
+        재작성한다. ``LocalContainerBackend``가 호스트 workspace를 AIO 컨테이너의
+        ``/mnt/user-data``에 bind-mount하는 것과 같은 구조다.
+        그 밖의 절대 경로는 그대로 돌려주어 sandbox가 필요할 때 시스템 디렉터리
+        (``/tmp``, ``/etc`` 등)에 접근할 수 있게 한다.
         """
         if not path:
             raise ValueError("path must be a non-empty string")
@@ -124,21 +121,18 @@ class E2BSandbox(Sandbox):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Execute a shell command via ``sandbox.commands.run``.
+        """``sandbox.commands.run``으로 셸 명령을 실행한다.
 
-        Returns the combined stdout/stderr.
-        The lock serialises concurrent calls on the same instance
-        because the e2b SDK shares a single HTTP/2 connection per sandbox.
+        stdout과 stderr를 합쳐 반환한다. e2b SDK는 sandbox마다 HTTP/2 연결
+        하나를 공유하므로, lock으로 같은 인스턴스의 동시 호출을 직렬화한다.
 
         Args:
-            command: The command to execute.
-            env: Optional per-call environment variables (request-scoped secrets,
-                issue #3861). Validated against the POSIX env-var name rule
-                (shared with the local and AIO sandboxes) and passed through to
-                e2b as ``envs``, which are scoped to this command only and never
-                placed in the command string.
-            timeout: Optional per-call command timeout in seconds. ``None`` keeps
-                the e2b SDK default (60s).
+            command: 실행할 명령.
+            env: 호출 단위 환경 변수(request-scoped secret, issue #3861). local/AIO
+                sandbox와 공유하는 POSIX 환경 변수 이름 규칙으로 검증한 뒤 e2b에
+                ``envs``로 전달한다. 이 명령에만 적용되며 명령 문자열에는 절대
+                들어가지 않는다.
+            timeout: 호출 단위 명령 타임아웃(초). ``None``이면 e2b SDK 기본값(60초)을 쓴다.
         """
         _validate_extra_env(env)
         with self._lock:
@@ -172,23 +166,21 @@ class E2BSandbox(Sandbox):
 
     @property
     def is_dead(self) -> bool:
-        """Whether the underlying e2b VM is known to be reaped.
+        """하위 e2b VM이 회수된 것으로 확인되었는지 여부.
 
-        Updated lazily by ``execute_command`` and the provider's ``ping`` /
-        bootstrap calls — there is no proactive heartbeat. Reading the value
-        does *not* round-trip to the API.
+        ``execute_command``와 provider의 ``ping``/bootstrap 호출이 lazy하게
+        갱신한다. 선제적인 heartbeat는 없다. 이 값을 읽어도 API를 왕복하지 *않는다*.
         """
         with self._lock:
             return self._dead
 
     def ping(self) -> bool:
-        """Cheap health check: returns False if the e2b VM has been reaped.
+        """가벼운 health check. e2b VM이 회수되었으면 False를 반환한다.
 
-        Run as ``commands.run("true")`` so successful execution implies the
-        full HTTP path (auth + control plane + envd) is alive.  Sets
-        ``_dead = True`` on the same "sandbox not found" signature
-        :func:`_is_sandbox_gone_error` recognises so subsequent calls
-        short-circuit.
+        ``commands.run("true")``로 실행하므로, 성공하면 전체 HTTP 경로
+        (auth + control plane + envd)가 살아 있다는 뜻이다.
+        :func:`_is_sandbox_gone_error`가 인식하는 "sandbox not found" 시그니처가
+        나오면 ``_dead = True``로 표시해 이후 호출을 곧바로 끊는다.
         """
         with self._lock:
             if self._dead or self._client is None:
@@ -244,14 +236,12 @@ class E2BSandbox(Sandbox):
             raise PermissionError(f"Access denied: path must be under '{VIRTUAL_PATH_PREFIX}': '{path}'")
 
         resolved = self._resolve_path(path)
-        # Prefer the streaming API so the 100 MB cap is enforced *before* the
-        # whole payload is buffered in the gateway process.  ``format="bytes"``
-        # is implemented by the e2b SDK as ``bytearray(r.content)`` — i.e. the
-        # entire file is materialised in memory before returning — which would
-        # let a multi-GB artifact OOM the shared gateway on hosted deployments.
-        # ``format="stream"`` returns a ``FileStreamReader`` (an
-        # ``Iterator[bytes]``) that owns its HTTP response and releases the
-        # pooled connection on exhaustion / close / error.
+        # 100MB 상한을 gateway 프로세스가 전체 payload를 버퍼링하기 *전에* 적용하기
+        # 위해 스트리밍 API를 우선 쓴다. e2b SDK의 ``format="bytes"``는
+        # ``bytearray(r.content)``로 구현되어 있어 파일 전체를 메모리에 올린 뒤
+        # 반환한다. 수 GB짜리 artifact 하나로 호스팅된 공용 gateway가 OOM에 빠질 수 있다.
+        # ``format="stream"``은 자체 HTTP 응답을 소유하고 소진/close/에러 시 pool 연결을
+        # 반납하는 ``FileStreamReader``(``Iterator[bytes]``)를 반환한다.
         with self._lock:
             client = self._client
             if client is None:
@@ -271,8 +261,8 @@ class E2BSandbox(Sandbox):
         if data is None:
             return b""
 
-        # Buffered fallbacks (bytes/bytearray/str): apply the cap up front so
-        # we still refuse oversize payloads even on this path.
+        # 버퍼링 fallback(bytes/bytearray/str): 이 경로에서도 초과 payload를 거부하도록
+        # 상한을 먼저 적용한다.
         if isinstance(data, (bytes, bytearray)):
             if len(data) > _MAX_DOWNLOAD_SIZE:
                 raise OSError(
@@ -363,8 +353,8 @@ class E2BSandbox(Sandbox):
             if client is None:
                 raise RuntimeError("sandbox client has been closed")
             try:
-                # e2b's ``files.write`` accepts either ``str`` or ``bytes`` —
-                # passing bytes preserves binary content losslessly.
+                # e2b의 ``files.write``는 ``str``과 ``bytes``를 모두 받는다.
+                # bytes로 넘겨야 바이너리 내용이 손실 없이 보존된다.
                 client.files.write(resolved, content)
             except Exception as e:
                 logger.error("Failed to update file %s in e2b sandbox: %s", resolved, e)
@@ -427,9 +417,9 @@ class E2BSandbox(Sandbox):
         re.compile(regex_source, 0 if case_sensitive else re.IGNORECASE)
 
         resolved = self._resolve_path(path)
-        # Build a portable ``grep`` invocation:
-        # -r recursive, -n line numbers, -H always print filename, -I skip
-        # binary files, -E extended regex (or -F for literal/fixed strings).
+        # 이식성 있는 ``grep`` 호출을 구성한다.
+        # -r 재귀, -n 줄 번호, -H 파일명 항상 출력, -I 바이너리 파일 건너뛰기,
+        # -E 확장 정규식(literal이면 -F로 고정 문자열).
         flags = ["-r", "-n", "-H", "-I"]
         if not case_sensitive:
             flags.append("-i")
@@ -438,13 +428,12 @@ class E2BSandbox(Sandbox):
         else:
             flags.append("-E")
         if glob is not None:
-            # ``grep --include`` only matches by basename, at any depth -- it
-            # cannot express a directory-scoping prefix like ``src/`` in
-            # ``src/*.js``. Pass just the basename portion as a coarse
-            # pre-filter (a superset of the true match set: every file
-            # ``path_matches`` can accept also satisfies this basename
-            # pattern) and enforce the real directory scope below via
-            # ``path_matches``, the same helper ``glob()`` uses.
+            # ``grep --include``는 깊이에 상관없이 basename으로만 매칭하므로
+            # ``src/*.js``의 ``src/`` 같은 디렉터리 범위 prefix를 표현하지 못한다.
+            # basename 부분만 거친 pre-filter로 넘기고(참 매칭 집합의 superset이다.
+            # ``path_matches``가 받아들이는 파일은 모두 이 basename 패턴도 만족한다)
+            # 실제 디렉터리 범위는 아래에서 ``glob()``과 같은 헬퍼인
+            # ``path_matches``로 적용한다.
             include_pattern = glob.split("/")[-1] or glob
             flags.append(f"--include={include_pattern}")
 
@@ -482,8 +471,8 @@ class E2BSandbox(Sandbox):
             if should_ignore_path(file_path):
                 continue
             if glob is not None:
-                # Restrict to the caller's real directory scope -- the
-                # ``--include`` flag above only pre-filtered by basename.
+                # 위의 ``--include`` 플래그는 basename으로만 걸렀으므로,
+                # 여기서 호출자가 요청한 실제 디렉터리 범위로 좁힌다.
                 if file_path != root and not file_path.startswith(root_prefix):
                     continue
                 rel_path = file_path.rsplit("/", 1)[-1] if file_path == root else file_path[len(root) :].lstrip("/")

@@ -1,4 +1,4 @@
-"""Thread-safe network utilities."""
+"""thread-safe 네트워크 유틸리티."""
 
 import socket
 import threading
@@ -6,26 +6,25 @@ from contextlib import contextmanager
 
 
 class PortAllocator:
-    """Thread-safe port allocator that prevents port conflicts in concurrent environments.
+    """동시 실행 환경에서 포트 충돌을 막는 thread-safe 포트 allocator.
 
-    This class maintains a set of reserved ports and uses a lock to ensure that
-    port allocation is atomic. Once a port is allocated, it remains reserved until
-    explicitly released.
+    예약된 포트 집합을 유지하고 lock으로 포트 할당을 원자적으로 만든다. 한 번 할당된 포트는
+    명시적으로 release할 때까지 예약 상태로 남는다.
 
-    Usage:
+    사용법:
         allocator = PortAllocator()
 
-        # Option 1: Manual allocation and release
+        # 방법 1: 수동 할당과 해제
         port = allocator.allocate(start_port=8080)
         try:
-            # Use the port...
+            # 포트 사용...
         finally:
             allocator.release(port)
 
-        # Option 2: Context manager (recommended)
+        # 방법 2: context manager (권장)
         with allocator.allocate_context(start_port=8080) as port:
-            # Use the port...
-            # Port is automatically released when exiting the context
+            # 포트 사용...
+            # context를 벗어나면 포트가 자동으로 해제된다
     """
 
     def __init__(self):
@@ -33,21 +32,20 @@ class PortAllocator:
         self._reserved_ports: set[int] = set()
 
     def _is_port_available(self, port: int) -> bool:
-        """Check if a port is available for binding.
+        """포트를 bind할 수 있는지 확인한다.
 
         Args:
-            port: The port number to check.
+            port: 확인할 포트 번호.
 
         Returns:
-            True if the port is available, False otherwise.
+            사용 가능하면 True, 아니면 False.
         """
         if port in self._reserved_ports:
             return False
 
-        # Bind to 0.0.0.0 (wildcard) rather than localhost so that the check
-        # mirrors exactly what Docker does.  Docker binds to 0.0.0.0:PORT;
-        # checking only 127.0.0.1 can falsely report a port as available even
-        # when Docker already occupies it on the wildcard address.
+        # 검사가 Docker의 동작과 정확히 일치하도록 localhost가 아니라 0.0.0.0(wildcard)에
+        # bind한다. Docker는 0.0.0.0:PORT에 bind하므로, 127.0.0.1만 확인하면 Docker가 이미
+        # wildcard 주소에서 점유 중인 포트를 사용 가능하다고 잘못 보고할 수 있다.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
                 s.bind(("0.0.0.0", port))
@@ -56,20 +54,20 @@ class PortAllocator:
                 return False
 
     def allocate(self, start_port: int = 8080, max_range: int = 100) -> int:
-        """Allocate an available port in a thread-safe manner.
+        """thread-safe하게 사용 가능한 포트를 할당한다.
 
-        This method is thread-safe. It finds an available port, marks it as reserved,
-        and returns it. The port remains reserved until release() is called.
+        사용 가능한 포트를 찾아 예약 표시한 뒤 반환한다. release()를 호출할 때까지 예약 상태가
+        유지된다.
 
         Args:
-            start_port: The port number to start searching from.
-            max_range: Maximum number of ports to search.
+            start_port: 탐색을 시작할 포트 번호.
+            max_range: 탐색할 최대 포트 개수.
 
         Returns:
-            An available port number.
+            사용 가능한 포트 번호.
 
         Raises:
-            RuntimeError: If no available port is found in the specified range.
+            RuntimeError: 지정한 범위에서 사용 가능한 포트를 찾지 못한 경우.
         """
         with self._lock:
             for port in range(start_port, start_port + max_range):
@@ -80,24 +78,24 @@ class PortAllocator:
             raise RuntimeError(f"No available port found in range {start_port}-{start_port + max_range}")
 
     def release(self, port: int) -> None:
-        """Release a previously allocated port.
+        """앞서 할당한 포트를 해제한다.
 
         Args:
-            port: The port number to release.
+            port: 해제할 포트 번호.
         """
         with self._lock:
             self._reserved_ports.discard(port)
 
     @contextmanager
     def allocate_context(self, start_port: int = 8080, max_range: int = 100):
-        """Context manager for port allocation with automatic release.
+        """포트를 할당하고 자동으로 해제하는 context manager.
 
         Args:
-            start_port: The port number to start searching from.
-            max_range: Maximum number of ports to search.
+            start_port: 탐색을 시작할 포트 번호.
+            max_range: 탐색할 최대 포트 개수.
 
         Yields:
-            An available port number.
+            사용 가능한 포트 번호.
         """
         port = self.allocate(start_port, max_range)
         try:
@@ -106,34 +104,33 @@ class PortAllocator:
             self.release(port)
 
 
-# Global port allocator instance for shared use across the application
+# 애플리케이션 전역에서 공유하는 포트 allocator 인스턴스
 _global_port_allocator = PortAllocator()
 
 
 def get_free_port(start_port: int = 8080, max_range: int = 100) -> int:
-    """Get a free port in a thread-safe manner.
+    """thread-safe하게 비어 있는 포트를 얻는다.
 
-    This function uses a global port allocator to ensure that concurrent calls
-    don't return the same port. The port is marked as reserved until release_port()
-    is called.
+    전역 포트 allocator를 사용해 동시 호출이 같은 포트를 반환하지 않게 한다. 포트는
+    release_port()를 호출할 때까지 예약 상태로 표시된다.
 
     Args:
-        start_port: The port number to start searching from.
-        max_range: Maximum number of ports to search.
+        start_port: 탐색을 시작할 포트 번호.
+        max_range: 탐색할 최대 포트 개수.
 
     Returns:
-        An available port number.
+        사용 가능한 포트 번호.
 
     Raises:
-        RuntimeError: If no available port is found in the specified range.
+        RuntimeError: 지정한 범위에서 사용 가능한 포트를 찾지 못한 경우.
     """
     return _global_port_allocator.allocate(start_port, max_range)
 
 
 def release_port(port: int) -> None:
-    """Release a previously allocated port.
+    """앞서 할당한 포트를 해제한다.
 
     Args:
-        port: The port number to release.
+        port: 해제할 포트 번호.
     """
     _global_port_allocator.release(port)

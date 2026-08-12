@@ -1,6 +1,6 @@
-"""SkillStorage singleton + reflection-based factory.
+"""SkillStorage singleton과 reflection 기반 factory.
 
-Mirrors the pattern used by ``deerflow/sandbox/sandbox_provider.py``.
+``deerflow/sandbox/sandbox_provider.py``와 같은 패턴을 따른다.
 """
 
 from __future__ import annotations
@@ -17,38 +17,37 @@ from deerflow.skills.types import SkillCategory
 logger = logging.getLogger(__name__)
 
 _default_skill_storage: SkillStorage | None = None
-_default_skill_storage_config: object | None = None  # AppConfig identity the singleton was built from
+_default_skill_storage_config: object | None = None  # singleton을 만들 때 쓴 AppConfig identity
 _skill_storage_lock = threading.Lock()
 
-# Maximum number of per-user storage instances to keep in cache.
-# Real-world deployments rarely have more than a few concurrent users per
-# process; 64 is a generous ceiling that prevents unbounded memory growth.
+# cache에 유지할 사용자별 storage 인스턴스의 최대 개수.
+# 실제 배포에서 프로세스당 동시 사용자가 몇 명을 넘는 일은 드물다. 64는 메모리가 무한히
+# 늘어나는 것을 막으면서도 넉넉한 상한이다.
 _MAX_USER_SCOPED_STORAGES = 64
 
-# Per-user skill storage cache with double-check lock for concurrent creation.
-# OrderedDict so that LRU eviction can remove the least-recently-used entry
-# via ``move_to_end`` + ``popitem(last=False)`` when the cache exceeds
-# ``_MAX_USER_SCOPED_STORAGES``.
+# 동시 생성에 대비해 double-check lock을 쓰는 사용자별 skill storage cache.
+# cache가 ``_MAX_USER_SCOPED_STORAGES``를 넘을 때 ``move_to_end`` +
+# ``popitem(last=False)``로 가장 오래 안 쓰인 항목을 LRU eviction할 수 있도록
+# OrderedDict를 쓴다.
 _user_scoped_storages: OrderedDict[str, UserScopedSkillStorage] = OrderedDict()
 _user_scoped_storage_lock = threading.Lock()
 
 
 def get_or_new_skill_storage(**kwargs) -> SkillStorage:
-    """Return a ``SkillStorage`` instance — either a new one or the process singleton.
+    """``SkillStorage`` 인스턴스를 반환한다 — 새 인스턴스이거나 프로세스 singleton이다.
 
-    **New instance** is created (never cached) when:
-    - ``skills_path`` is provided — uses it as the ``host_path`` override (class still resolved via config).
-    - ``app_config`` is provided — constructs a storage from ``app_config.skills``
-      so that per-request config (e.g. Gateway ``Depends(get_config)``) is respected
-      without polluting the process-level singleton.
+    다음 경우 **새 인스턴스**를 만든다(캐시하지 않는다):
+    - ``skills_path``가 주어진 경우 — 이를 ``host_path`` override로 쓴다(클래스는 여전히
+      config로 해석한다).
+    - ``app_config``가 주어진 경우 — ``app_config.skills``로 storage를 만들어서, 요청별
+      config(예: Gateway ``Depends(get_config)``)를 프로세스 수준 singleton을 오염시키지
+      않고 반영한다.
 
-    **Singleton** is returned (created on first call, then reused) when neither
-    ``skills_path`` nor ``app_config`` is given — uses ``get_app_config()`` to
-    resolve the active configuration.
+    ``skills_path``와 ``app_config`` 둘 다 없으면 **singleton**을 반환한다(첫 호출에
+    생성한 뒤 재사용). 활성 설정은 ``get_app_config()``로 해석한다.
 
-    This singleton is used for reading **public** skills (global, read-only).
-    For user-scoped custom skill operations, use
-    :func:`get_or_new_user_skill_storage` instead.
+    이 singleton은 **public** skill(전역, 읽기 전용)을 읽는 데 쓴다. 사용자 범위의 custom
+    skill 작업에는 :func:`get_or_new_user_skill_storage`를 쓴다.
     """
     global _default_skill_storage, _default_skill_storage_config
 
@@ -71,8 +70,8 @@ def get_or_new_skill_storage(**kwargs) -> SkillStorage:
     if skills_path is not None:
         if app_config is not None:
             return _make_storage(app_config.skills, host_path=str(skills_path), **kwargs)
-        # No app_config: use a default SkillsConfig so we never need to read config.yaml
-        # when the caller has already supplied an explicit host path.
+        # app_config이 없다: 호출자가 이미 명시적 host path를 준 상황이므로 config.yaml을
+        # 읽을 필요가 없도록 기본 SkillsConfig를 쓴다.
         from deerflow.config.skills_config import SkillsConfig
 
         return _make_storage(SkillsConfig(), host_path=str(skills_path), **kwargs)
@@ -80,20 +79,19 @@ def get_or_new_skill_storage(**kwargs) -> SkillStorage:
     if app_config is not None:
         return _make_storage(app_config.skills, **kwargs)
 
-    # If the singleton was manually injected (e.g. in tests) without a config
-    # identity (_default_skill_storage_config is None), skip get_app_config()
-    # entirely to avoid requiring a config.yaml on disk.
+    # singleton이 config identity 없이 수동 주입된 경우(예: 테스트,
+    # _default_skill_storage_config가 None), 디스크의 config.yaml을 요구하지 않도록
+    # get_app_config()를 아예 건너뛴다.
     if _default_skill_storage is not None and _default_skill_storage_config is None:
         return _default_skill_storage
 
     app_config_now = get_app_config()
 
-    # Build the singleton under the lock with a double-check so racing cold-start
-    # callers construct exactly one instance, and reset_skill_storage() can't null
-    # the global out from under a concurrent read. We construct *inside* the lock
-    # — mirroring get_memory_storage() rather than sandbox_provider's build-outside-
-    # then-discard-the-loser — because SkillStorage has no teardown hook, so an
-    # orphaned instance from a losing racer could not be cleaned up.
+    # 콜드 스타트가 경쟁해도 인스턴스가 정확히 하나만 만들어지고, reset_skill_storage()가
+    # 동시 읽기 중인 전역 변수를 None으로 만들지 못하도록 lock 안에서 double-check로
+    # singleton을 만든다. sandbox_provider처럼 lock 밖에서 만들고 진 쪽을 버리는 대신
+    # get_memory_storage()와 같이 lock *안에서* 생성한다 — SkillStorage에는 teardown
+    # hook이 없어서 경쟁에서 진 쪽의 고아 인스턴스를 정리할 수 없기 때문이다.
     with _skill_storage_lock:
         if _default_skill_storage is None or _default_skill_storage_config is not app_config_now:
             _default_skill_storage = _make_storage(app_config_now.skills, **kwargs)
@@ -102,29 +100,28 @@ def get_or_new_skill_storage(**kwargs) -> SkillStorage:
 
 
 def get_or_new_user_skill_storage(user_id: str, **kwargs) -> SkillStorage:
-    """Return a per-user ``SkillStorage`` instance for custom skill isolation.
+    """custom skill 격리를 위한 사용자별 ``SkillStorage`` 인스턴스를 반환한다.
 
-    Uses :class:`UserScopedSkillStorage` which redirects custom skill paths
-    to ``{base_dir}/users/{user_id}/skills/custom/`` while keeping public
-    skill reads from the global root.
+    :class:`UserScopedSkillStorage`를 쓴다. 이 클래스는 custom skill 경로를
+    ``{base_dir}/users/{user_id}/skills/custom/``로 돌리면서 public skill 읽기는 전역
+    루트에서 유지한다.
 
-    ``user_id`` is normalised via :func:`make_safe_user_id` so that external
-    identities (e.g. IM channel ids containing non-``[A-Za-z0-9_-]`` chars)
-    are safely bucketed before reaching :class:`UserScopedSkillStorage`, which
-    calls :func:`_validate_user_id` internally.
+    ``user_id``는 :func:`make_safe_user_id`로 정규화한다. 그래야 외부 identity(예:
+    ``[A-Za-z0-9_-]`` 이외 문자를 포함하는 IM channel id)가 내부적으로
+    :func:`_validate_user_id`를 호출하는 :class:`UserScopedSkillStorage`에 닿기 전에
+    안전한 버킷으로 들어간다.
 
-    Instances are cached by the *normalised* ``user_id`` with double-check
-    locking to prevent concurrent creation races. When the cache exceeds
-    ``_MAX_USER_SCOPED_STORAGES``, the least-recently-accessed entry is
-    evicted (true LRU, not FIFO).
+    인스턴스는 *정규화된* ``user_id``로 캐시하며, 동시 생성 경쟁을 막기 위해
+    double-check locking을 쓴다. cache가 ``_MAX_USER_SCOPED_STORAGES``를 넘으면 가장
+    오래 접근하지 않은 항목을 제거한다(FIFO가 아니라 진짜 LRU).
     """
     from deerflow.config.paths import make_safe_user_id
 
     safe_id = make_safe_user_id(user_id)
 
-    # Always acquire lock so move_to_end is safe — makes this a true LRU
-    # cache instead of FIFO. The overhead is negligible since dict ops are
-    # fast and this function is called once per agent-creation cycle.
+    # move_to_end가 안전하도록 항상 lock을 잡는다 — 그래야 FIFO가 아닌 진짜 LRU cache가
+    # 된다. dict 연산은 빠르고 이 함수는 agent 생성 주기마다 한 번만 호출되므로 오버헤드는
+    # 무시할 수준이다.
     with _user_scoped_storage_lock:
         cached = _user_scoped_storages.get(safe_id)
         if cached is not None:
@@ -133,10 +130,9 @@ def get_or_new_user_skill_storage(user_id: str, **kwargs) -> SkillStorage:
 
         cached = UserScopedSkillStorage(safe_id, **kwargs)
         _user_scoped_storages[safe_id] = cached
-        # Evict least-recently-used entry if cache exceeds the ceiling.
-        # Since we just moved the current user_id to the end, popitem(last=False)
-        # will evict the oldest/least-recently-accessed entry (never the
-        # one we just created).
+        # cache가 상한을 넘으면 가장 오래 안 쓰인 항목을 제거한다.
+        # 방금 현재 user_id를 끝으로 옮겼으므로 popitem(last=False)는 가장 오래되고 가장
+        # 오래 접근하지 않은 항목을 제거하며, 방금 만든 항목은 절대 제거하지 않는다.
         while len(_user_scoped_storages) > _MAX_USER_SCOPED_STORAGES:
             evicted_key, evicted_val = _user_scoped_storages.popitem(last=False)
             logger.info("Evicted user-scoped skill storage for safe_id=%s (cache ceiling %d)", evicted_key, _MAX_USER_SCOPED_STORAGES)
@@ -144,11 +140,10 @@ def get_or_new_user_skill_storage(user_id: str, **kwargs) -> SkillStorage:
 
 
 def user_should_see_legacy_skills(user_id: str, **kwargs) -> bool:
-    """Return whether discovery exposes any LEGACY skills for this user.
+    """이 사용자에게 discovery가 LEGACY skill을 하나라도 노출하는지 반환한다.
 
-    Sandbox mounts must not be more permissive than skill discovery. This
-    helper centralizes that contract so local, AIO, and remote providers all
-    follow the same visibility rule.
+    sandbox mount는 skill discovery보다 더 허용적이어서는 안 된다. 이 헬퍼가 그 계약을
+    한곳에 모아 local, AIO, remote provider가 모두 같은 가시성 규칙을 따르게 한다.
     """
     if kwargs:
         from deerflow.config.paths import make_safe_user_id
@@ -160,7 +155,7 @@ def user_should_see_legacy_skills(user_id: str, **kwargs) -> bool:
 
 
 def reset_skill_storage() -> None:
-    """Clear all cached storage instances (used in tests and hot-reload scenarios)."""
+    """캐시된 storage 인스턴스를 전부 비운다(테스트와 hot-reload 시나리오에서 쓴다)."""
     global _default_skill_storage, _default_skill_storage_config
     with _skill_storage_lock:
         _default_skill_storage = None
@@ -170,16 +165,15 @@ def reset_skill_storage() -> None:
 
 
 def reset_user_skill_storage(user_id: str | None = None) -> None:
-    """Clear per-user skill storage cache for a specific user, or all users.
+    """특정 사용자 또는 전체 사용자의 사용자별 skill storage cache를 비운다.
 
-    ``user_id`` is normalised via :func:`make_safe_user_id` so that the
-    cache key matches the one used by :func:`get_or_new_user_skill_storage`.
-    Without normalisation, IM-channel user IDs (e.g. ``feishu:xxx``) would
-    fail to clear their stale cache entries.
+    ``user_id``는 :func:`make_safe_user_id`로 정규화해서 cache 키가
+    :func:`get_or_new_user_skill_storage`가 쓰는 키와 일치하게 한다. 정규화하지 않으면
+    IM channel 사용자 ID(예: ``feishu:xxx``)의 낡은 cache 항목을 비우지 못한다.
 
     Args:
-        user_id: If provided, remove only that user's cached storage.
-            If ``None``, clear the entire per-user cache.
+        user_id: 주어지면 그 사용자의 캐시된 storage만 제거한다.
+            ``None``이면 사용자별 cache 전체를 비운다.
     """
     from deerflow.config.paths import make_safe_user_id
 

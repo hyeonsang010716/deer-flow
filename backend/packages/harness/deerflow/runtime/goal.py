@@ -1,8 +1,8 @@
-"""Thread-scoped goal state and evaluator helpers.
+"""thread 범위의 goal 상태와 evaluator 헬퍼.
 
-This module implements the Claude Code-style goal loop primitives used by
-Gateway runs and thin API surfaces. It intentionally lives in ``deerflow`` so
-the harness can evaluate and continue runs without importing the FastAPI app.
+Gateway run과 얇은 API 표면이 사용하는 Claude Code 스타일 goal 루프 primitive를 구현한다.
+harness가 FastAPI app을 import하지 않고도 run을 평가하고 이어갈 수 있도록 의도적으로
+``deerflow`` 안에 둔다.
 """
 
 from __future__ import annotations
@@ -61,12 +61,12 @@ _goal_locks_by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[s
 
 
 class GoalWriteConflict(RuntimeError):
-    """Raised when a goal write is based on a stale checkpoint."""
+    """goal write가 오래된 checkpoint를 기준으로 할 때 raise된다."""
 
 
 @asynccontextmanager
 async def goal_thread_lock(thread_id: str) -> AsyncIterator[None]:
-    """Serialize goal read-modify-write sequences within the current event loop."""
+    """현재 event loop 안에서 goal의 read-modify-write 순서를 직렬화한다."""
     loop = asyncio.get_running_loop()
     with _goal_locks_guard:
         locks = _goal_locks_by_loop.get(loop)
@@ -83,19 +83,19 @@ async def goal_thread_lock(thread_id: str) -> AsyncIterator[None]:
 
 
 class GoalCommand(NamedTuple):
-    """Parsed intent of a ``/goal`` slash command argument string."""
+    """``/goal`` slash 명령 인자 문자열을 파싱한 의도."""
 
     kind: Literal["status", "clear", "set"]
     objective: str = ""
 
 
 def parse_goal_command(args: str) -> GoalCommand:
-    """Parse the argument string of a ``/goal`` command into an intent.
+    """``/goal`` 명령의 인자 문자열을 의도로 파싱한다.
 
-    Shared by the TUI and IM-channel surfaces so the three-way semantics stay in
-    one place: empty shows the active goal, ``clear``/``reset``/``off`` clears it,
-    and anything else sets the goal to that (trimmed) objective. The frontend
-    keeps a parallel TypeScript copy in ``input-box-helpers.ts``.
+    TUI와 IM channel 표면이 공유하므로 세 갈래 의미가 한곳에 모인다. 비어 있으면 활성 goal을
+    보여주고, ``clear``/``reset``/``off``는 goal을 지우며, 그 외에는 (공백을 정리한) 해당
+    objective로 goal을 설정한다. frontend는 ``input-box-helpers.ts``에 같은 내용의 TypeScript
+    사본을 유지한다.
     """
     stripped = args.strip()
     if not stripped:
@@ -106,7 +106,7 @@ def parse_goal_command(args: str) -> GoalCommand:
 
 
 def normalize_goal_objective(objective: str) -> str:
-    """Normalize and validate user-provided goal text."""
+    """사용자가 준 goal 텍스트를 정규화하고 검증한다."""
     normalized = " ".join(objective.strip().split())
     if not normalized:
         raise ValueError("Goal objective must not be empty.")
@@ -122,7 +122,7 @@ def build_goal_state(
     max_no_progress_continuations: int = DEFAULT_MAX_NO_PROGRESS_CONTINUATIONS,
     now: str | None = None,
 ) -> GoalState:
-    """Create a fresh active goal state for a thread."""
+    """thread를 위한 새 active goal 상태를 만든다."""
     objective = normalize_goal_objective(objective)
     capped_max = max(0, min(int(max_continuations), DEFAULT_MAX_GOAL_CONTINUATIONS))
     timestamp = now or now_iso()
@@ -139,7 +139,7 @@ def build_goal_state(
 
 
 def parse_goal_evaluation_response(text: str) -> GoalEvaluation:
-    """Parse the evaluator's JSON object response."""
+    """evaluator의 JSON 객체 응답을 파싱한다."""
     candidate = _strip_markdown_code_fence(_strip_think_blocks(text))
     start = candidate.find("{")
     end = candidate.rfind("}")
@@ -204,12 +204,12 @@ def _is_visible_message(message: Any) -> bool:
 
 
 def has_visible_assistant_evidence(messages: list[Any]) -> bool:
-    """Return true when the evaluator can inspect at least one visible AI reply."""
+    """evaluator가 확인할 수 있는 visible AI 응답이 하나라도 있으면 true를 반환한다."""
     return any(_is_visible_message(message) and _message_type(message) == "ai" and bool(message_to_text(message).strip()) for message in messages)
 
 
 def visible_conversation_signature(messages: list[Any]) -> str:
-    """Return a stable lightweight signature for the visible evaluator evidence."""
+    """visible한 evaluator 근거에 대한 안정적이고 가벼운 signature를 반환한다."""
     visible = []
     for message in messages:
         if not _is_visible_message(message):
@@ -224,7 +224,7 @@ def visible_conversation_signature(messages: list[Any]) -> str:
 
 
 def format_visible_conversation(messages: list[Any]) -> str:
-    """Return the user-visible conversation evidence for goal evaluation."""
+    """goal 평가에 쓸 사용자에게 보이는 대화 근거를 반환한다."""
     lines: list[str] = []
     visible = [message for message in messages if _is_visible_message(message)]
     for message in visible[-MAX_GOAL_CONVERSATION_MESSAGES:]:
@@ -244,16 +244,14 @@ def create_goal_evaluator_model(
     model_name: str | None = None,
     app_config: Any | None = None,
 ) -> Any:
-    """Create the non-thinking chat model used by the goal evaluator.
+    """goal evaluator가 사용하는 non-thinking chat model을 만든다.
 
-    The evaluator runs from ``runtime/runs/worker.py`` after the main graph
-    run has already completed, so — unlike ``make_lead_agent``/
-    ``DeerFlowClient.stream``, which attach ``build_tracing_callbacks()`` at
-    the graph root and correctly pass ``attach_tracing=False`` to avoid
-    double-attaching — there is no graph root here for the evaluator's model
-    call to inherit tracing from. It must attach its own model-level tracing
-    callbacks, same as the other standalone, non-graph callers
-    (``oneshot_llm.run_oneshot_llm``, ``MemoryUpdater``).
+    evaluator는 메인 graph run이 이미 끝난 뒤 ``runtime/runs/worker.py``에서 실행된다.
+    graph root에 ``build_tracing_callbacks()``를 붙이고 이중 부착을 피하려고
+    ``attach_tracing=False``를 넘기는 ``make_lead_agent``/``DeerFlowClient.stream``과 달리,
+    여기에는 evaluator의 model 호출이 tracing을 물려받을 graph root가 없다. 따라서 다른
+    독립 non-graph caller(``oneshot_llm.run_oneshot_llm``, ``MemoryUpdater``)처럼 자체
+    model 수준 tracing callback을 붙여야 한다.
     """
     return create_chat_model(
         name=model_name,
@@ -278,14 +276,12 @@ async def evaluate_goal_completion(
     user_id: str | None = None,
     deerflow_trace_id: str | None = None,
 ) -> GoalEvaluation:
-    """Ask a small non-thinking model whether the active goal is satisfied.
+    """작은 non-thinking 모델에게 활성 goal이 충족됐는지 묻는다.
 
-    ``thread_id``/``user_id``/``deerflow_trace_id`` are forwarded to Langfuse
-    trace metadata only (mirrors ``oneshot_llm.run_oneshot_llm``): this is a
-    standalone model call outside the main graph, so it must inject its own
-    Langfuse session/user attribution instead of relying on graph-root
-    callbacks to lift it — same fix as PR #2944 (main graph) and PR #3902
-    (memory_agent/suggest_agent).
+    ``thread_id``/``user_id``/``deerflow_trace_id``는 Langfuse trace metadata로만 전달된다
+    (``oneshot_llm.run_oneshot_llm``과 같은 방식). 메인 graph 밖의 독립 model 호출이므로,
+    graph root callback이 값을 끌어올려 주길 기대하지 않고 Langfuse session/user 귀속을 직접
+    주입해야 한다. PR #2944(메인 graph), PR #3902(memory_agent/suggest_agent)와 같은 수정이다.
     """
     conversation = format_visible_conversation(messages)
     if not conversation or not has_visible_assistant_evidence(messages):
@@ -328,7 +324,7 @@ async def evaluate_goal_completion(
 
 
 def should_continue_goal(goal: GoalState, evaluation: GoalEvaluation, *, no_progress_count: int | None = None) -> bool:
-    """Return whether another hidden continuation turn should run."""
+    """숨겨진 continuation 턴을 한 번 더 실행해야 하는지 반환한다."""
     if evaluation["satisfied"]:
         return False
     if evaluation["blocker"] not in CONTINUABLE_GOAL_BLOCKERS:
@@ -341,14 +337,13 @@ def should_continue_goal(goal: GoalState, evaluation: GoalEvaluation, *, no_prog
 
 
 def latest_visible_assistant_signature(messages: list[Any]) -> str:
-    """Return a stable signature of the latest visible assistant evidence.
+    """가장 최근의 visible assistant 근거에 대한 안정적인 signature를 반환한다.
 
-    The "no progress" breaker keys on what the agent actually produced — the
-    text of the most recent user-visible assistant message — not on the
-    evaluator's free-text ``reason``/``evidence_summary`` (which an LLM rewords
-    on every turn, so it almost never repeats byte-for-byte). When a
-    continuation adds no new visible assistant output, the signature is
-    unchanged and the breaker can recognise the stalled turn.
+    "no progress" breaker는 evaluator의 자유 서술 ``reason``/``evidence_summary``가 아니라
+    agent가 실제로 만들어낸 것, 즉 가장 최근 사용자에게 보이는 assistant 메시지의 텍스트를
+    키로 쓴다(LLM은 매 턴 그 서술을 바꿔 쓰므로 바이트 단위로 반복되는 일이 거의 없다).
+    continuation이 새로운 visible assistant 출력을 추가하지 않으면 signature가 그대로여서
+    breaker가 정체된 턴을 인식할 수 있다.
     """
     for message in reversed(messages):
         if not _is_visible_message(message) or _message_type(message) != "ai":
@@ -360,11 +355,10 @@ def latest_visible_assistant_signature(messages: list[Any]) -> str:
 
 
 def compute_goal_progress_key(evaluation: GoalEvaluation, *, evidence_signature: str = "") -> str:
-    """Return a stable key used to detect repeated non-progress evaluations.
+    """진전 없는 평가가 반복되는 것을 감지하는 데 쓰는 안정적인 키를 반환한다.
 
-    Keyed on the typed ``blocker`` plus a signature of the visible assistant
-    evidence, so a stalled goal is detected even when the evaluator rewords its
-    free-text ``reason``/``evidence_summary``.
+    타입이 지정된 ``blocker``와 visible assistant 근거의 signature를 키로 삼으므로,
+    evaluator가 자유 서술 ``reason``/``evidence_summary``를 바꿔 써도 정체된 goal을 감지한다.
     """
     return json.dumps(
         {
@@ -378,7 +372,7 @@ def compute_goal_progress_key(evaluation: GoalEvaluation, *, evidence_signature:
 
 
 def compute_no_progress_count(goal: GoalState, evaluation: GoalEvaluation, *, evidence_signature: str = "") -> int:
-    """Increment repeated-progress count when visible evidence has not advanced."""
+    """visible 근거가 나아가지 않았으면 반복 카운트를 증가시킨다."""
     if evaluation["satisfied"]:
         return 0
     progress_key = compute_goal_progress_key(evaluation, evidence_signature=evidence_signature)
@@ -389,7 +383,7 @@ def compute_no_progress_count(goal: GoalState, evaluation: GoalEvaluation, *, ev
 
 
 def make_goal_continuation_message(goal: GoalState, evaluation: GoalEvaluation) -> HumanMessage:
-    """Build the hidden user message that asks the agent to keep working."""
+    """agent에게 작업을 계속하라고 요청하는 숨겨진 user 메시지를 만든다."""
     content = (
         "<goal_continuation>\n"
         f"Active goal: {goal['objective']}\n"
@@ -416,8 +410,8 @@ async def _call_checkpointer_method(checkpointer: Any, async_name: str, sync_nam
     sync_method = getattr(checkpointer, sync_name, None)
     if sync_method is None:
         raise AttributeError(f"Missing checkpointer method: {async_name}/{sync_name}")
-    # Offload the synchronous checkpointer call so its blocking IO never runs on
-    # the event loop (backend/AGENTS.md blocking-IO gate).
+    # 동기 checkpointer 호출을 offload해 그 blocking IO가 event loop에서 실행되지 않게 한다
+    # (backend/AGENTS.md의 blocking-IO gate).
     result = await asyncio.to_thread(sync_method, *args, **kwargs)
     return await result if inspect.isawaitable(result) else result
 
@@ -432,7 +426,7 @@ def _next_channel_version(checkpointer: Any, current_version: Any) -> Any:
 
 
 async def ensure_thread_checkpoint(checkpointer: Any, thread_id: str) -> None:
-    """Create an empty root checkpoint for *thread_id* when none exists."""
+    """*thread_id*에 checkpoint가 없으면 빈 root checkpoint를 만든다."""
     config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
     checkpoint_tuple = await _call_checkpointer_method(checkpointer, "aget_tuple", "get_tuple", config)
     if checkpoint_tuple is not None:
@@ -460,7 +454,7 @@ def _checkpoint_id_from_tuple(checkpoint_tuple: Any) -> str | None:
 
 
 async def read_thread_goal(checkpointer: Any, thread_id: str) -> GoalState | None:
-    """Read the latest thread goal from checkpoint state."""
+    """checkpoint 상태에서 최신 thread goal을 읽는다."""
     config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
     checkpoint_tuple = await _call_checkpointer_method(checkpointer, "aget_tuple", "get_tuple", config)
     if checkpoint_tuple is None:
@@ -480,9 +474,9 @@ async def write_thread_goal(
     create_if_missing: bool = False,
     expected_checkpoint_id: str | None = None,
 ) -> dict[str, Any]:
-    """Write a new checkpoint with the thread goal set or cleared.
+    """thread goal을 설정하거나 지운 새 checkpoint를 쓴다.
 
-    Returns the updated channel values.
+    갱신된 channel value를 반환한다.
     """
     if create_if_missing:
         await ensure_thread_checkpoint(checkpointer, thread_id)
@@ -525,10 +519,9 @@ async def write_thread_goal(
         "configurable": {
             "thread_id": thread_id,
             "checkpoint_ns": "",
-            # Parent the new checkpoint to the one it was derived from.
-            # Without this the saver stores a parentless checkpoint, which
-            # severs Delta-channel replay ancestry (and truncates history
-            # walks in full mode too).
+            # 새 checkpoint의 부모를 그것이 파생된 checkpoint로 지정한다.
+            # 이렇게 하지 않으면 saver가 부모 없는 checkpoint를 저장해 Delta-channel replay의
+            # 조상 연결이 끊기고(full 모드에서도 history 순회가 잘린다).
             "checkpoint_id": _checkpoint_id_from_tuple(checkpoint_tuple),
         }
     }
@@ -546,7 +539,7 @@ def attach_goal_evaluation(
     stand_down_reason: str | None = None,
     evidence_signature: str = "",
 ) -> GoalState:
-    """Return a goal copy with the latest evaluator result attached."""
+    """최신 evaluator 결과를 붙인 goal 사본을 반환한다."""
     next_goal = copy.deepcopy(goal)
     if continuation_count is not None:
         next_goal["continuation_count"] = continuation_count

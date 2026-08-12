@@ -1,12 +1,10 @@
-"""Built-in RBAC authorization provider.
+"""내장 RBAC authorization provider.
 
-Reads a role→resource policy from config and compiles it into immutable
-structures at construction time. Deny always wins over allow. Unknown or
-missing roles raise ``ValueError`` (not a silent allow) so that the execution
-layer's ``fail_closed`` can make the final decision.
+config에서 role→resource 정책을 읽어 생성 시점에 불변 구조로 컴파일한다.
+deny는 언제나 allow를 이긴다. 알 수 없거나 없는 role은 조용히 허용하지 않고
+``ValueError``를 던져서, 실행 계층의 ``fail_closed``가 최종 판단을 내리게 한다.
 
-See ``docs/plans/2026-07-15-authz-phase1a-implementation-plan.md`` §3.3 for
-the full semantic table.
+전체 의미 표는 ``docs/plans/2026-07-15-authz-phase1a-implementation-plan.md`` §3.3을 참고한다.
 """
 
 from __future__ import annotations
@@ -20,9 +18,8 @@ from deerflow.authz.provider import (
     Principal,
 )
 
-# Explicit resource-type → config-key mapping. Prevents silent mis-lookup
-# when ``AuthzRequest.resource`` (singular, e.g. "tool") doesn't match the
-# config key (plural, e.g. "tools").
+# resource-type → config-key 명시적 매핑. ``AuthzRequest.resource``(단수, 예: "tool")가
+# config 키(복수, 예: "tools")와 다를 때 조용히 잘못 조회되는 것을 막는다.
 _RESOURCE_POLICY_KEYS: dict[str, str] = {
     "tool": "tools",
     "model": "models",
@@ -32,24 +29,24 @@ _RESOURCE_POLICY_KEYS: dict[str, str] = {
     "route": "routes",
 }
 
-_ALL = object()  # sentinel meaning "allow all candidates"
-_ABSENT = object()  # sentinel meaning "key not present in dict"
+_ALL = object()  # "모든 후보 허용"을 뜻하는 sentinel
+_ABSENT = object()  # "dict에 키가 없음"을 뜻하는 sentinel
 
 
-# The only supported keys in a resource policy dict. Any other key (typos,
-# unknown fields) is rejected at construction to prevent silent mis-grants.
+# resource policy dict에서 지원하는 유일한 키들. 그 외 키(오타, 알 수 없는 필드)는
+# 조용한 잘못된 권한 부여를 막기 위해 생성 시점에 거부한다.
 _SUPPORTED_POLICY_KEYS: frozenset[str] = frozenset({"allow", "deny"})
 
 
 def _require_non_empty_string(value: object, *, field: str) -> str:
-    """Return a validated request identifier or raise a stable boundary error."""
+    """검증된 요청 식별자를 반환하거나 일관된 경계 오류를 던진다."""
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field} must be a non-empty string, got {value!r}")
     return value
 
 
 class _CompiledPolicy:
-    """Immutable, pre-validated policy for a single (role, resource_type) pair."""
+    """(role, resource_type) 한 쌍에 대한 불변·사전 검증된 정책."""
 
     __slots__ = ("allowed", "denied")
 
@@ -58,7 +55,7 @@ class _CompiledPolicy:
         self.denied = denied
 
     def is_allowed(self, target: str) -> bool:
-        # Deny always wins.
+        # deny가 언제나 우선한다.
         if target in self.denied:
             return False
         if self.allowed is _ALL:
@@ -67,18 +64,16 @@ class _CompiledPolicy:
 
 
 class RbacAuthorizationProvider:
-    """Built-in role-based authorization provider.
+    """내장 role 기반 authorization provider.
 
-    Configured via ``roles`` mapping where each role maps resource-type keys
-    to ``{allow: ..., deny: [...]}`` policies. Policy configuration is fully
-    validated at construction; the request path validates identifiers before
-    performing membership checks.
+    ``roles`` mapping으로 설정하며, 각 role은 resource-type 키를
+    ``{allow: ..., deny: [...]}`` 정책에 매핑한다. 정책 설정은 생성 시점에 전부 검증하고,
+    요청 경로에서는 멤버십 검사 전에 식별자를 검증한다.
 
-    Policies are scoped by role, resource, and target. ``AuthzRequest.action``
-    is accepted for protocol compatibility but is not a rule dimension in this
-    built-in provider.
+    정책의 범위는 role, resource, target이다. ``AuthzRequest.action``은 protocol 호환을 위해
+    받아들이지만 이 내장 provider에서는 규칙 차원으로 쓰지 않는다.
 
-    Example config::
+    설정 예시::
 
         roles:
           admin:
@@ -99,7 +94,7 @@ class RbacAuthorizationProvider:
         if not isinstance(roles, dict):
             raise ValueError(f"roles must be a dict, got {type(roles).__name__}")
 
-        # Compile all policies up front.
+        # 모든 정책을 미리 컴파일한다.
         self._policies: dict[tuple[str, str], _CompiledPolicy] = {}
         self._known_roles: frozenset[str] = frozenset(roles.keys())
 
@@ -122,7 +117,7 @@ class RbacAuthorizationProvider:
                 self._policies[(role_name, resource_key)] = compiled
 
     def validate_role(self, role: str, *, field: str = "role") -> None:
-        """Fail fast when an operator-configured role is not defined."""
+        """operator가 설정한 role이 정의되어 있지 않으면 즉시 실패한다."""
         role = _require_non_empty_string(role, field=field)
         if role not in self._known_roles:
             if field == "role":
@@ -135,13 +130,12 @@ class RbacAuthorizationProvider:
         resource_key: str,
         policy: dict[str, Any],
     ) -> _CompiledPolicy:
-        """Validate and compile a single resource policy into immutable structures.
+        """resource policy 하나를 검증해 불변 구조로 컴파일한다.
 
-        Distinguishes "key absent" (use default) from "key present but null"
-        (invalid — reject). Unknown keys (typos) are rejected to prevent
-        silent mis-grants.
+        "키 없음"(기본값 사용)과 "키는 있으나 null"(잘못됨 — 거부)을 구분한다.
+        알 수 없는 키(오타)는 조용한 잘못된 권한 부여를 막기 위해 거부한다.
         """
-        # --- reject unknown keys (catch typos like "alow") ---
+        # --- 알 수 없는 키 거부("alow" 같은 오타를 잡는다) ---
         unknown_keys = set(policy.keys()) - _SUPPORTED_POLICY_KEYS
         if unknown_keys:
             raise ValueError(f"role '{role_name}' resource '{resource_key}': unknown policy keys {sorted(unknown_keys, key=repr)}; supported: {sorted(_SUPPORTED_POLICY_KEYS)}")
@@ -149,13 +143,13 @@ class RbacAuthorizationProvider:
         # --- allow ---
         raw_allow = policy.get("allow", _ABSENT)
         if raw_allow is _ABSENT:
-            allowed: frozenset[str] | object = _ALL  # missing allow = allow all (deny still applies)
+            allowed: frozenset[str] | object = _ALL  # allow 없음 = 전부 허용(deny는 그대로 적용)
         elif raw_allow is None:
             raise ValueError(f"role '{role_name}' resource '{resource_key}': allow must not be null; omit the key, or use '*' / bool / list")
         elif raw_allow is True:
             allowed = _ALL
         elif raw_allow is False:
-            allowed = frozenset()  # allow: false = deny all
+            allowed = frozenset()  # allow: false = 전부 거부
         elif isinstance(raw_allow, str):
             if raw_allow == "*":
                 allowed = _ALL
@@ -192,11 +186,10 @@ class RbacAuthorizationProvider:
         *,
         resource_field: str = "resource",
     ) -> _CompiledPolicy | None:
-        """Look up the compiled policy for (role, resource_type).
+        """(role, resource_type)에 해당하는 컴파일된 정책을 조회한다.
 
-        Returns ``None`` if no policy is configured for this role+resource
-        (meaning: unrestricted). Raises ``ValueError`` for invalid resource
-        identifiers and unknown or missing roles.
+        이 role+resource에 설정된 정책이 없으면 ``None``을 반환한다(제한 없음이라는 뜻).
+        잘못된 resource 식별자, 알 수 없거나 없는 role에는 ``ValueError``를 던진다.
         """
         role = principal.role
         if role is None or role == "":
@@ -209,11 +202,11 @@ class RbacAuthorizationProvider:
         return self._policies.get((role, resource_key))
 
     def authorize(self, request: AuthzRequest) -> AuthzDecision:
-        """Evaluate a single authorization request."""
+        """authorization 요청 하나를 평가한다."""
         policy = self._resolve_policy(request.principal, request.resource)
         target = _require_non_empty_string(request.target, field="target")
         if policy is None:
-            # No policy for this role+resource → unrestricted.
+            # 이 role+resource에 정책 없음 → 제한 없음.
             return AuthzDecision(
                 allow=True,
                 reasons=[AuthzReason(code="authz.no_policy", message="no policy configured")],
@@ -246,10 +239,10 @@ class RbacAuthorizationProvider:
         resource_type: str,
         candidates: list[str],
     ) -> list[str]:
-        """Batch visibility filter.
+        """일괄 가시성 필터.
 
-        Preserves candidate order and duplicates, never adds items, and raises
-        the same role/resource errors as :meth:`authorize`.
+        후보의 순서와 중복을 그대로 유지하고 항목을 추가하지 않으며,
+        :meth:`authorize`와 동일한 role/resource 오류를 던진다.
         """
         policy = self._resolve_policy(principal, resource_type, resource_field="resource_type")
         if not isinstance(candidates, list):

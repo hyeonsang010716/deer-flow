@@ -1,4 +1,4 @@
-"""Per-scope typed storage handed to extensions."""
+"""extension에 전달되는 scope별 타입 기반 저장소."""
 
 from __future__ import annotations
 
@@ -8,13 +8,12 @@ from typing import Any
 
 
 class ExtensionData:
-    """Extension-private state attached to one host-owned scope.
+    """host 소유 scope 하나에 붙는 extension 전용 상태.
 
-    Keyed by type rather than by string so independent extensions cannot
-    collide on a key. The host creates one instance per scope (app, task) and
-    drops it when that scope ends, which is why extensions never need a
-    stale-handle check: they are handed the store for the current scope on
-    every callback instead of capturing one.
+    문자열이 아니라 타입을 key로 쓰므로 서로 무관한 extension끼리 key가 충돌하지 않는다.
+    host는 scope(app, task)마다 인스턴스를 하나 만들고 그 scope가 끝나면 버린다. extension이
+    stale handle 검사를 할 필요가 없는 이유가 이것이다. store를 붙잡아 두는 대신 매 callback
+    마다 현재 scope의 store를 전달받는다.
     """
 
     __slots__ = ("_scope_id", "_entries", "_lock")
@@ -26,7 +25,7 @@ class ExtensionData:
 
     @property
     def scope_id(self) -> str:
-        """Host identity of the scope this store is attached to."""
+        """이 store가 붙어 있는 scope의 host 식별자."""
         return self._scope_id
 
     def get[T](self, typ: type[T]) -> T | None:
@@ -34,11 +33,10 @@ class ExtensionData:
             return self._entries.get(typ)
 
     def get_or_init[T](self, typ: type[T], init: Callable[[], T]) -> T:
-        """Return the stored value, creating it from ``init`` when absent.
+        """저장된 값을 반환하고, 없으면 ``init``으로 만들어 반환한다.
 
-        ``init`` runs while the store is locked. It may compose other state in
-        this store, but heavyweight lazy work belongs inside the stored value
-        itself.
+        ``init``은 store가 잠긴 상태에서 실행된다. 이 store의 다른 상태를 조합해도 되지만,
+        무거운 lazy 작업은 저장되는 값 자체 안에 두어야 한다.
         """
         with self._lock:
             existing = self._entries.get(typ)

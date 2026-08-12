@@ -1,4 +1,4 @@
-"""Configuration for stream bridge."""
+"""stream bridge 설정."""
 
 from typing import Literal
 
@@ -8,7 +8,7 @@ StreamBridgeType = Literal["memory", "redis"]
 
 
 class StreamBridgeConfig(BaseModel):
-    """Configuration for the stream bridge that connects agent workers to SSE endpoints."""
+    """agent worker와 SSE endpoint를 잇는 stream bridge 설정."""
 
     type: StreamBridgeType = Field(
         default="memory",
@@ -48,24 +48,24 @@ class StreamBridgeConfig(BaseModel):
     )
 
 
-# Global configuration instance — None means no stream bridge is configured
-# (falls back to memory with defaults).
+# 전역 설정 인스턴스. None이면 stream bridge가 설정되지 않았다는 뜻이고,
+# 기본값의 memory bridge로 fallback한다.
 _stream_bridge_config: StreamBridgeConfig | None = None
 
 
 def get_stream_bridge_config() -> StreamBridgeConfig | None:
-    """Get the current stream bridge configuration, or None if not configured."""
+    """현재 stream bridge 설정을 반환한다. 설정되지 않았으면 None이다."""
     return _stream_bridge_config
 
 
 def set_stream_bridge_config(config: StreamBridgeConfig | None) -> None:
-    """Set the stream bridge configuration."""
+    """stream bridge 설정을 지정한다."""
     global _stream_bridge_config
     _stream_bridge_config = config
 
 
 def load_stream_bridge_config_from_dict(config_dict: dict | None) -> None:
-    """Load stream bridge configuration from a dictionary."""
+    """dict에서 stream bridge 설정을 읽는다."""
     global _stream_bridge_config
     if config_dict is None:
         _stream_bridge_config = None

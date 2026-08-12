@@ -1,4 +1,4 @@
-"""MCP client using langchain-mcp-adapters."""
+"""langchain-mcp-adapters를 사용하는 MCP client."""
 
 import logging
 from typing import Any
@@ -9,14 +9,14 @@ logger = logging.getLogger(__name__)
 
 
 def build_server_params(server_name: str, config: McpServerConfig) -> dict[str, Any]:
-    """Build server parameters for MultiServerMCPClient.
+    """MultiServerMCPClient용 server 파라미터를 만든다.
 
     Args:
-        server_name: Name of the MCP server.
-        config: Configuration for the MCP server.
+        server_name: MCP server 이름.
+        config: 해당 MCP server의 설정.
 
     Returns:
-        Dictionary of server parameters for langchain-mcp-adapters.
+        langchain-mcp-adapters에 넘길 server 파라미터 dict.
     """
     transport_type = config.type or "stdio"
     params: dict[str, Any] = {"transport": transport_type}
@@ -26,14 +26,14 @@ def build_server_params(server_name: str, config: McpServerConfig) -> dict[str, 
             raise ValueError(f"MCP server '{server_name}' with stdio transport requires 'command' field")
         params["command"] = config.command
         params["args"] = config.args
-        # Add environment variables if present
+        # 환경 변수가 있으면 추가한다
         if config.env:
             params["env"] = config.env
     elif transport_type in ("sse", "http"):
         if not config.url:
             raise ValueError(f"MCP server '{server_name}' with {transport_type} transport requires 'url' field")
         params["url"] = config.url
-        # Add headers if present
+        # header가 있으면 추가한다
         if config.headers:
             params["headers"] = config.headers
     else:
@@ -43,13 +43,13 @@ def build_server_params(server_name: str, config: McpServerConfig) -> dict[str, 
 
 
 def build_servers_config(extensions_config: ExtensionsConfig) -> dict[str, dict[str, Any]]:
-    """Build servers configuration for MultiServerMCPClient.
+    """MultiServerMCPClient용 servers 설정을 만든다.
 
     Args:
-        extensions_config: Extensions configuration containing all MCP servers.
+        extensions_config: 모든 MCP server를 담은 extensions 설정.
 
     Returns:
-        Dictionary mapping server names to their parameters.
+        server 이름을 그 파라미터로 매핑한 dict.
     """
     enabled_servers = extensions_config.get_enabled_mcp_servers()
 

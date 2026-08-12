@@ -1,4 +1,4 @@
-"""Eval-manifest adapters for deterministic skill review facts."""
+"""결정적 skill review fact를 위한 eval manifest adapter."""
 
 from __future__ import annotations
 

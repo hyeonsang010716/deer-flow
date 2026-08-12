@@ -1,4 +1,4 @@
-"""Deterministic capture and rendering for loaded skill files."""
+"""로드된 skill 파일을 결정론적으로 캡처하고 렌더링한다."""
 
 from __future__ import annotations
 
@@ -63,12 +63,12 @@ def _is_skill_file(path: str) -> bool:
 
 
 def _skill_name_from_path(skill_md_path: str) -> str:
-    """Derive the skill name from the directory containing SKILL.md."""
+    """SKILL.md가 들어 있는 디렉터리 이름에서 skill 이름을 얻는다."""
     return posixpath.basename(posixpath.dirname(skill_md_path))
 
 
 def _parse_description(content: str) -> str:
-    """Extract frontmatter description from already-read SKILL.md content."""
+    """이미 읽어 둔 SKILL.md 내용에서 frontmatter의 description을 추출한다."""
     match = _FRONT_MATTER_RE.match(content)
     if not match:
         return ""
@@ -130,7 +130,7 @@ def extract_skills(
     skills_root: str,
     read_tool_names: Collection[str],
 ) -> list[SkillEntry]:
-    """Enumerate skill-file reads (AI read_file call + paired ToolMessage result)."""
+    """skill 파일 읽기(AI의 read_file 호출과 짝을 이루는 ToolMessage 결과)를 모두 찾아 나열한다."""
     normalized_root = posixpath.normpath(skills_root.rstrip("/") or "/")
     read_names = frozenset(read_tool_names)
 
@@ -183,7 +183,7 @@ def extract_skills(
 
 
 def render_skill_context(entries: list[SkillEntry]) -> str:
-    """Render active-skill references as a compact reminder, not the body."""
+    """활성 skill 참조를 본문이 아닌 간결한 reminder 형태로 렌더링한다."""
     if not entries:
         return ""
 

@@ -1,14 +1,13 @@
-"""In-process ownership store for single-instance deployments.
+"""단일 instance 배포용 in-process ownership store.
 
-Correct only when one gateway process owns the container backend: nothing here is
-visible to another process, so a peer would see every container as unowned and
-adopt it. :attr:`supports_cross_process` is ``False`` to say so, and the provider
-warns at startup. Multi-worker / multi-instance gateways must use the redis
-store — the same rule `stream_bridge`'s memory backend carries.
+gateway 프로세스 하나가 컨테이너 backend를 독점할 때만 올바르다. 여기 있는 상태는 다른
+프로세스에 전혀 보이지 않으므로, peer는 모든 컨테이너를 주인 없는 것으로 보고 흡수한다.
+:attr:`supports_cross_process`가 ``False``인 이유이며 provider도 startup에서 경고한다.
+multi-worker / multi-instance gateway는 redis store를 써야 한다. `stream_bridge`의
+memory backend와 같은 규칙이다.
 
-TTL and the two lease states are implemented for real rather than stubbed out, so
-one store-contract suite exercises both backends and a lapsed lease behaves
-identically whichever store is configured.
+TTL과 두 lease 상태는 stub이 아니라 실제로 구현한다. 그래야 하나의 store 계약 테스트가
+두 backend를 모두 검증하고, lapsed lease가 어떤 store를 설정하든 동일하게 동작한다.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ class _Lease:
 
 
 class MemoryOwnershipStore(SandboxOwnershipStore):
-    """Ownership leases held in this process only."""
+    """이 프로세스 안에서만 유지되는 ownership lease."""
 
     supports_cross_process = False
 
@@ -36,8 +35,8 @@ class MemoryOwnershipStore(SandboxOwnershipStore):
         self._owner_id = owner_id
         self._ttl = float(ttl_seconds)
         self._now = time_source
-        # sandbox_id -> _Lease. Guarded by _lock: the acquire path, the idle
-        # checker thread, and the renewal thread all touch it.
+        # sandbox_id -> _Lease. acquire 경로, idle checker 스레드, renewal 스레드가 모두
+        # 건드리므로 _lock으로 보호한다.
         self._leases: dict[str, _Lease] = {}
         self._lock = threading.Lock()
 
@@ -60,8 +59,8 @@ class MemoryOwnershipStore(SandboxOwnershipStore):
     def take(self, sandbox_id: str) -> bool:
         with self._lock:
             lease = self._live_lease_locked(sandbox_id)
-            # Refuse only a teardown in progress; a live peer's normal lease is
-            # taken over, which is the point of take().
+            # 진행 중인 teardown만 거절한다. 살아 있는 peer의 일반 lease는 인수하며,
+            # 그것이 take()의 존재 이유다.
             if lease is not None and lease.destroying:
                 return False
             self._write_locked(sandbox_id, destroying=False)
@@ -73,9 +72,9 @@ class MemoryOwnershipStore(SandboxOwnershipStore):
             if lease is not None and lease.owner_id != self._owner_id:
                 return False
             if not for_destroy and lease is not None and lease.destroying:
-                # Never unwind our own teardown: the stop is already in flight
-                # and cannot be recalled, so downgrading to `own:` would let a
-                # `take()` hand out a container that is about to die.
+                # 우리 자신의 teardown은 절대 되감지 않는다. stop이 이미 진행 중이라
+                # 취소할 수 없으므로, `own:`으로 낮추면 `take()`가 곧 죽을 컨테이너를
+                # 넘겨주게 된다.
                 return False
             self._write_locked(sandbox_id, destroying=for_destroy)
             return True

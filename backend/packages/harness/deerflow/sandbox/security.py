@@ -1,4 +1,4 @@
-"""Security helpers for sandbox capability gating."""
+"""sandbox 기능 게이팅을 위한 보안 헬퍼."""
 
 from deerflow.config import get_app_config
 
@@ -21,7 +21,7 @@ LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE = (
 
 
 def uses_local_sandbox_provider(config=None) -> bool:
-    """Return True when the active sandbox provider is the host-local provider."""
+    """활성 sandbox provider가 host-local provider면 True를 반환한다."""
     if config is None:
         config = get_app_config()
 
@@ -33,7 +33,7 @@ def uses_local_sandbox_provider(config=None) -> bool:
 
 
 def is_host_bash_allowed(config=None) -> bool:
-    """Return whether host bash execution is explicitly allowed."""
+    """host bash 실행이 명시적으로 허용됐는지 반환한다."""
     if config is None:
         config = get_app_config()
 

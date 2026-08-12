@@ -1,8 +1,8 @@
 """
-Web and image search tools powered by Serper (Google Search API).
+Serper(Google Search API) 기반 웹/이미지 검색 도구.
 
-Serper provides real-time Google Search and Google Images results via a JSON
-API. An API key is required. Sign up at https://serper.dev to get one.
+Serper는 JSON API로 실시간 Google Search와 Google Images 결과를 제공한다.
+API key가 필요하며 https://serper.dev 에서 발급받는다.
 """
 
 import json
@@ -37,7 +37,7 @@ def _get_api_key(tool_name: str) -> str | None:
 
 
 def _coerce_max_results(value: object, default: int = 5, max_allowed: int = _SERPER_MAX_RESULTS) -> int:
-    """Coerce config/parameter input into a bounded positive result count."""
+    """설정/파라미터 입력을 상한이 있는 양의 결과 개수로 변환한다."""
     try:
         count = int(value)
     except (TypeError, ValueError):
@@ -66,8 +66,8 @@ def _unexpected_format_error(query: str) -> str:
 
 def _response_items(data: dict, field: str, query: str) -> tuple[list[dict] | None, str | None]:
     items = data.get(field)
-    # Treat a missing or null field as "no results" (some APIs return
-    # ``{"organic": null}`` to signal that) rather than a malformed payload.
+    # 필드가 없거나 null이면 잘못된 payload가 아니라 "결과 없음"으로 본다.
+    # (일부 API는 이를 ``{"organic": null}`` 로 표현한다.)
     if items is None:
         return [], None
     if not isinstance(items, list):
@@ -77,7 +77,7 @@ def _response_items(data: dict, field: str, query: str) -> tuple[list[dict] | No
 
 
 def _clean_query(query: str) -> str:
-    """Normalize a raw query into the value actually sent to Serper."""
+    """원본 질의를 Serper에 실제로 보낼 값으로 정규화한다."""
     query = query.strip()
     if len(query) > 500:
         query = query[:500]
@@ -85,13 +85,12 @@ def _clean_query(query: str) -> str:
 
 
 def _decode_ipv4(host: str) -> IPv4Address | None:
-    """Decode obfuscated IPv4 literals that ``ip_address`` rejects.
+    """``ip_address``가 거부하는 난독화된 IPv4 리터럴을 디코딩한다.
 
-    Mirrors the permissive ``inet_aton`` parsing many HTTP clients use, so that
-    integer (``2130706433``), hex (``0x7f000001``) and octal (``0177.0.0.1``)
-    encodings of an address are recognized. Returns an ``IPv4Address`` when the
-    host decodes to one, otherwise ``None`` (e.g. real domains like
-    ``cafe.com`` fail to decode and are left for the caller to treat as a host).
+    많은 HTTP client가 쓰는 관대한 ``inet_aton`` 파싱을 흉내내어 정수
+    (``2130706433``), 16진(``0x7f000001``), 8진(``0177.0.0.1``) 표기를 인식한다.
+    host가 주소로 해석되면 ``IPv4Address``를, 아니면 ``None``을 반환한다.
+    (``cafe.com`` 같은 실제 도메인은 디코딩에 실패하므로 호출자가 host로 다룬다.)
     """
     parts = host.split(".")
     if not 1 <= len(parts) <= 4:
@@ -127,24 +126,21 @@ def _decode_ipv4(host: str) -> IPv4Address | None:
 
 
 def _is_url_present(value: object) -> bool:
-    """Return ``True`` when *value* is a non-empty URL string.
+    """*value*가 비어 있지 않은 URL 문자열이면 ``True``를 반환한다.
 
-    Used to distinguish a field that was *absent* (eligible for cross-field
-    fallback) from one that was *present but filtered* by the SSRF guard (which
-    must stay empty rather than collapse onto its counterpart).
+    필드가 *없어서* 교차 fallback 대상인 경우와, *있었지만* SSRF guard에 걸러진
+    경우를 구분하는 데 쓴다. 후자는 상대 필드로 대체하지 않고 빈 값으로 남겨야 한다.
     """
     return isinstance(value, str) and bool(value.strip())
 
 
 def _safe_public_url(value: object) -> str:
-    """Return ``value`` only if it is a safe, public http(s) URL, else "".
+    """``value``가 안전한 공개 http(s) URL일 때만 그대로 반환하고, 아니면 ""를 반환한다.
 
-    This is a best-effort SSRF guard that rejects non-http(s) schemes,
-    ``localhost``, and private/non-global IP literals (including obfuscated
-    decimal/hex/octal encodings). It only inspects the URL string and cannot
-    catch public hostnames that resolve to internal IPs (e.g. DNS rebinding);
-    any consumer that actually downloads these URLs must re-validate the
-    resolved IP at fetch time.
+    best-effort SSRF guard다. http(s)가 아닌 scheme, ``localhost``, private/non-global
+    IP 리터럴(난독화된 10/16/8진 표기 포함)을 거부한다. URL 문자열만 검사하므로
+    내부 IP로 resolve되는 공개 hostname(DNS rebinding 등)은 잡지 못한다.
+    이 URL을 실제로 다운로드하는 consumer는 fetch 시점에 resolve된 IP를 다시 검증해야 한다.
     """
     if not isinstance(value, str):
         return ""
@@ -156,9 +152,8 @@ def _safe_public_url(value: object) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname:
         return ""
 
-    # Strip a single trailing dot (FQDN root label). ``localhost.`` and
-    # ``127.0.0.1.`` resolve to loopback on common resolvers but would
-    # otherwise slip past the localhost/IP checks below.
+    # 끝의 점 하나(FQDN root label)를 제거한다. ``localhost.`` 와 ``127.0.0.1.`` 은
+    # 흔한 resolver에서 loopback으로 해석되지만, 그대로 두면 아래 localhost/IP 검사를 빠져나간다.
     host = parsed.hostname.lower().rstrip(".")
     if not host:
         return ""
@@ -175,13 +170,13 @@ def _safe_public_url(value: object) -> str:
 
 
 def _serper_post(endpoint: str, api_key: str, query: str, max_results: int) -> tuple[dict | None, str | None]:
-    """Send a POST request to a Serper endpoint.
+    """Serper endpoint로 POST 요청을 보낸다.
 
-    ``query`` is expected to already be normalized via :func:`_clean_query`.
+    ``query``는 :func:`_clean_query`로 이미 정규화되어 있다고 가정한다.
 
-    Returns a ``(data, error_json)`` tuple: on success ``data`` is the parsed
-    JSON response and ``error_json`` is ``None``; on failure ``data`` is ``None``
-    and ``error_json`` is a serialized structured error ready to return.
+    ``(data, error_json)`` 튜플을 반환한다. 성공하면 ``data``는 파싱된 JSON 응답이고
+    ``error_json``은 ``None``이다. 실패하면 ``data``는 ``None``이고 ``error_json``은
+    그대로 반환 가능한 직렬화된 구조화 에러다.
     """
     headers = {
         "X-API-KEY": api_key,
@@ -212,11 +207,11 @@ def _serper_post(endpoint: str, api_key: str, query: str, max_results: int) -> t
 
 @tool("web_search", parse_docstring=True)
 def web_search_tool(query: str, max_results: int = 5) -> str:
-    """Search the web for information using Google Search via Serper.
+    """Serper를 통해 Google Search로 웹에서 정보를 검색한다.
 
     Args:
-        query: Search keywords describing what you want to find. Be specific for better results.
-        max_results: Maximum number of search results to return. Default is 5, capped at 10.
+        query: 찾으려는 내용을 설명하는 검색 키워드. 구체적으로 쓸수록 결과가 좋아진다.
+        max_results: 반환할 최대 검색 결과 개수. 기본값은 5이고 최대 10으로 제한된다.
     """
     config = get_app_config().get_tool_config("web_search")
     if config is not None and "max_results" in config.model_extra:
@@ -238,9 +233,9 @@ def web_search_tool(query: str, max_results: int = 5) -> str:
     if not organic:
         return json.dumps({"error": "No results found", "query": query}, ensure_ascii=False)
 
-    # Search result links are returned verbatim (not passed through
-    # _safe_public_url): they are surfaced as citations for the model to read,
-    # not fetched/downloaded by this tool, unlike image_search image URLs.
+    # 검색 결과 링크는 _safe_public_url을 거치지 않고 그대로 반환한다.
+    # image_search의 이미지 URL과 달리 이 도구가 직접 fetch/다운로드하지 않고
+    # 모델이 읽을 인용으로만 노출되기 때문이다.
     normalized_results = [
         {
             "title": r.get("title", ""),
@@ -260,13 +255,13 @@ def web_search_tool(query: str, max_results: int = 5) -> str:
 
 @tool("image_search", parse_docstring=True)
 def image_search_tool(query: str, max_results: int = 5) -> str:
-    """Search for images online using Google Images via Serper. Use this tool BEFORE image generation to find reference images for characters, portraits, objects, scenes, or any content requiring visual accuracy.
+    """Serper를 통해 Google Images로 온라인 이미지를 검색한다. 인물, 초상, 사물, 장면 등 시각적 정확도가 필요한 콘텐츠의 레퍼런스 이미지를 찾으려면 이미지를 생성하기 전에 반드시 이 도구를 사용하라.
 
-    The returned image URLs can be used as reference images in image generation to significantly improve quality.
+    반환된 이미지 URL은 이미지 생성 시 레퍼런스 이미지로 사용할 수 있으며, 품질을 크게 향상시킨다.
 
     Args:
-        query: Search keywords describing the images you want to find. Be specific for better results (e.g., "Japanese woman street photography 1990s" instead of just "woman").
-        max_results: Maximum number of images to return. Default is 5, capped at 10.
+        query: 찾으려는 이미지를 설명하는 검색 키워드. 구체적으로 쓸수록 결과가 좋아진다(예: 그냥 "woman"이 아니라 "Japanese woman street photography 1990s").
+        max_results: 반환할 최대 이미지 개수. 기본값은 5이고 최대 10으로 제한된다.
     """
     config = get_app_config().get_tool_config("image_search")
     if config is not None and "max_results" in config.model_extra:
@@ -292,14 +287,13 @@ def image_search_tool(query: str, max_results: int = 5) -> str:
     for r in images:
         raw_image = r.get("imageUrl")
         raw_thumb = r.get("thumbnailUrl")
-        # Evaluate the (non-trivial) SSRF guard once per field instead of twice.
+        # 비용이 적지 않은 SSRF guard를 필드당 두 번이 아니라 한 번만 평가한다.
         safe_image = _safe_public_url(raw_image)
         safe_thumb = _safe_public_url(raw_thumb)
-        # Cross-fall back only when the other field was *absent*. A field that
-        # was present but failed the SSRF filter is left empty rather than
-        # collapsed onto its counterpart, so a dropped high-res URL never
-        # silently masquerades as the preview (and vice versa), preserving the
-        # high-res/preview contract callers rely on.
+        # 상대 필드가 *없을 때만* 교차 fallback한다. 있었지만 SSRF 필터에 걸린 필드는
+        # 상대 값으로 대체하지 않고 빈 값으로 남긴다. 그래야 버려진 고해상도 URL이
+        # preview로 둔갑하는 일(그 반대도)이 없고, 호출자가 의존하는
+        # 고해상도/preview 계약이 유지된다.
         image_url = safe_image or (safe_thumb if not _is_url_present(raw_image) else "")
         thumbnail_url = safe_thumb or (safe_image if not _is_url_present(raw_thumb) else "")
         if not image_url and not thumbnail_url:

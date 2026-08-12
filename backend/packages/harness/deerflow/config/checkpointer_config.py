@@ -1,4 +1,4 @@
-"""Configuration for LangGraph checkpointer."""
+"""LangGraph checkpointer 설정."""
 
 from typing import Literal
 
@@ -10,7 +10,7 @@ CheckpointerType = Literal["memory", "sqlite", "postgres"]
 
 
 class CheckpointerConfig(BaseModel):
-    """Configuration for LangGraph state persistence checkpointer."""
+    """LangGraph state 영속화 checkpointer 설정."""
 
     type: CheckpointerType = Field(
         description="Checkpointer backend type. "
@@ -37,23 +37,23 @@ class CheckpointerConfig(BaseModel):
         return validate_postgres_schema(value)
 
 
-# Global configuration instance — None means no checkpointer is configured.
+# 전역 설정 인스턴스. None이면 checkpointer가 설정되지 않았다는 뜻이다.
 _checkpointer_config: CheckpointerConfig | None = None
 
 
 def get_checkpointer_config() -> CheckpointerConfig | None:
-    """Get the current checkpointer configuration, or None if not configured."""
+    """현재 checkpointer 설정을 반환한다. 설정되지 않았으면 None."""
     return _checkpointer_config
 
 
 def set_checkpointer_config(config: CheckpointerConfig | None) -> None:
-    """Set the checkpointer configuration."""
+    """checkpointer 설정을 지정한다."""
     global _checkpointer_config
     _checkpointer_config = config
 
 
 def ensure_config_loaded() -> None:
-    """Lazily load app config when checkpointer config has not been initialized."""
+    """checkpointer 설정이 아직 초기화되지 않았으면 app config를 지연 로드한다."""
     from deerflow.config.app_config import _app_config, get_app_config
 
     config = get_checkpointer_config()
@@ -67,7 +67,7 @@ def ensure_config_loaded() -> None:
 
 
 def load_checkpointer_config_from_dict(config_dict: dict | None) -> None:
-    """Load checkpointer configuration from a dictionary."""
+    """dict에서 checkpointer 설정을 읽어 들인다."""
     global _checkpointer_config
     if config_dict is None:
         _checkpointer_config = None

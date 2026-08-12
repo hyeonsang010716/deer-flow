@@ -1,4 +1,4 @@
-"""OIDC / SSO authentication configuration models."""
+"""OIDC / SSO 인증 설정 모델."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class OIDCProviderConfig(BaseModel):
-    """Configuration for a single OIDC identity provider (Keycloak, Google, Azure AD, etc.)."""
+    """OIDC identity provider 하나(Keycloak, Google, Azure AD 등)의 설정."""
 
     display_name: str = Field(description="Human-readable name shown on the login button")
     issuer: str = Field(description="OIDC issuer URL (e.g. https://keycloak.example.com/realms/deerflow)")
@@ -24,7 +24,7 @@ class OIDCProviderConfig(BaseModel):
         description="How the client authenticates at the token endpoint",
     )
 
-    # ── User provisioning ─────────────────────────────────────────────
+    # ── 사용자 프로비저닝 ─────────────────────────────────────────────
     auto_create_users: bool = Field(
         default=True,
         description="Automatically create a DeerFlow user on first SSO login",
@@ -46,7 +46,7 @@ class OIDCProviderConfig(BaseModel):
     pkce_enabled: bool = Field(default=True, description="Enable PKCE (S256) for the authorization code flow")
     nonce_enabled: bool = Field(default=True, description="Include and validate the nonce claim in ID tokens")
 
-    # ── Endpoint overrides (for providers with non-standard discovery) ─
+    # ── endpoint 오버라이드(비표준 discovery를 쓰는 provider용) ────────
     authorization_endpoint: str | None = Field(default=None)
     token_endpoint: str | None = Field(default=None)
     userinfo_endpoint: str | None = Field(default=None)
@@ -54,7 +54,7 @@ class OIDCProviderConfig(BaseModel):
 
 
 class OIDCAuthConfig(BaseModel):
-    """Top-level OIDC authentication configuration."""
+    """최상위 OIDC 인증 설정."""
 
     enabled: bool = Field(default=False, description="Enable OIDC SSO authentication")
     frontend_base_url: str | None = Field(
@@ -68,7 +68,7 @@ class OIDCAuthConfig(BaseModel):
 
 
 class LocalAuthConfig(BaseModel):
-    """Configuration for the built-in email/password authentication provider."""
+    """내장 이메일/비밀번호 인증 provider의 설정."""
 
     allow_registration: bool = Field(
         default=True,
@@ -82,7 +82,7 @@ class LocalAuthConfig(BaseModel):
 
 
 class AuthAppConfig(BaseModel):
-    """Authentication configuration section for the DeerFlow app config."""
+    """DeerFlow app config의 인증 설정 섹션."""
 
     oidc: OIDCAuthConfig = Field(default_factory=OIDCAuthConfig, description="OIDC SSO authentication settings")
     local: LocalAuthConfig = Field(default_factory=LocalAuthConfig, description="Built-in email/password authentication settings")

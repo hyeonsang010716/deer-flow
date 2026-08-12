@@ -1,14 +1,13 @@
-"""Agentic browser tools — a stateful navigate → observe → act loop.
+"""Agentic browser 도구. navigate → observe → act 를 상태를 유지하며 반복한다.
 
-Unlike the read-only ``web_fetch`` / ``web_capture`` tools, these keep a live
-per-thread browser session (see :mod:`.session`) so the agent can click, type,
-submit forms, and follow multi-step flows on JavaScript-heavy or authenticated
-pages. Every action returns a fresh page snapshot whose interactive elements are
-addressed by a stable ``[ref]`` index, so the model acts on what it just
-observed instead of guessing selectors.
+읽기 전용인 ``web_fetch`` / ``web_capture`` 도구와 달리, 이 도구들은 thread별 live browser
+session(:mod:`.session` 참고)을 유지한다. 덕분에 agent가 JavaScript 비중이 크거나 인증이 필요한
+page에서 클릭, 입력, 폼 제출, 다단계 흐름을 수행할 수 있다. 모든 액션은 새 page snapshot을
+반환하고, 그 안의 interactive element는 안정적인 ``[ref]`` 인덱스로 지정된다. 모델은 selector를
+추측하지 않고 방금 관찰한 대상에 대해 동작한다.
 
-All URLs are SSRF-screened with the shared :func:`validate_public_http_url`
-helper (opt-out only for intentional internal targets).
+모든 URL은 공용 :func:`validate_public_http_url` 헬퍼로 SSRF 검사를 거친다
+(의도적인 내부 대상에 한해서만 opt-out한다).
 """
 
 from __future__ import annotations
@@ -37,10 +36,10 @@ from .session import BrowserSession, BrowserSessionManager, PageSnapshot, get_br
 logger = logging.getLogger(__name__)
 
 _OUTPUTS_VIRTUAL_PREFIX = f"{VIRTUAL_PATH_PREFIX}/outputs"
-# Auto-captured per-step screenshots are live progress feedback (shown in the
-# browser panel + inline thumbnails), not deliverables. Keep them in a hidden
-# subdir so the workspace-changes review does not list them as file changes.
-# The dir name is a shared constant so the scanner's ignore list cannot drift.
+# step마다 자동 캡처하는 screenshot은 산출물이 아니라 진행 상황 피드백이다
+# (browser panel과 인라인 썸네일에 표시된다). 숨김 하위 디렉터리에 두어야
+# workspace-changes 검토가 이를 파일 변경으로 나열하지 않는다.
+# 디렉터리 이름은 공용 상수로 두어 scanner의 무시 목록과 어긋나지 않게 한다.
 _BROWSER_FRAMES_DIRNAME = BROWSER_FRAMES_DIRNAME
 _FRAMES_VIRTUAL_PREFIX = f"{_OUTPUTS_VIRTUAL_PREFIX}/{_BROWSER_FRAMES_DIRNAME}"
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -88,7 +87,7 @@ def _as_str(value: object) -> str | None:
 
 
 class _SessionLease:
-    """Context manager that keeps a process-local browser session pinned."""
+    """프로세스 로컬 browser session을 고정 상태로 유지하는 context manager."""
 
     def __init__(self, manager: BrowserSessionManager, thread_id: str | None, session: BrowserSession) -> None:
         self._manager = manager
@@ -103,14 +102,13 @@ class _SessionLease:
 
 
 def _resolve_session(runtime: Runtime, tool_name: str) -> _SessionLease:
-    # Launch config (headless/viewport/timeout/cdp_url) is read from a single
-    # canonical source — always ``browser_navigate`` — regardless of which tool
-    # first creates the session. ``get_session`` caches per thread and ignores
-    # these params for later callers, so keying launch config off the calling
-    # tool made it "first tool to run wins": a ``headless: false`` set only on
-    # ``browser_navigate`` was silently dropped if another tool (or the live WS)
-    # initialized the session first. ``tool_name`` is retained for callers that
-    # read their own non-launch config (e.g. ``browser_get_text``'s max_chars).
+    # launch 설정(headless/viewport/timeout/cdp_url)은 어떤 도구가 session을 먼저 만들든
+    # 항상 ``browser_navigate`` 라는 단일 기준 출처에서 읽는다. ``get_session``은 thread별로
+    # 캐시하고 이후 호출자의 이 파라미터들은 무시하므로, 호출한 도구를 기준으로 launch 설정을
+    # 잡으면 "먼저 실행된 도구가 이긴다"가 된다. ``browser_navigate``에만 지정한
+    # ``headless: false``가 다른 도구(또는 live WS)가 session을 먼저 초기화하면 조용히 무시됐다.
+    # ``tool_name``은 launch와 무관한 자기 설정을 읽는 호출자를 위해 남겨 둔다
+    # (예: ``browser_get_text``의 max_chars).
     del tool_name
     cfg = _get_tool_config("browser_navigate")
     headless = _as_bool(cfg.get("headless"), True)
@@ -134,12 +132,11 @@ def _resolve_session(runtime: Runtime, tool_name: str) -> _SessionLease:
 
 
 def validate_browser_url(url: str, *, tool_name: str = "browser_navigate") -> str | None:
-    """SSRF-screen a browser navigation URL using the tool's config policy.
+    """도구 설정 정책에 따라 browser 이동 URL을 SSRF 검사한다.
 
-    Returns an ``"Error: ..."`` string when the URL must be rejected, or ``None``
-    when navigation may proceed. Shared by the agent tools and the Gateway live
-    stream so every path that can steer the browser enforces the same allow/deny
-    policy (``allow_private_addresses`` from the ``browser_navigate`` tool config).
+    URL을 거부해야 하면 ``"Error: ..."`` 문자열을, 이동해도 되면 ``None``을 반환한다.
+    agent 도구와 Gateway live stream이 공유하므로, browser를 조종할 수 있는 모든 경로가
+    같은 허용/거부 정책(``browser_navigate`` 도구 설정의 ``allow_private_addresses``)을 따른다.
     """
     cfg = _get_tool_config(tool_name)
     allow_private = _as_bool(cfg.get("allow_private_addresses"), False)
@@ -171,11 +168,11 @@ def _step_screenshot_name(action: str) -> str:
 
 
 async def _capture_step_screenshot(runtime: Runtime, session: BrowserSession, action: str) -> str | None:
-    """Best-effort per-action screenshot saved as hidden live-progress feedback.
+    """액션별 screenshot을 best-effort로 찍어 숨김 진행 피드백으로 저장한다.
 
-    Returns the artifact virtual path (under the hidden ``.browser-frames`` dir so
-    it stays out of the workspace-changes review), or ``None`` when outputs are
-    unavailable or capture fails — a failed capture must never break the action.
+    artifact virtual path를 반환한다(숨김 ``.browser-frames`` 디렉터리 아래이므로
+    workspace-changes 검토에 잡히지 않는다). outputs를 쓸 수 없거나 캡처가 실패하면
+    ``None``을 반환한다. 캡처 실패가 액션을 깨뜨려서는 안 된다.
     """
     outputs_path = _thread_outputs_path(runtime)
     if isinstance(outputs_path, str):
@@ -201,11 +198,11 @@ def _snapshot_command(
     prefix: str,
     screenshot_path: str | None,
 ) -> Command:
-    """Build a ToolMessage carrying the text snapshot plus an inline screenshot.
+    """텍스트 snapshot과 인라인 screenshot을 함께 담은 ToolMessage를 만든다.
 
-    The screenshot rides both as a thread ``artifacts`` entry (so it opens in the
-    artifacts side panel) and on ``ToolMessage.additional_kwargs.browser_view``
-    (so the chat can render an inline thumbnail per browser step).
+    screenshot은 thread ``artifacts`` 항목으로도(artifacts 사이드 패널에서 열리도록),
+    ``ToolMessage.additional_kwargs.browser_view``로도(채팅이 browser step마다 인라인
+    썸네일을 렌더링하도록) 실려 간다.
     """
     text = _snapshot_message(snapshot, prefix)
     additional_kwargs: dict = {}
@@ -218,14 +215,16 @@ def _snapshot_command(
 
 
 async def navigate_and_capture(*, thread_id: str | None, url: str, outputs_path: Path) -> dict:
-    """Drive the per-thread browser session to *url* and capture a screenshot.
+    """thread별 browser session을 *url*로 이동시키고 screenshot을 캡처한다.
 
-    Used by the Gateway browser router so a user can steer the live session from
-    the UI URL bar. Shares the same per-thread session, SSRF policy, and
-    screenshot pipeline as :func:`browser_navigate_tool`.
+    Gateway browser router가 사용하며, 사용자가 UI 주소창에서 live session을 조종할 수 있게 한다.
+    :func:`browser_navigate_tool`과 같은 thread별 session, SSRF 정책, screenshot 파이프라인을 공유한다.
 
-    Returns ``{"screenshot": virtual_path|None, "url": str, "title": str}``.
-    Raises :class:`ValueError` when the URL fails SSRF validation.
+    Returns:
+        ``{"screenshot": virtual_path|None, "url": str, "title": str}``.
+
+    Raises:
+        ValueError: URL이 SSRF 검증을 통과하지 못한 경우.
     """
     url_error = _validate_url("browser_navigate", url)
     if url_error:
@@ -256,19 +255,18 @@ async def navigate_and_capture(*, thread_id: str | None, url: str, outputs_path:
 
 @tool("browser_navigate", parse_docstring=True)
 async def browser_navigate_tool(runtime: Runtime, url: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Open a URL in a live browser session and return the page's interactive elements.
+    """live browser session에서 URL을 열고 그 page의 interactive element 목록을 반환한다.
 
-    Use this to START a browsing flow. Unlike web_fetch (read-only), this keeps a
-    stateful browser so you can then click and type on the page. The result lists
-    interactive elements as ``[ref] role: name`` — use those ``[ref]`` numbers with
-    browser_click and browser_type. The session persists across tool calls for this
-    conversation until browser_close. Every navigate/click/type step is
-    auto-captured as a screenshot the user can see, so you do not need to call
-    browser_screenshot just to show progress.
-    URLs must include the scheme, e.g. https://example.com.
+    browsing 흐름을 시작할 때 사용하라. 읽기 전용인 web_fetch와 달리 상태를 유지하는
+    browser를 띄우므로, 이후 page에서 클릭과 입력을 할 수 있다. 결과는 interactive element를
+    ``[ref] role: name`` 형식으로 나열한다 — 이 ``[ref]`` 번호를 browser_click과
+    browser_type에 그대로 넘겨라. session은 browser_close 전까지 이 대화의 tool call들
+    사이에서 유지된다. navigate/click/type 단계마다 사용자가 볼 수 있는 screenshot이 자동
+    캡처되므로, 진행 상황을 보여주려고 browser_screenshot을 따로 호출할 필요는 없다.
+    URL에는 scheme을 반드시 포함하라. 예: https://example.com.
 
     Args:
-        url: The http(s) URL to open.
+        url: 열려는 http(s) URL.
     """
     try:
         url_error = _validate_url("browser_navigate", url)
@@ -285,7 +283,7 @@ async def browser_navigate_tool(runtime: Runtime, url: str, tool_call_id: Annota
 
 @tool("browser_snapshot")
 async def browser_snapshot_tool(runtime: Runtime, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Re-read the current page's interactive elements without acting. Use this to refresh the [ref] element list after the page changed on its own (e.g. async content loaded) or when you are unsure of the current state."""
+    """아무 액션도 하지 않고 현재 page의 interactive element를 다시 읽는다. page가 스스로 바뀌었거나(예: async 콘텐츠 로드) 현재 상태가 확실하지 않을 때, [ref] element 목록을 갱신하려면 사용하라."""
     try:
         with _resolve_session(runtime, "browser_snapshot") as session:
             snapshot = await session.snapshot()
@@ -298,14 +296,14 @@ async def browser_snapshot_tool(runtime: Runtime, tool_call_id: Annotated[str, I
 
 @tool("browser_click", parse_docstring=True)
 async def browser_click_tool(runtime: Runtime, ref: int, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Click an interactive element by its ``[ref]`` number from the latest snapshot.
+    """최신 snapshot의 ``[ref]`` 번호로 interactive element를 클릭한다.
 
-    The ref comes from the numbered element list returned by browser_navigate,
-    browser_snapshot, browser_click, or browser_type. Returns the updated page
-    snapshot after the click (with new ``[ref]`` numbers).
+    ref는 browser_navigate, browser_snapshot, browser_click, browser_type이 반환한 번호가
+    붙은 element 목록에서 가져온다. 클릭 후 갱신된 page snapshot을 반환하며, 그 안의
+    ``[ref]`` 번호는 새로 매겨진 값이다.
 
     Args:
-        ref: The element reference number to click.
+        ref: 클릭할 element의 reference 번호.
     """
     try:
         with _resolve_session(runtime, "browser_click") as session:
@@ -325,15 +323,15 @@ async def browser_type_tool(
     tool_call_id: Annotated[str, InjectedToolCallId],
     submit: bool = False,
 ) -> Command:
-    """Type text into an input/textarea element by its ``[ref]`` number.
+    """``[ref]`` 번호로 지정한 input/textarea element에 텍스트를 입력한다.
 
-    Fills the field identified by ref. Set submit=true to press Enter afterward
-    (e.g. to run a search or submit a form). Returns the updated page snapshot.
+    ref로 식별된 필드를 채운다. 입력 후 Enter를 누르려면(예: 검색 실행이나 폼 제출)
+    submit=true로 설정하라. 갱신된 page snapshot을 반환한다.
 
     Args:
-        ref: The element reference number of the input to type into.
-        text: The text to enter.
-        submit: When true, press Enter after typing to submit.
+        ref: 입력할 input element의 reference 번호.
+        text: 입력할 텍스트.
+        submit: true이면 입력 후 Enter를 눌러 제출한다.
     """
     try:
         with _resolve_session(runtime, "browser_type") as session:
@@ -348,7 +346,7 @@ async def browser_type_tool(
 
 @tool("browser_get_text")
 async def browser_get_text_tool(runtime: Runtime, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Read the visible text content of the current page. Use this to extract readable text after navigating/interacting, e.g. to quote results or summarize content. Output is truncated for large pages."""
+    """현재 page에서 보이는 텍스트 내용을 읽는다. 이동하거나 상호작용한 뒤 읽을 수 있는 텍스트를 추출할 때, 예를 들어 결과를 인용하거나 내용을 요약할 때 사용하라. page가 크면 출력은 잘린다."""
     try:
         with _resolve_session(runtime, "browser_get_text") as session:
             cfg = _get_tool_config("browser_get_text")
@@ -362,7 +360,7 @@ async def browser_get_text_tool(runtime: Runtime, tool_call_id: Annotated[str, I
 
 @tool("browser_back")
 async def browser_back_tool(runtime: Runtime, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Go back to the previous page in the browser session's history."""
+    """browser session의 history에서 이전 page로 돌아간다."""
     try:
         with _resolve_session(runtime, "browser_back") as session:
             snapshot = await session.back()
@@ -405,15 +403,14 @@ async def browser_screenshot_tool(
     filename: str | None = None,
     full_page: bool = False,
 ) -> Command:
-    """Capture a screenshot of the current browser page and save it as an artifact.
+    """현재 browser page의 screenshot을 찍어 artifact로 저장한다.
 
-    Use this for visual evidence of the current interactive session state (after
-    clicking/typing), which web_capture cannot provide because it renders a fresh,
-    stateless page load.
+    클릭이나 입력을 마친 뒤 현재 interactive session 상태의 시각적 증거가 필요할 때 사용하라.
+    web_capture는 상태 없이 page를 새로 로드해 렌더링하므로 이 정보를 제공할 수 없다.
 
     Args:
-        filename: Optional output filename (extension is forced to .png).
-        full_page: Capture the full scrollable page instead of just the viewport.
+        filename: 선택적 출력 파일명(확장자는 .png로 강제된다).
+        full_page: viewport만이 아니라 스크롤 가능한 page 전체를 캡처한다.
     """
     try:
         outputs_path = _thread_outputs_path(runtime)
@@ -437,7 +434,7 @@ async def browser_screenshot_tool(
 
 @tool("browser_close")
 async def browser_close_tool(runtime: Runtime, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
-    """Close the current browser session and free its resources. Call this when done with the browsing flow; a later browser_navigate starts a fresh session."""
+    """현재 browser session을 닫고 리소스를 해제한다. browsing 흐름을 마쳤을 때 호출하라. 이후 browser_navigate를 호출하면 새 session이 시작된다."""
     try:
         manager = get_browser_session_manager()
         closed = await manager.close_session(_thread_id(runtime))

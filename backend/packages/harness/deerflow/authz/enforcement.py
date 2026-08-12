@@ -1,4 +1,4 @@
-"""Shared Phase 1B authorization enforcement helpers."""
+"""Phase 1B authorization 집행 공용 헬퍼."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ def filter_tools_by_authorization(
     principal: Principal,
     fail_closed: bool,
 ) -> list[BaseTool]:
-    """Return the policy-visible subset of *tools* without changing its order.
+    """*tools* 중 policy상 보이는 것만 원래 순서 그대로 반환한다.
 
-    The caller must invoke this before deferred-tool assembly. Provider errors
-    and malformed filter results deny every tool when ``fail_closed`` is true;
-    an explicitly configured fail-open policy preserves the original set.
+    호출자는 deferred-tool 조립 전에 이 함수를 호출해야 한다. ``fail_closed``가 true면
+    provider 오류나 잘못된 필터 결과는 모든 tool을 거부하고, fail-open으로 명시 설정된
+    정책이면 원래 집합을 그대로 유지한다.
     """
     original_tools = list(tools)
     if provider is None:

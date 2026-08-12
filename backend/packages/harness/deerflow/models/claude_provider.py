@@ -1,15 +1,15 @@
-"""Custom Claude provider with OAuth Bearer auth, prompt caching, and smart thinking.
+"""OAuth Bearer 인증, prompt caching, smart thinking을 지원하는 커스텀 Claude provider.
 
-Supports two authentication modes:
-  1. Standard API key (x-api-key header) — default ChatAnthropic behavior
-  2. Claude Code OAuth token (Authorization: Bearer header)
-     - Detected by sk-ant-oat prefix
-     - Requires anthropic-beta: oauth-2025-04-20,claude-code-20250219
-     - Requires billing header in system prompt for all OAuth requests
+두 가지 인증 모드를 지원한다:
+  1. 표준 API key (x-api-key 헤더) — 기본 ChatAnthropic 동작
+  2. Claude Code OAuth token (Authorization: Bearer 헤더)
+     - sk-ant-oat 접두사로 감지한다
+     - anthropic-beta: oauth-2025-04-20,claude-code-20250219 이 필요하다
+     - 모든 OAuth 요청은 system prompt에 billing 헤더가 있어야 한다
 
-Auto-loads credentials from explicit runtime handoff:
-  - $ANTHROPIC_API_KEY environment variable
-  - $CLAUDE_CODE_OAUTH_TOKEN or $ANTHROPIC_AUTH_TOKEN
+명시적인 runtime handoff 경로에서 credential을 자동으로 읽어온다:
+  - $ANTHROPIC_API_KEY 환경 변수
+  - $CLAUDE_CODE_OAUTH_TOKEN 또는 $ANTHROPIC_AUTH_TOKEN
   - $CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
   - $CLAUDE_CODE_CREDENTIALS_PATH
   - ~/.claude/.credentials.json
@@ -34,17 +34,17 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 THINKING_BUDGET_RATIO = 0.8
 
-# Billing header required by Anthropic API for OAuth token access.
-# Must be the first system prompt block. Format mirrors Claude Code CLI.
-# Override with ANTHROPIC_BILLING_HEADER env var if the hardcoded version drifts.
+# OAuth token 접근 시 Anthropic API가 요구하는 billing 헤더.
+# 반드시 첫 번째 system prompt 블록이어야 한다. 형식은 Claude Code CLI를 따른다.
+# 하드코딩된 버전이 어긋나면 ANTHROPIC_BILLING_HEADER 환경 변수로 덮어쓴다.
 _DEFAULT_BILLING_HEADER = "x-anthropic-billing-header: cc_version=2.1.85.351; cc_entrypoint=cli; cch=6c6d5;"
 OAUTH_BILLING_HEADER = os.environ.get("ANTHROPIC_BILLING_HEADER", _DEFAULT_BILLING_HEADER)
 
 
 class ClaudeChatModel(ChatAnthropic):
-    """ChatAnthropic with OAuth Bearer auth, prompt caching, and smart thinking.
+    """OAuth Bearer 인증, prompt caching, smart thinking을 갖춘 ChatAnthropic.
 
-    Config example:
+    설정 예시:
         - name: claude-sonnet-4.6
           use: deerflow.models.claude_provider:ClaudeChatModel
           model: claude-sonnet-4-6
@@ -52,7 +52,7 @@ class ClaudeChatModel(ChatAnthropic):
           enable_prompt_caching: true
     """
 
-    # Custom fields
+    # 커스텀 필드
     enable_prompt_caching: bool = True
     prompt_cache_size: int = 3
     auto_thinking_budget: bool = True
@@ -67,7 +67,7 @@ class ClaudeChatModel(ChatAnthropic):
             raise ValueError("retry_max_attempts must be >= 1")
 
     def model_post_init(self, __context: Any) -> None:
-        """Auto-load credentials and configure OAuth if needed."""
+        """credential을 자동으로 읽고, 필요하면 OAuth를 설정한다."""
         from pydantic import SecretStr
 
         from deerflow.models.credential_loader import (
@@ -78,7 +78,7 @@ class ClaudeChatModel(ChatAnthropic):
 
         self._validate_retry_config()
 
-        # Extract actual key value (SecretStr.str() returns '**********')
+        # 실제 key 값을 꺼낸다(SecretStr.str()은 '**********'를 반환한다).
         current_key = ""
         if self.anthropic_api_key:
             if hasattr(self.anthropic_api_key, "get_secret_value"):
@@ -86,7 +86,7 @@ class ClaudeChatModel(ChatAnthropic):
             else:
                 current_key = str(self.anthropic_api_key)
 
-        # Try the explicit Claude Code OAuth handoff sources if no valid key.
+        # 유효한 key가 없으면 명시적인 Claude Code OAuth handoff 소스를 시도한다.
         if not current_key or current_key in ("your-anthropic-api-key",):
             cred = load_claude_code_credential()
             if cred:
@@ -95,38 +95,38 @@ class ClaudeChatModel(ChatAnthropic):
             else:
                 logger.warning("No Anthropic API key or explicit Claude Code OAuth credential found.")
 
-        # Detect OAuth token and configure Bearer auth
+        # OAuth token을 감지하고 Bearer 인증을 설정한다.
         if is_oauth_token(current_key):
             self._is_oauth = True
             self._oauth_access_token = current_key
-            # Set the token as api_key temporarily (will be swapped to auth_token on client)
+            # token을 임시로 api_key에 넣는다(client에서 auth_token으로 교체된다).
             self.anthropic_api_key = SecretStr(current_key)
-            # Add required beta headers for OAuth
+            # OAuth에 필요한 beta 헤더를 추가한다.
             self.default_headers = {
                 **(self.default_headers or {}),
                 "anthropic-beta": OAUTH_ANTHROPIC_BETAS,
             }
-            # OAuth tokens have a limit of 4 cache_control blocks — disable prompt caching
+            # OAuth token은 cache_control 블록이 4개로 제한되므로 prompt caching을 끈다.
             self.enable_prompt_caching = False
             logger.info("OAuth token detected — will use Authorization: Bearer header")
         else:
             if current_key:
                 self.anthropic_api_key = SecretStr(current_key)
 
-        # Ensure api_key is SecretStr
+        # api_key가 SecretStr인지 확인한다.
         if isinstance(self.anthropic_api_key, str):
             self.anthropic_api_key = SecretStr(self.anthropic_api_key)
 
         super().model_post_init(__context)
 
-        # Patch clients immediately after creation for OAuth Bearer auth.
-        # This must happen after super() because clients are lazily created.
+        # OAuth Bearer 인증을 위해 client 생성 직후 patch한다.
+        # client가 lazy하게 생성되므로 super() 이후여야 한다.
         if self._is_oauth:
             self._patch_client_oauth(self._client)
             self._patch_client_oauth(self._async_client)
 
     def _patch_client_oauth(self, client: Any) -> None:
-        """Swap api_key → auth_token on an Anthropic SDK client for OAuth Bearer auth."""
+        """OAuth Bearer 인증을 위해 Anthropic SDK client의 api_key를 auth_token으로 바꾼다."""
         if hasattr(client, "api_key") and hasattr(client, "auth_token"):
             client.api_key = None
             client.auth_token = self._oauth_access_token
@@ -138,7 +138,7 @@ class ClaudeChatModel(ChatAnthropic):
         stop: list[str] | None = None,
         **kwargs: Any,
     ) -> dict:
-        """Override to inject prompt caching, thinking budget, and OAuth billing."""
+        """prompt caching, thinking budget, OAuth billing을 주입하기 위한 override."""
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
         if self._is_oauth:
@@ -153,16 +153,16 @@ class ClaudeChatModel(ChatAnthropic):
         return payload
 
     def _apply_oauth_billing(self, payload: dict) -> None:
-        """Inject the billing header block required for all OAuth requests.
+        """모든 OAuth 요청에 필요한 billing 헤더 블록을 주입한다.
 
-        The billing block is always placed first in the system list, removing any
-        existing occurrence to avoid duplication or out-of-order positioning.
+        billing 블록은 항상 system 리스트의 맨 앞에 놓고, 중복이나 순서 어긋남을 피하기 위해
+        기존에 있던 것은 제거한다.
         """
         billing_block = {"type": "text", "text": OAUTH_BILLING_HEADER}
 
         system = payload.get("system")
         if isinstance(system, list):
-            # Remove any existing billing blocks, then insert a single one at index 0.
+            # 기존 billing 블록을 모두 제거한 뒤 index 0에 하나만 삽입한다.
             filtered = [b for b in system if not (isinstance(b, dict) and OAUTH_BILLING_HEADER in b.get("text", ""))]
             payload["system"] = [billing_block] + filtered
         elif isinstance(system, str):
@@ -173,11 +173,11 @@ class ClaudeChatModel(ChatAnthropic):
         else:
             payload["system"] = [billing_block]
 
-        # Add metadata.user_id required by the API for OAuth billing validation
+        # OAuth billing 검증을 위해 API가 요구하는 metadata.user_id를 추가한다.
         if not isinstance(payload.get("metadata"), dict):
             payload["metadata"] = {}
         if "user_id" not in payload["metadata"]:
-            # Generate a stable device_id from the machine's hostname
+            # 머신의 hostname에서 안정적인 device_id를 만든다.
             hostname = socket.gethostname()
             device_id = hashlib.sha256(f"deerflow-{hostname}".encode()).hexdigest()
             session_id = str(uuid.uuid4())
@@ -190,26 +190,25 @@ class ClaudeChatModel(ChatAnthropic):
             )
 
     def _apply_prompt_caching(self, payload: dict) -> None:
-        """Apply ephemeral cache_control to system, recent messages, and last tool definition.
+        """system, 최근 메시지, 마지막 tool 정의에 ephemeral cache_control을 적용한다.
 
-        Uses a budget of MAX_CACHE_BREAKPOINTS (4) breakpoints — the hard limit
-        enforced by both the Anthropic API and AWS Bedrock.  Breakpoints are
-        placed on the *last* eligible blocks because later breakpoints cover a
-        larger prefix and yield better cache hit rates.
+        Anthropic API와 AWS Bedrock이 모두 강제하는 하드 리밋인 MAX_CACHE_BREAKPOINTS(4)개의
+        breakpoint 예산을 쓴다. breakpoint는 조건에 맞는 블록 중 *마지막* 것들에 붙인다.
+        뒤쪽 breakpoint일수록 더 긴 prefix를 덮어 cache hit율이 좋기 때문이다.
 
-        The system prompt is expected to be fully static (no per-user memory or
-        current date).  Dynamic context is injected per-turn via
-        DynamicContextMiddleware as a <system-reminder> in the first HumanMessage.
+        system prompt는 완전히 정적이라고 가정한다(사용자별 memory나 현재 날짜가 없다).
+        동적 context는 DynamicContextMiddleware가 첫 HumanMessage 안에 <system-reminder>로
+        턴마다 주입한다.
         """
         MAX_CACHE_BREAKPOINTS = 4
 
-        # Collect candidate blocks in document order:
-        #   1. system text blocks
-        #   2. content blocks of the last prompt_cache_size messages
-        #   3. the last tool definition
+        # 후보 블록을 문서 순서대로 모은다:
+        #   1. system text 블록
+        #   2. 최근 prompt_cache_size개 메시지의 content 블록
+        #   3. 마지막 tool 정의
         candidates: list[dict] = []
 
-        # 1. System blocks
+        # 1. system 블록
         system = payload.get("system")
         if system and isinstance(system, list):
             for block in system:
@@ -220,7 +219,7 @@ class ClaudeChatModel(ChatAnthropic):
             payload["system"] = [new_block]
             candidates.append(new_block)
 
-        # 2. Recent message blocks
+        # 2. 최근 메시지 블록
         messages = payload.get("messages", [])
         cache_start = max(0, len(messages) - self.prompt_cache_size)
         for i in range(cache_start, len(messages)):
@@ -237,18 +236,18 @@ class ClaudeChatModel(ChatAnthropic):
                 msg["content"] = [new_block]
                 candidates.append(new_block)
 
-        # 3. Last tool definition
+        # 3. 마지막 tool 정의
         tools = payload.get("tools", [])
         if tools and isinstance(tools[-1], dict):
             candidates.append(tools[-1])
 
-        # Apply cache_control only to the last MAX_CACHE_BREAKPOINTS candidates
-        # to stay within the API limit.
+        # API 제한을 넘지 않도록 마지막 MAX_CACHE_BREAKPOINTS개 후보에만
+        # cache_control을 적용한다.
         for block in candidates[-MAX_CACHE_BREAKPOINTS:]:
             block["cache_control"] = {"type": "ephemeral"}
 
     def _apply_thinking_budget(self, payload: dict) -> None:
-        """Auto-allocate thinking budget (80% of max_tokens)."""
+        """thinking budget을 자동 배정한다(max_tokens의 80%)."""
         thinking = payload.get("thinking")
         if not thinking or not isinstance(thinking, dict):
             return
@@ -262,7 +261,7 @@ class ClaudeChatModel(ChatAnthropic):
 
     @staticmethod
     def _strip_cache_control(payload: dict) -> None:
-        """Remove cache_control markers before OAuth requests reach Anthropic."""
+        """OAuth 요청이 Anthropic에 도달하기 전에 cache_control 마커를 제거한다."""
         for section in ("system", "messages"):
             items = payload.get(section)
             if not isinstance(items, list):
@@ -294,7 +293,7 @@ class ClaudeChatModel(ChatAnthropic):
         return await super()._acreate(payload)
 
     def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any) -> Any:
-        """Override with OAuth patching and retry logic."""
+        """OAuth patch와 retry 로직을 더한 override."""
         if self._is_oauth:
             self._patch_client_oauth(self._client)
 
@@ -319,7 +318,7 @@ class ClaudeChatModel(ChatAnthropic):
         raise last_error
 
     async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any) -> Any:
-        """Async override with OAuth patching and retry logic."""
+        """OAuth patch와 retry 로직을 더한 async override."""
         import asyncio
 
         if self._is_oauth:
@@ -347,7 +346,7 @@ class ClaudeChatModel(ChatAnthropic):
 
     @staticmethod
     def _calc_backoff_ms(attempt: int, error: Exception) -> int:
-        """Exponential backoff with a fixed 20% buffer."""
+        """고정 20% 버퍼를 더한 exponential backoff."""
         backoff_ms = 2000 * (1 << (attempt - 1))
         jitter_ms = int(backoff_ms * 0.2)
         total_ms = backoff_ms + jitter_ms

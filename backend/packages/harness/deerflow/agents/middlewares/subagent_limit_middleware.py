@@ -1,4 +1,4 @@
-"""Middleware to enforce subagent tool-call limits."""
+"""subagent 도구 호출 상한을 강제하는 미들웨어."""
 
 import logging
 from typing import Any, override
@@ -21,7 +21,7 @@ from deerflow.subagents.executor import MAX_CONCURRENT_SUBAGENTS
 
 logger = logging.getLogger(__name__)
 
-# Valid range for max_concurrent_subagents
+# max_concurrent_subagents의 유효 범위
 MIN_SUBAGENT_LIMIT = MIN_CONCURRENT_SUBAGENT_CALLS
 MAX_SUBAGENT_LIMIT = MAX_CONCURRENT_SUBAGENT_CALLS
 DEFAULT_MAX_TOTAL_SUBAGENTS = DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN
@@ -36,12 +36,12 @@ _TOTAL_LIMIT_STOP_MSG = (
 
 
 def _clamp_subagent_limit(value: int) -> int:
-    """Clamp subagent limit to valid range [1, 4]."""
+    """subagent 상한을 유효 범위 [1, 4]로 clamp한다."""
     return clamp_subagent_concurrency(value)
 
 
 def _clamp_total_subagent_limit(value: int) -> int:
-    """Clamp total subagent limit to a bounded positive range."""
+    """전체 subagent 상한을 유한한 양수 범위로 clamp한다."""
     return clamp_total_subagents_per_run(value)
 
 
@@ -93,20 +93,16 @@ def _count_prior_delegations(delegations: object, *, run_id: str | None) -> int:
 
 
 class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
-    """Truncates excess 'task' tool calls from a single model response/run.
+    """한 model 응답 또는 run에서 초과된 'task' 도구 호출을 잘라낸다.
 
-    When an LLM generates more than max_concurrent parallel task tool calls
-    in one response, this middleware keeps only the first max_concurrent and
-    discards the rest. It also enforces a total per-run cap using entries in
-    the durable delegation ledger tagged with the current run_id, so repeated
-    planning checkpoints in one run cannot keep launching more legal-sized
-    batches indefinitely. This is more reliable than prompt-based limits.
+    LLM이 한 응답에서 max_concurrent를 넘는 병렬 task 도구 호출을 만들면, 앞의 max_concurrent개만 남기고
+    나머지를 버린다. 또한 현재 run_id가 태깅된 durable delegation ledger 항목을 세어 run 전체 상한도
+    강제한다. 덕분에 한 run 안에서 계획 체크포인트가 반복되어도 규격에 맞는 배치를 무한히 실행할 수 없다.
+    prompt 기반 제한보다 신뢰할 수 있는 방식이다.
 
     Args:
-        max_concurrent: Maximum number of concurrent subagent calls allowed.
-            Defaults to MAX_CONCURRENT_SUBAGENTS (3). Clamped to [1, 4].
-        max_total: Maximum number of subagent calls allowed across the run.
-            Defaults to 6. Clamped to [1, 50].
+        max_concurrent: 허용되는 동시 subagent 호출 수. 기본값은 MAX_CONCURRENT_SUBAGENTS(3)이며 [1, 4]로 clamp된다.
+        max_total: run 전체에서 허용되는 subagent 호출 수. 기본값은 6이며 [1, 50]으로 clamp된다.
     """
 
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_SUBAGENTS, max_total: int = DEFAULT_MAX_TOTAL_SUBAGENTS):
@@ -127,7 +123,7 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         if not tool_calls:
             return None
 
-        # Count task tool calls
+        # task 도구 호출 개수를 센다.
         task_indices = [i for i, tc in enumerate(tool_calls) if tc.get("name") == "task"]
         if not task_indices:
             return None
@@ -142,7 +138,7 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         if len(task_indices) <= allowed_task_calls:
             return None
 
-        # Build set of indices to drop (excess task calls beyond the limit)
+        # 버릴 인덱스 집합을 만든다(상한을 넘긴 task 호출).
         indices_to_drop = set(task_indices[allowed_task_calls:])
         truncated_tool_calls = [tc for i, tc in enumerate(tool_calls) if i not in indices_to_drop]
         dropped_count = len(indices_to_drop)
@@ -154,13 +150,12 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
             prior_delegation_count,
         )
 
-        # Stamp stop_reason when the total per-run cap is exhausted so the
-        # worker surfaces this capped completion alongside loop_capped /
-        # token_capped / safety_capped (#4176).
+        # run 전체 상한을 소진하면 stop_reason을 남겨, worker가 loop_capped / token_capped /
+        # safety_capped와 함께 이 capped 완료를 드러내도록 한다(#4176).
         if remaining_total == 0 and isinstance(getattr(runtime, "context", None), dict):
             runtime.context["stop_reason"] = "subagent_limit_capped"
 
-        # Replace the AIMessage with truncated tool_calls (same id triggers replacement)
+        # 잘라낸 tool_calls로 AIMessage를 교체한다(같은 id면 교체로 처리된다).
         content = _append_text(last_msg.content, _TOTAL_LIMIT_STOP_MSG) if remaining_total == 0 else None
         updated_msg = clone_ai_message_with_tool_calls(last_msg, truncated_tool_calls, content=content)
         return {"messages": [updated_msg]}

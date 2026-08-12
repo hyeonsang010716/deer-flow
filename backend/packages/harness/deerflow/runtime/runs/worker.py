@@ -1,16 +1,16 @@
-"""Background agent execution.
+"""background agent 실행.
 
-Runs an agent graph inside an ``asyncio.Task``, publishing events to
-a :class:`StreamBridge` as they are produced.
+agent graph를 ``asyncio.Task`` 안에서 실행하며, 생성되는 이벤트를
+:class:`StreamBridge`에 publish한다.
 
-Uses ``graph.astream(stream_mode=[...])`` which gives correct full-state
-snapshots for ``values`` mode, proper ``{node: writes}`` for ``updates``,
-and ``(chunk, metadata)`` tuples for ``messages`` mode.
+``graph.astream(stream_mode=[...])``를 사용한다. ``values`` 모드에서는 올바른
+전체 state snapshot을, ``updates``에서는 제대로 된 ``{node: writes}``를,
+``messages`` 모드에서는 ``(chunk, metadata)`` 튜플을 준다.
 
-Note: ``events`` mode is rejected by the gateway — it requires
-``graph.astream_events()`` which cannot simultaneously produce ``values``
-snapshots.  The JS open-source LangGraph API server works around this via
-internal checkpoint callbacks that are not exposed in the Python public API.
+참고: ``events`` 모드는 gateway가 거부한다. ``graph.astream_events()``가 필요한데
+이것은 ``values`` snapshot을 동시에 만들 수 없기 때문이다. JS 오픈소스 LangGraph
+API 서버는 Python public API에 노출되지 않은 내부 checkpoint callback으로 이를
+우회한다.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ _checkpoint_locks_by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, 
 
 @asynccontextmanager
 async def _checkpoint_thread_lock(thread_id: str) -> AsyncIterator[None]:
-    """Serialize checkpoint mutations for one thread without blocking goal commands."""
+    """goal 명령을 막지 않으면서 한 thread의 checkpoint 변경을 직렬화한다."""
     loop = asyncio.get_running_loop()
     with _checkpoint_locks_guard:
         locks = _checkpoint_locks_by_loop.get(loop)
@@ -120,12 +120,12 @@ async def _persist_delivery_receipt(
     run_id: str,
     content: dict[str, Any],
 ) -> bool:
-    """Persist a terminal receipt with short bounded retries.
+    """짧은 유한 retry로 terminal receipt를 저장한다.
 
-    The owning worker still knows the real terminal outcome and renews its
-    lease while this coroutine runs. Retrying here handles transient event
-    store failures without handing a successful run to orphan recovery, which
-    cannot reconstruct either the terminal status or the detailed receipt.
+    이 coroutine이 도는 동안에도 소유 worker는 실제 terminal 결과를 알고 있고 lease를
+    갱신한다. 여기서 retry하면 일시적인 event store 실패를 흡수하면서, 성공한 run을
+    orphan recovery에 넘기지 않는다. orphan recovery는 terminal status도 상세 receipt도
+    복원할 수 없기 때문이다.
     """
     attempts = len(_DELIVERY_RECEIPT_RETRY_DELAYS_SECONDS) + 1
     for attempt in range(attempts):
@@ -178,7 +178,7 @@ def _delivery_content_with_outputs(
     content: dict[str, Any],
     produced_paths: list[str],
 ) -> dict[str, Any]:
-    """Attach a delivery verdict when this run created or modified outputs."""
+    """이 run이 output을 생성하거나 수정했다면 delivery 판정을 덧붙인다."""
     if not produced_paths:
         return content
 
@@ -200,25 +200,23 @@ def _delivery_content_with_outputs(
 
 
 def _delivery_error(content: dict[str, Any]) -> str | None:
-    """Return the terminal error when no changed output was presented."""
+    """변경된 output이 하나도 제시되지 않았다면 terminal error를 반환한다."""
     if not content.get("produced_paths") or content.get("satisfied") is True:
         return None
     return _DELIVERY_INCOMPLETE_ERROR
 
 
 def _workspace_excluded_dir_names(app_config: AppConfig | None) -> frozenset[str]:
-    """Directory names workspace snapshots must skip for this deployment.
+    """이 배포에서 workspace snapshot이 건너뛰어야 하는 디렉터리 이름들.
 
-    The tool-output budget middleware externalizes oversized tool outputs into
-    a storage subdir under outputs (default ``.tool-results``). Those files are
-    process feedback referenced from the budget preview via ``read_file``, not
-    deliverables: counting them as produced artifacts would fail run delivery
-    verification for any run that externalized a tool output without also
-    presenting a real artifact. The default name is excluded by the scanner
-    itself; a custom ``tool_output.storage_subdir`` (a single-segment name,
-    enforced by ``ToolOutputConfig`` so the scanner's dir-name pruning always
-    matches) is threaded through the snapshot capture here so before/after
-    diffs stay consistent.
+    tool-output budget middleware는 크기를 초과한 tool 출력을 outputs 아래 storage
+    subdir(기본값 ``.tool-results``)로 빼낸다. 이 파일들은 budget preview에서
+    ``read_file``로 참조되는 process feedback이지 산출물이 아니다. 이를 produced
+    artifact로 세면, 실제 artifact를 제시하지 않은 채 tool 출력만 externalize한 run이
+    delivery 검증에 실패하게 된다. 기본 이름은 scanner 자체가 제외하고, 커스텀
+    ``tool_output.storage_subdir``(``ToolOutputConfig``가 단일 세그먼트 이름으로
+    강제하므로 scanner의 디렉터리명 pruning이 항상 일치한다)은 여기서 snapshot
+    capture로 넘겨 before/after diff가 일관되게 유지되도록 한다.
     """
     storage_subdir = app_config.tool_output.storage_subdir if app_config is not None else TOOL_RESULTS_DIRNAME
     return frozenset({storage_subdir})
@@ -231,7 +229,7 @@ async def _produced_output_paths(
     user_id: str | None,
     extra_excluded_dir_names: frozenset[str] | None = None,
 ) -> list[str]:
-    """Detect regular output files created or modified by this run."""
+    """이 run이 생성하거나 수정한 일반 output 파일을 찾아낸다."""
     if before is None:
         return []
     try:
@@ -242,18 +240,18 @@ async def _produced_output_paths(
         return []
 
 
-# Keep this streaming policy separate from middleware write-authorization sets.
+# 이 streaming 정책은 middleware의 write 권한 집합과 분리해서 유지한다.
 _LARGE_FILE_TOOL_NAMES = frozenset({"str_replace", "write_file"})
 _LARGE_FILE_TOOL_BATCH_SIZE = 32
 
 
 @dataclass
 class _LargeFileToolChunkBatcher:
-    """Batch file-body argument deltas to avoid quadratic browser parsing.
+    """브라우저의 2차 파싱 비용을 피하려고 파일 본문 인자 delta를 배치로 묶는다.
 
-    Normal assistant text and non-file tool calls remain token-streamed. Large
-    file arguments still update progressively, but in bounded batches instead
-    of forcing the browser to reparse the growing JSON on every model token.
+    일반 assistant 텍스트와 파일이 아닌 tool call은 그대로 토큰 단위로 stream된다.
+    큰 파일 인자도 여전히 점진적으로 갱신되지만, 모델 토큰마다 커지는 JSON을 브라우저가
+    다시 파싱하게 만드는 대신 크기가 제한된 배치로 내보낸다.
     """
 
     batch_size: int = _LARGE_FILE_TOOL_BATCH_SIZE
@@ -297,8 +295,8 @@ class _LargeFileToolChunkBatcher:
                 self.tool_names[identity] = tool_name
             else:
                 self.tool_names.pop(identity, None)
-        # Batching starts only after the accumulated name matches; split or
-        # incomplete name fragments stream per-chunk until then.
+        # 누적된 이름이 일치한 뒤에야 배칭이 시작된다. 그 전까지 쪼개졌거나 불완전한
+        # 이름 조각은 chunk 단위로 stream된다.
         if tool_name not in _LARGE_FILE_TOOL_NAMES:
             return [*self.flush(), chunk]
 
@@ -354,10 +352,10 @@ class _LargeFileToolChunkBatcher:
         return [chunk]
 
     def finish(self) -> list[Any]:
-        """Flush and release identities at a values or end-of-stream boundary.
+        """values 경계 또는 stream 종료 경계에서 flush하고 identity를 해제한다.
 
-        A regular batch-size or interleaved-mode flush must retain identities
-        because continuation chunks commonly omit the tool name.
+        일반적인 batch-size flush나 모드 교차 flush는 identity를 유지해야 한다. 이어지는
+        chunk는 대개 tool 이름을 생략하기 때문이다.
         """
         chunks = self.flush()
         self.tool_names.clear()
@@ -372,17 +370,16 @@ def _build_runtime_context(
     task_store: Any | None = None,
     extensions: Any | None = None,
 ) -> dict[str, Any]:
-    """Build the dict that becomes ``ToolRuntime.context`` for the run.
+    """이 run의 ``ToolRuntime.context``가 될 dict를 만든다.
 
-    Always includes ``thread_id`` and ``run_id``. Additional keys from the caller's
-    ``config['context']`` (e.g. ``agent_name`` for the bootstrap flow — issue #2677)
-    are merged in but never override ``thread_id``/``run_id``. The resolved
-    ``AppConfig`` is added by the worker so tools can consume it without ambient
-    global lookups.
+    항상 ``thread_id``와 ``run_id``를 포함한다. 호출자의 ``config['context']``에 있던 추가
+    키(예: bootstrap 흐름의 ``agent_name`` — issue #2677)는 병합되지만 절대
+    ``thread_id``/``run_id``를 덮어쓰지 않는다. 해석된 ``AppConfig``는 worker가 넣어주므로
+    tool이 전역 조회 없이 사용할 수 있다.
 
-    langgraph 1.1+ surfaces this as ``runtime.context`` via the parent runtime stored
-    under ``config['configurable']['__pregel_runtime']`` — see
-    ``langgraph.pregel.main`` where ``parent_runtime.merge(...)`` is invoked.
+    langgraph 1.1+는 ``config['configurable']['__pregel_runtime']``에 저장된 부모 runtime을
+    통해 이것을 ``runtime.context``로 노출한다. ``langgraph.pregel.main``에서
+    ``parent_runtime.merge(...)``가 호출되는 부분을 참고한다.
     """
     runtime_ctx: dict[str, Any] = {"thread_id": thread_id, "run_id": run_id}
     if isinstance(caller_context, dict):
@@ -396,11 +393,10 @@ def _build_runtime_context(
         from deerflow_extension_api import EXTENSION_TASK_STORE_KEY
 
         runtime_ctx[EXTENSION_TASK_STORE_KEY] = task_store
-    # Publish the run's extension snapshot so work dispatched during graph
-    # execution (task delegation) binds the same generation the lead agent was
-    # built with, instead of re-reading a singleton that may have been replaced
-    # mid-run. Written after the caller merge and popped when absent, because a
-    # caller-supplied value for this host-internal key is never authoritative.
+    # run의 extension snapshot을 게시해서, graph 실행 중 dispatch되는 작업(task 위임)이
+    # run 도중 교체되었을 수도 있는 singleton을 다시 읽는 대신 lead agent가 빌드될 때
+    # 쓰인 것과 같은 generation에 바인딩되게 한다. caller 병합 이후에 쓰고 값이 없으면
+    # pop한다. 이 host 내부 키에 대해 caller가 준 값은 절대 권위를 갖지 않기 때문이다.
     from deerflow.extensions import EXTENSION_SNAPSHOT_CONTEXT_KEY
 
     if extensions is not None:
@@ -412,11 +408,10 @@ def _build_runtime_context(
 
 @dataclass(frozen=True)
 class RunContext:
-    """Infrastructure dependencies for a single agent run.
+    """agent run 하나에 필요한 인프라 의존성.
 
-    Groups checkpointer, store, and persistence-related singletons so that
-    ``run_agent`` (and any future callers) receive one object instead of a
-    growing list of keyword arguments.
+    checkpointer, store, persistence 관련 singleton을 묶어서 ``run_agent``(그리고 앞으로의
+    호출자)가 계속 늘어나는 키워드 인자 목록 대신 객체 하나를 받도록 한다.
     """
 
     checkpointer: Any
@@ -427,8 +422,8 @@ class RunContext:
     app_config: AppConfig | None = field(default=None)
     extensions: Any | None = field(default=None)
     checkpoint_channel_mode: CheckpointChannelMode = "full"
-    # Delta snapshot cadence frozen at startup; ``None`` means "not frozen in
-    # this process" (embedded/tests) and resolves to the config default.
+    # 시작 시 고정된 delta snapshot 주기. ``None``은 "이 프로세스에서 고정되지
+    # 않음"(embedded/테스트)을 뜻하며 config 기본값으로 해석된다.
     checkpoint_snapshot_frequency: int | None = None
     on_run_completed: Any | None = field(default=None)
 
@@ -465,32 +460,31 @@ def _agent_factory_supports_app_config(agent_factory: Any) -> bool:
     try:
         return _cached_agent_factory_supports_app_config(agent_factory)
     except TypeError:
-        # Some callable instances are unhashable; fall back to a direct check.
+        # 일부 callable 인스턴스는 hashable하지 않으므로 직접 검사로 fallback한다.
         return _compute_agent_factory_supports_app_config(agent_factory)
 
 
 class _SubagentEventBuffer:
-    """Buffer subagent ``task_*`` step events and flush them in one locked batch (#3779).
+    """subagent ``task_*`` step 이벤트를 버퍼링해 lock 한 번으로 배치 flush한다 (#3779).
 
-    The live SSE bridge already forwards these events for real-time display; this
-    additionally writes them so the subtask card's step history survives a reload.
+    실시간 표시용으로는 live SSE bridge가 이미 이 이벤트를 전달한다. 여기서는 추가로
+    저장해서 subtask 카드의 step 이력이 새로고침 후에도 남게 한다.
 
-    ``RunEventStore.put`` is documented as a low-frequency path — on Postgres each
-    call opens its own transaction and takes a per-thread advisory lock. A deep
-    subagent (``general-purpose`` runs up to ``max_turns=150``) emits hundreds of
-    ``task_running`` steps on the hot stream loop, so persisting each with
-    ``put()`` would serialize against the run's own message-batch writer. This
-    accumulates recognized subagent events and writes them with ``put_batch``,
-    which acquires the lock once per batch, honoring the store's contract.
+    ``RunEventStore.put``은 저빈도 경로로 문서화되어 있다. Postgres에서는 호출마다 자체
+    트랜잭션을 열고 thread별 advisory lock을 잡는다. 깊은 subagent(``general-purpose``는
+    ``max_turns=150``까지 돈다)는 hot stream loop에서 수백 개의 ``task_running`` step을
+    내보내므로, 각각을 ``put()``으로 저장하면 run 자신의 message-batch writer와 직렬화된다.
+    그래서 인식된 subagent 이벤트를 모아 ``put_batch``로 쓰고, batch당 lock을 한 번만
+    잡아 store의 계약을 지킨다.
 
-    Best-effort: a missing store (run_events not configured) or an unrecognized
-    chunk is a no-op, flush failures are logged but never propagate into the
-    stream loop, and terminal ``subagent.end`` events flush eagerly so a completed
-    subagent's step history is durable promptly rather than only at run end.
+    best-effort로 동작한다. store가 없거나(run_events 미설정) 인식되지 않는 chunk는 no-op
+    이고, flush 실패는 로그만 남기고 stream loop로 전파하지 않는다. terminal
+    ``subagent.end`` 이벤트는 즉시 flush해서 완료된 subagent의 step 이력이 run 종료 시점이
+    아니라 곧바로 durable해지도록 한다.
     """
 
-    #: Flush once this many events are buffered, bounding memory and reload lag on
-    #: a single deep subagent without paying a per-step lock.
+    #: 이만큼 이벤트가 쌓이면 flush한다. step마다 lock을 잡지 않으면서도 깊은 subagent
+    #: 하나가 쓰는 메모리와 새로고침 지연을 제한한다.
     FLUSH_THRESHOLD = 25
 
     def __init__(self, event_store: Any | None, thread_id: str, run_id: str) -> None:
@@ -500,13 +494,13 @@ class _SubagentEventBuffer:
         self._pending: list[dict[str, Any]] = []
 
     async def add(self, chunk: Any) -> None:
-        """Buffer one custom stream chunk; flush on a terminal event or threshold."""
+        """custom stream chunk 하나를 버퍼링한다. terminal 이벤트나 임계치에서 flush한다."""
         if self._event_store is None:
             return
-        # Lazy import: importing deerflow.subagents at module load triggers its
-        # package __init__ (executor → agents → tools → task_tool), which imports
-        # back from deerflow.subagents and deadlocks at gateway startup. Deferring
-        # it to call time (after all modules are loaded) breaks that cycle.
+        # lazy import: 모듈 로드 시점에 deerflow.subagents를 import하면 패키지
+        # __init__(executor → agents → tools → task_tool)이 실행되는데, 이것이 다시
+        # deerflow.subagents에서 import해 gateway 시작 시 deadlock이 난다. 호출 시점(모든
+        # 모듈이 로드된 뒤)으로 미루면 그 순환이 끊긴다.
         from deerflow.subagents.step_events import subagent_run_event
 
         record = subagent_run_event(chunk)
@@ -517,7 +511,7 @@ class _SubagentEventBuffer:
             await self.flush()
 
     async def flush(self) -> None:
-        """Persist buffered events in one ``put_batch`` call; swallow store errors."""
+        """버퍼링된 이벤트를 ``put_batch`` 한 번으로 저장한다. store 오류는 삼킨다."""
         if self._event_store is None or not self._pending:
             return
         batch = self._pending
@@ -525,8 +519,8 @@ class _SubagentEventBuffer:
         try:
             await self._event_store.put_batch(batch)
         except Exception:
-            # Re-buffer the failed batch (ahead of any events queued since) so a
-            # transient store error does not silently drop subagent step events.
+            # 실패한 batch를 (그 사이 쌓인 이벤트보다 앞에) 다시 버퍼에 넣어, 일시적인
+            # store 오류가 subagent step 이벤트를 조용히 버리지 않게 한다.
             self._pending = batch + self._pending
             logger.warning("Run %s: failed to persist %d subagent step event(s)", self._run_id, len(batch), exc_info=True)
 
@@ -545,9 +539,9 @@ async def run_agent(
     interrupt_before: list[str] | Literal["*"] | None = None,
     interrupt_after: list[str] | Literal["*"] | None = None,
 ) -> None:
-    """Execute an agent in the background, publishing events to *bridge*."""
+    """agent를 백그라운드에서 실행하며 이벤트를 *bridge*에 publish한다."""
 
-    # Unpack infrastructure dependencies from RunContext.
+    # RunContext에서 인프라 의존성을 꺼낸다.
     checkpointer = ctx.checkpointer
     store = ctx.store
     event_store = ctx.event_store
@@ -571,29 +565,27 @@ async def run_agent(
     snapshot_capture_failed = False
     llm_error_fallback_message: str | None = None
     checkpoint_rollback_completed = False
-    # Message ids checkpointed *before* this run started. The stream loop uses
-    # this set to mask out ``deerflow_error_fallback`` markers that belong to
-    # earlier runs on the same thread — without it, one stale fallback in
-    # history would mark every subsequent run on this thread as ``error``.
+    # 이 run이 시작되기 *전에* checkpoint된 message id들. stream loop는 같은 thread의
+    # 이전 run에 속한 ``deerflow_error_fallback`` 마커를 이 집합으로 걸러낸다. 이것이
+    # 없으면 이력에 남은 오래된 fallback 하나가 이 thread의 모든 후속 run을 ``error``로
+    # 표시하게 된다.
     pre_existing_message_ids: set[str] = set()
 
-    # Bound agent graph accessor + captured pre-run rollback point; assigned
-    # inside the try block so the finally rollback path can fork the pre-run
-    # checkpoint lineage (see below).
+    # 바인딩된 agent graph accessor와 캡처된 run 이전 rollback 지점. finally의 rollback
+    # 경로가 run 이전 checkpoint 계보를 fork할 수 있도록 try 블록 안에서 할당한다(아래 참고).
     accessor: CheckpointStateAccessor | None = None
     rollback_point: RollbackPoint | None = None
     journal = None
     delivery_content: dict[str, Any] | None = None
     produced_output_paths: list[str] | None = None
-    # Journal construction moved ahead of preflight so every terminal run can
-    # emit a receipt. Completion persistence keeps its prior boundary: before
-    # #4272 the journal did not exist until preflight had succeeded, so early
-    # checkpoint failures / cancellation while waiting did not write an empty
-    # completion snapshot into RunStore.
+    # journal 생성을 preflight보다 앞으로 옮겨서 모든 terminal run이 receipt를 낼 수 있게
+    # 했다. completion 저장은 이전 경계를 유지한다. #4272 이전에는 preflight가 성공하기
+    # 전까지 journal이 없었으므로, 이른 checkpoint 실패나 대기 중 취소는 빈 completion
+    # snapshot을 RunStore에 쓰지 않았다.
     persist_completion = False
-    # Buffers subagent step events for batched persistence (#3779); assigned once
-    # streaming starts and flushed in the finally block. Pre-bound to None so the
-    # finally is safe even if an exception fires before streaming begins.
+    # subagent step 이벤트를 모아 저장하기 위한 버퍼 (#3779). streaming이 시작될 때
+    # 할당되고 finally 블록에서 flush된다. streaming 전에 예외가 나도 finally가 안전하도록
+    # None으로 미리 바인딩한다.
     subagent_events: _SubagentEventBuffer | None = None
     started = False
 
@@ -645,11 +637,10 @@ async def run_agent(
         normalized_stream_modes = normalize_stream_modes(stream_modes)
         requested_modes: set[str] = set(normalized_stream_modes)
         lg_modes = to_langgraph_stream_modes(normalized_stream_modes)
-        # Initialize the run-scoped journal before any fallible or cancellable
-        # preflight work. Every terminal run with an event store must reach the
-        # shared finally block with a journal available for its run.delivery
-        # receipt, including checkpoint validation failures and cancellation
-        # while waiting for an earlier run to finish finalizing.
+        # 실패하거나 취소될 수 있는 preflight 작업 전에 run 범위 journal을 초기화한다.
+        # event store가 있는 모든 terminal run은 run.delivery receipt에 쓸 journal을 가진
+        # 채로 공통 finally 블록에 도달해야 한다. checkpoint 검증 실패나 앞선 run의
+        # finalize 대기 중 취소도 마찬가지다.
         if event_store is not None:
             from deerflow.runtime.journal import RunJournal
 
@@ -721,9 +712,8 @@ async def run_agent(
 
         if event_store is not None:
             workspace_changes_user_id = get_effective_user_id()
-            # Resolved once per run so the pre-run snapshot, the post-run
-            # delivery scan, and the workspace-changes scan all agree on the
-            # same exclusion set.
+            # run마다 한 번만 해석해서 run 이전 snapshot, run 이후 delivery 스캔,
+            # workspace-changes 스캔이 모두 같은 제외 집합을 쓰게 한다.
             workspace_excluded_dir_names = _workspace_excluded_dir_names(ctx.app_config)
             try:
                 pre_run_workspace_snapshot = await capture_workspace_snapshot(
@@ -734,7 +724,7 @@ async def run_agent(
             except Exception:
                 logger.warning("Could not capture pre-run workspace snapshot for run %s", run_id, exc_info=True)
 
-        # 2. Publish metadata — useStream needs both run_id AND thread_id
+        # 2. metadata publish — useStream은 run_id와 thread_id 둘 다 필요하다
         await bridge.publish(
             run_id,
             "metadata",
@@ -744,14 +734,14 @@ async def run_agent(
             },
         )
 
-        # 3. Build the agent
+        # 3. agent 빌드
         from langchain_core.runnables import RunnableConfig
         from langgraph.runtime import Runtime
 
-        # Inject runtime context so middlewares and tools (via ToolRuntime.context) can
-        # access thread-level data. langgraph-cli does this automatically; we must do it
-        # manually here because we drive the graph through ``agent.astream(config=...)``
-        # without passing the official ``context=`` parameter.
+        # middleware와 tool이 (ToolRuntime.context를 통해) thread 수준 데이터에 접근할 수
+        # 있도록 runtime context를 주입한다. langgraph-cli는 이것을 자동으로 하지만,
+        # 여기서는 공식 ``context=`` 파라미터 없이 ``agent.astream(config=...)``으로 graph를
+        # 구동하므로 직접 해야 한다.
         runtime_ctx = _build_runtime_context(
             thread_id,
             run_id,
@@ -768,25 +758,24 @@ async def run_agent(
                 merged_metadata = dict(incoming_metadata)
                 merged_metadata[DEERFLOW_TRACE_METADATA_KEY] = deerflow_trace_id
                 config["metadata"] = merged_metadata
-        # Expose the run-scoped journal under a sentinel key so middleware can
-        # write audit events (e.g. SafetyFinishReasonMiddleware recording
-        # suppressed tool calls). Double-underscore prefix marks it as a
-        # runtime-internal channel; user code must not depend on the key name.
+        # middleware가 audit 이벤트를 쓸 수 있도록(예: SafetyFinishReasonMiddleware가
+        # 억제된 tool call을 기록) run 범위 journal을 sentinel 키로 노출한다. 이중 밑줄
+        # 접두사는 runtime 내부 채널임을 뜻한다. 사용자 코드는 이 키 이름에 의존하면 안 된다.
         if journal is not None:
             runtime_ctx["__run_journal"] = journal
         _install_runtime_context(config, runtime_ctx)
         runtime = Runtime(context=cast(Any, runtime_ctx), store=store)
         config.setdefault("configurable", {})["__pregel_runtime"] = runtime
 
-        # Inject RunJournal as a LangChain callback handler.
-        # on_llm_end captures token usage; on_chain_start/end captures lifecycle.
+        # RunJournal을 LangChain callback handler로 주입한다.
+        # on_llm_end는 token usage를, on_chain_start/end는 lifecycle을 수집한다.
         if journal is not None:
             config.setdefault("callbacks", []).append(journal)
 
-        # Inject Langfuse trace-attribute metadata so the langchain CallbackHandler
-        # can lift session_id / user_id / trace_name / tags onto the root trace.
-        # Shared helper with ``DeerFlowClient.stream`` so both entry points stay
-        # in sync; caller-provided metadata wins via setdefault inside the helper.
+        # langchain CallbackHandler가 session_id / user_id / trace_name / tags를 root
+        # trace로 끌어올릴 수 있도록 Langfuse trace-attribute metadata를 주입한다.
+        # ``DeerFlowClient.stream``과 헬퍼를 공유해 두 진입점이 어긋나지 않게 하고,
+        # 헬퍼 내부의 setdefault 덕분에 호출자가 준 metadata가 우선한다.
         inject_langfuse_metadata(
             config,
             thread_id=thread_id,
@@ -797,8 +786,8 @@ async def run_agent(
             deerflow_trace_id=deerflow_trace_id,
         )
 
-        # Resolve after runtime context installation so context/configurable reflect
-        # the agent name that this run will actually execute.
+        # runtime context 설치 이후에 해석해서 context/configurable이 이 run이 실제로
+        # 실행할 agent 이름을 반영하게 한다.
         config.setdefault("run_name", resolve_root_run_name(config, record.assistant_id))
         initial_runnable_config = RunnableConfig(**config)
 
@@ -826,18 +815,16 @@ async def run_agent(
             mode=mode,
         )
 
-        # Capture the pre-run rollback point (materialized state + raw pending
-        # writes) before this run mutates the thread. Raw checkpoint blobs
-        # cannot reconstruct Delta-channel messages (their checkpoints omit
-        # channel_values), so rollback forks the pre-run lineage through the
-        # graph and needs the materialized messages up front. Any capture
-        # failure disables rollback: restoring an empty or partial message
-        # history would silently truncate the thread.
+        # 이 run이 thread를 변경하기 전에 run 이전 rollback 지점(materialize된 state와 raw
+        # pending writes)을 캡처한다. raw checkpoint blob으로는 Delta 채널 메시지를 복원할
+        # 수 없으므로(그 checkpoint에는 channel_values가 없다) rollback은 graph를 통해 run
+        # 이전 계보를 fork하며, materialize된 메시지가 미리 필요하다. 캡처가 실패하면
+        # rollback을 비활성화한다. 비어 있거나 일부만 있는 메시지 이력을 복원하면 thread가
+        # 조용히 잘려나가기 때문이다.
         if checkpointer is not None:
-            # A previous successful run may still be persisting duration
-            # metadata after its active admission slot is released. Share its
-            # checkpoint lock so the rollback snapshot and any resume rewrite
-            # are one uninterrupted read/write sequence against the head.
+            # 앞서 성공한 run이 active admission slot을 반납한 뒤에도 duration metadata를
+            # 계속 저장 중일 수 있다. 그 checkpoint lock을 공유해서 rollback snapshot과
+            # 재개 재작성이 head에 대해 중단 없는 하나의 읽기/쓰기 시퀀스가 되게 한다.
             async with _checkpoint_thread_lock(thread_id):
                 try:
                     rollback_point = await _capture_rollback_point(accessor, checkpointer, checkpoint_config)
@@ -848,11 +835,10 @@ async def run_agent(
                     pre_run_checkpoint_id = rollback_point.config.get("configurable", {}).get("checkpoint_id")
                     pre_existing_message_ids = _collect_pre_existing_message_ids({"messages": list(rollback_point.messages)})
 
-                # Resuming from an older checkpoint is a fork, and a delta fork
-                # materializes the abandoned sibling's writes back into state
-                # (#4458). Rewrite it as a linear head write *after* the rollback
-                # point is captured, so cancel-with-rollback still restores the
-                # real pre-run head rather than the rolled-back one.
+                # 오래된 checkpoint에서 재개하는 것은 fork이고, delta fork는 버려진 형제의
+                # write를 state로 다시 materialize한다 (#4458). rollback 지점을 캡처한
+                # *뒤에* 선형 head write로 재작성해서, rollback을 동반한 취소가 되돌려진
+                # head가 아니라 진짜 run 이전 head를 복원하게 한다.
                 resumed_messages = await _linearize_delta_checkpoint_resume(
                     accessor=accessor,
                     checkpointer=checkpointer,
@@ -861,19 +847,17 @@ async def run_agent(
                     run_id=run_id,
                 )
             if resumed_messages is not None:
-                # The graph now starts from the selected state, so the
-                # current-run message boundary is that state, not the head we
-                # captured for rollback.
+                # 이제 graph는 선택된 state에서 시작하므로, 현재 run의 메시지 경계는
+                # rollback용으로 캡처한 head가 아니라 그 state다.
                 pre_existing_message_ids = _collect_pre_existing_message_ids({"messages": list(resumed_messages)})
                 initial_runnable_config = RunnableConfig(**config)
 
         runtime_ctx[CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY] = frozenset(pre_existing_message_ids)
         _install_runtime_context(config, runtime_ctx)
 
-        # Capture the effective (resolved) model name from the agent's metadata.
-        # _resolve_model_name in agent.py may return the default model if the
-        # requested name is not in the allowlist — this update ensures the
-        # persisted model_name reflects the actual model used.
+        # agent metadata에서 실제로 적용된(해석된) model 이름을 가져온다. agent.py의
+        # _resolve_model_name은 요청한 이름이 allowlist에 없으면 기본 model을 반환할 수
+        # 있으므로, 이 갱신으로 저장되는 model_name이 실제 사용된 model을 반영하게 한다.
         if record.model_name is not None:
             resolved = getattr(agent, "metadata", {}) or {}
             if isinstance(resolved, dict):
@@ -881,13 +865,13 @@ async def run_agent(
                 if effective and effective != record.model_name:
                     await run_manager.update_model_name(record.run_id, effective)
 
-        # 4. Attach checkpointer and store
+        # 4. checkpointer와 store 연결
         if checkpointer is not None:
             agent.checkpointer = checkpointer
         if store is not None:
             agent.store = store
 
-        # 5. Set interrupt nodes
+        # 5. interrupt node 설정
         if interrupt_before:
             agent.interrupt_before_nodes = interrupt_before
         if interrupt_after:
@@ -895,9 +879,9 @@ async def run_agent(
 
         logger.info("Run %s: streaming with modes %s (requested: %s)", run_id, lg_modes, requested_modes)
 
-        # Buffer subagent step events and persist them in batches (#3779) instead
-        # of one low-frequency put() per step on the hot stream loop. Flushed in
-        # the finally block so buffered steps survive abort/exception paths too.
+        # hot stream loop에서 step마다 저빈도 put()을 호출하는 대신, subagent step
+        # 이벤트를 버퍼링해 배치로 저장한다 (#3779). finally 블록에서 flush하므로 abort나
+        # 예외 경로에서도 버퍼링된 step이 살아남는다.
         subagent_events = _SubagentEventBuffer(event_store, thread_id, run_id)
 
         goal_evaluator_model: Any | None = None
@@ -917,7 +901,7 @@ async def run_agent(
             try:
                 async with _checkpoint_thread_lock(thread_id):
                     if len(lg_modes) == 1 and not stream_subgraphs:
-                        # Single mode, no subgraphs: astream yields raw chunks
+                        # 단일 모드, subgraph 없음: astream은 raw chunk를 그대로 준다
                         single_mode = lg_modes[0]
                         async for chunk in agent.astream(input_payload, config=stream_config, stream_mode=single_mode):
                             if record.abort_event.is_set():
@@ -929,7 +913,7 @@ async def run_agent(
                             if single_mode == "custom":
                                 await subagent_events.add(chunk)
                         return
-                    # Multiple modes or subgraphs: astream yields tuples
+                    # 여러 모드나 subgraph: astream은 튜플을 준다
                     async for item in agent.astream(
                         input_payload,
                         config=stream_config,
@@ -945,9 +929,9 @@ async def run_agent(
                             continue
 
                         if not namespace:
-                            # Only root-graph frames may decide the parent run's error
-                            # fallback: a delegated subagent's marked fallback is the
-                            # executor's to map (task_failed), not this run's.
+                            # 부모 run의 error fallback을 결정할 수 있는 것은 root graph
+                            # frame뿐이다. 위임된 subagent의 fallback 마커는 이 run이
+                            # 아니라 executor가 (task_failed로) 매핑할 몫이다.
                             llm_error_fallback_message = llm_error_fallback_message or _extract_llm_error_fallback_message(chunk, pre_existing_message_ids)
                         await _publish_stream_item(
                             bridge=bridge,
@@ -969,11 +953,10 @@ async def run_agent(
                             raise
                         logger.debug("Could not flush pending file-tool chunks for run %s", run_id, exc_info=True)
 
-        # 7. Stream the requested turn, then optionally continue hidden goal turns.
-        # Clear any stale stop_reason before the first (user-visible) turn only.
-        # Continuation turns preserve a cap reason from the user turn: a run that
-        # hits a cap during the user turn IS capped even if hidden goal-evaluator
-        # turns complete cleanly afterward (#4176 review).
+        # 7. 요청된 turn을 stream하고, 필요하면 숨겨진 goal turn을 이어간다.
+        # 오래된 stop_reason은 첫 (사용자에게 보이는) turn 이전에만 지운다. 이어지는 turn은
+        # 사용자 turn에서 나온 cap 사유를 보존한다. 사용자 turn 중에 cap에 걸린 run은 이후
+        # 숨겨진 goal-evaluator turn이 깨끗하게 끝나더라도 cap된 것이다 (#4176 리뷰).
         if isinstance(runtime.context, dict):
             runtime.context.pop("stop_reason", None)
         await _stream_once(graph_input, initial_runnable_config)
@@ -995,7 +978,7 @@ async def run_agent(
                 break
             await _stream_once(continuation_input, _continuation_runnable_config())
 
-        # 8. Final status
+        # 8. 최종 status
         if record.abort_event.is_set():
             await _finish_cancellation(record.abort_action)
         elif llm_error_fallback_message or (journal is not None and journal.had_llm_error_fallback):
@@ -1014,20 +997,18 @@ async def run_agent(
                 await _finish_cancellation(cancel_action)
         else:
             runtime_context = runtime.context if isinstance(runtime.context, dict) else None
-            # Guard middlewares that hard-stop a run by stripping tool_calls
-            # stamp stop_reason into runtime.context so the worker can surface
-            # it on the run record:
+            # tool_calls를 제거해 run을 강제 중단하는 guard middleware들은 worker가 run
+            # record에 노출할 수 있도록 runtime.context에 stop_reason을 새긴다:
             #   loop_detection      -> "loop_capped"
             #   token_budget        -> "token_capped"
             #   safety_finish_reason -> "safety_capped"
             #   subagent_limit       -> "subagent_limit_capped"
             #   model_length_finish_reason -> "model_length_capped"
             #
-            # If more guards grow stop_reason semantics, consider a publish/
-            # collect pattern (e.g. each guard middleware publishes its cap
-            # reason to a dedicated runtime.context channel, and the worker
-            # collects the most severe / first / all reasons) instead of each
-            # guard writing directly to the same key.
+            # stop_reason 의미를 갖는 guard가 더 늘어난다면, 각 guard가 같은 키에 직접
+            # 쓰는 대신 publish/collect 패턴(예: 각 guard middleware가 전용
+            # runtime.context 채널에 cap 사유를 publish하고 worker가 가장 심각한 것 /
+            # 첫 번째 / 전체를 모으는 방식)을 고려한다.
             stop_reason = runtime_context.get("stop_reason") if runtime_context is not None else None
             produced_output_paths = await _produced_output_paths(
                 pre_run_workspace_snapshot,
@@ -1106,8 +1087,8 @@ async def run_agent(
             except Exception:
                 logger.warning("Run %s edit replay rollback failed", run_id, exc_info=True)
 
-        # Persist any subagent step events still buffered (#3779) — including on
-        # abort/exception paths, where the stream loop broke before its own flush.
+        # 아직 버퍼에 남은 subagent step 이벤트를 저장한다 (#3779). stream loop가 자체
+        # flush 전에 빠져나간 abort/예외 경로도 포함한다.
         if not record.ownership_lost and subagent_events is not None:
             await subagent_events.flush()
 
@@ -1124,11 +1105,11 @@ async def run_agent(
             except Exception:
                 logger.warning("Failed to record workspace changes for run %s", run_id, exc_info=True)
 
-        # Flush buffered journal events before the terminal receipt. The
-        # receipt uses a run-scoped idempotent write shared with recovery, then
-        # the staged terminal status is persisted. This ordering closes the
-        # crash window where a terminal run could otherwise outlive its receipt.
-        # A fenced worker leaves receipt recovery to the peer that claimed it.
+        # terminal receipt보다 먼저 버퍼링된 journal 이벤트를 flush한다. receipt는
+        # recovery와 공유하는 run 범위 멱등 write를 쓰고, 그 다음에 준비된 terminal
+        # status를 저장한다. 이 순서가 terminal run이 receipt보다 오래 살아남을 수 있는
+        # 크래시 구간을 막는다. fence된 worker는 receipt 복구를 그 run을 가져간 peer에
+        # 맡긴다.
         if not record.ownership_lost and journal is not None:
             try:
                 await journal.flush()
@@ -1160,10 +1141,9 @@ async def run_agent(
 
         if not record.ownership_lost and event_store is not None:
             try:
-                # Even after bounded receipt retries are exhausted, persist the
-                # real worker outcome. Leaving a successful row inflight would
-                # let lease recovery rewrite it as an error with a synthetic
-                # zero receipt.
+                # 제한된 receipt retry를 모두 소진한 뒤에도 실제 worker 결과는 저장한다.
+                # 성공한 행을 inflight로 남겨두면 lease recovery가 그것을 합성된 zero
+                # receipt와 함께 error로 다시 쓸 수 있다.
                 if record.abort_event.is_set():
                     await run_manager.persist_current_status(run_id)
                 else:
@@ -1181,7 +1161,7 @@ async def run_agent(
 
         if not record.ownership_lost and journal is not None and persist_completion:
             try:
-                # Persist token usage + convenience fields to RunStore
+                # token usage와 편의 필드를 RunStore에 저장한다
                 completion = journal.get_completion_data()
                 await run_manager.update_run_completion(run_id, status=record.status.value, **completion)
             except Exception:
@@ -1195,7 +1175,7 @@ async def run_agent(
             except Exception:
                 logger.debug("Failed to generate interrupted title for thread %s (non-fatal)", thread_id)
 
-        # Sync title from checkpoint to threads_meta.display_name
+        # checkpoint의 title을 threads_meta.display_name으로 동기화한다
         if started and not record.ownership_lost and checkpointer is not None and thread_store is not None:
             try:
                 ckpt_config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
@@ -1208,15 +1188,15 @@ async def run_agent(
             except Exception:
                 logger.debug("Failed to sync title for thread %s (non-fatal)", thread_id)
 
-        # Persist run duration to checkpoint metadata so history reads
-        # don't need to correlate runs and events.
+        # run duration을 checkpoint metadata에 저장해서, 이력 조회가 run과 event를
+        # 대조할 필요가 없게 한다.
         if started and not record.ownership_lost and checkpointer is not None and record.status == RunStatus.success:
             try:
                 created = datetime.fromisoformat(record.created_at.replace("Z", "+00:00"))
                 updated = datetime.fromisoformat(record.updated_at.replace("Z", "+00:00"))
-                # Match legacy history semantics: turn_duration is the whole
-                # RunRecord lifetime in integer seconds, including admission
-                # delay. Persist zero for sub-second successful turns.
+                # 기존 이력 의미를 따른다. turn_duration은 admission 지연을 포함한
+                # RunRecord 전체 수명을 정수 초로 나타낸다. 1초 미만으로 성공한 turn은
+                # 0으로 저장한다.
                 duration = max(0, int((updated - created).total_seconds()))
                 await _persist_run_duration(
                     checkpointer=checkpointer,
@@ -1227,7 +1207,7 @@ async def run_agent(
             except Exception:
                 logger.debug("Failed to persist run duration for thread %s run %s (non-fatal)", thread_id, run_id)
 
-        # Update threads_meta status based on run outcome
+        # run 결과에 따라 threads_meta status를 갱신한다
         if started and not record.ownership_lost and thread_store is not None:
             try:
                 final_status = "idle" if record.status == RunStatus.success else record.status.value
@@ -1248,7 +1228,7 @@ async def run_agent(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 헬퍼
 # ---------------------------------------------------------------------------
 
 
@@ -1274,11 +1254,11 @@ def _goal_instance_matches(left: GoalState | None, right: GoalState | None) -> b
 
 
 async def _materialized_checkpoint_messages(accessor: CheckpointStateAccessor, thread_id: str) -> list[Any]:
-    """Read ``messages`` through the mode-matched accessor.
+    """모드에 맞는 accessor로 ``messages``를 읽는다.
 
-    Raw ``channel_values`` reads see a sentinel in delta mode; only a
-    materialized read reconstructs the list.  Raw checkpoint tuples remain
-    valid for tuple-level metadata (checkpoint id, ``pending_writes``).
+    delta 모드에서 raw ``channel_values``를 읽으면 sentinel만 보인다. materialize된
+    읽기만 리스트를 복원한다. raw checkpoint 튜플은 튜플 수준 metadata(checkpoint id,
+    ``pending_writes``)에는 여전히 유효하다.
     """
     snapshot = await accessor.aget({"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}})
     values = getattr(snapshot, "values", None) or {}
@@ -1294,11 +1274,11 @@ def _read_checkpoint_goal(checkpoint_tuple: Any) -> GoalState | None:
 
 
 def _has_durable_goal_turn_receipt(checkpoint_tuple: Any, messages: list[Any]) -> bool:
-    """Return true when a completed visible assistant turn is safely checkpointed.
+    """완료된, 사용자에게 보이는 assistant turn이 안전하게 checkpoint되었으면 true를 반환한다.
 
-    ``pending_writes`` is the durability signal: a ``CheckpointTuple`` carries no
-    ``tasks`` field (those live on a ``StateSnapshot``), so the presence of any
-    queued writes is what tells us the turn is still in flight.
+    durability 신호는 ``pending_writes``다. ``CheckpointTuple``에는 ``tasks`` 필드가 없으므로
+    (그것은 ``StateSnapshot``에 있다) 대기 중인 write가 있는지가 그 turn이 아직 진행 중임을
+    알려주는 유일한 단서다.
     """
     if _checkpoint_id(checkpoint_tuple) is None:
         return False
@@ -1318,8 +1298,8 @@ def _stand_down_reason(goal: GoalState, evaluation: GoalEvaluation, no_progress_
         return None
     if evaluation["blocker"] != "goal_not_met_yet":
         return f"blocked:{evaluation['blocker']}"
-    # Default caps mirror should_continue_goal so the two gate functions agree on
-    # a goal dict that is missing these fields.
+    # 기본 상한은 should_continue_goal과 동일하게 맞춰서, 이 필드들이 빠진 goal dict에
+    # 대해 두 gate 함수가 같은 판단을 하게 한다.
     if int(goal.get("continuation_count", 0)) >= int(goal.get("max_continuations", DEFAULT_MAX_GOAL_CONTINUATIONS)):
         return "max_continuations_reached"
     if no_progress_count >= int(goal.get("max_no_progress_continuations", DEFAULT_MAX_NO_PROGRESS_CONTINUATIONS)):
@@ -1353,9 +1333,9 @@ async def _persist_goal_evaluation(
             current_goal = _read_checkpoint_goal(checkpoint_tuple)
             if current_goal is None or not _goal_instance_matches(goal, current_goal):
                 return None
-            # Defensive: compute continuation_count from the fresh current_goal
-            # inside the lock.  The caller computed it from a possibly-stale goal
-            # snapshot; a racing continuation may have already bumped the count.
+            # 방어적으로, lock 안에서 최신 current_goal로 continuation_count를 다시
+            # 계산한다. 호출자는 오래되었을 수도 있는 goal snapshot으로 계산했고, 경쟁하는
+            # continuation이 이미 카운트를 올렸을 수 있다.
             if continuation_count is not None:
                 current_count = int(current_goal.get("continuation_count", 0))
                 continuation_count = max(continuation_count, current_count + 1)
@@ -1386,7 +1366,7 @@ async def _persist_goal_evaluation(
 
 
 async def _reread_goal_and_checkpoint(checkpointer: Any, thread_id: str) -> tuple[GoalState | None, Any]:
-    """Re-read the goal and latest checkpoint together for a concurrency re-check."""
+    """동시성 재확인을 위해 goal과 최신 checkpoint를 함께 다시 읽는다."""
     goal = await read_thread_goal(checkpointer, thread_id)
     checkpoint_tuple = await _call_checkpointer_method(
         checkpointer,
@@ -1411,12 +1391,12 @@ async def _prepare_goal_continuation_input(
     user_id: str | None = None,
     deerflow_trace_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Evaluate the active goal and return a hidden continuation input if needed.
+    """활성 goal을 평가하고, 필요하면 숨겨진 continuation 입력을 반환한다.
 
-    NOTE: The re-reads below catch a racing user message or ``/goal clear``
-    before we queue a continuation. Goal writes then serialize per thread and
-    pass the checkpoint id they read from, so stale evaluator writes stand down
-    instead of clobbering a newer goal change.
+    참고: 아래의 재조회는 continuation을 큐에 넣기 전에 경쟁하는 사용자 메시지나
+    ``/goal clear``를 잡아낸다. goal write는 thread별로 직렬화되고 자신이 읽은 checkpoint
+    id를 함께 넘기므로, 오래된 evaluator write는 더 새로운 goal 변경을 덮어쓰지 않고
+    물러난다.
     """
     if checkpointer is None:
         return None
@@ -1439,7 +1419,7 @@ async def _prepare_goal_continuation_input(
         stand_down_reason: str | None = None,
         continuation_count: int | None = None,
     ) -> GoalState | None:
-        """Record the evaluation against the still-current goal instance."""
+        """아직 유효한 goal 인스턴스에 대해 평가 결과를 기록한다."""
         return await _persist_goal_evaluation(
             bridge=bridge,
             checkpointer=checkpointer,
@@ -1499,8 +1479,8 @@ async def _prepare_goal_continuation_input(
 
     no_progress_count = compute_no_progress_count(goal, evaluation, evidence_signature=evidence_signature)
 
-    # Re-check that neither the goal nor the visible conversation changed while the
-    # evaluator ran — a user message or /goal clear racing the evaluation must win.
+    # evaluator가 도는 동안 goal도, 보이는 대화도 바뀌지 않았는지 다시 확인한다. 평가와
+    # 경쟁한 사용자 메시지나 /goal clear가 우선해야 한다.
     try:
         current_goal, current_checkpoint_tuple = await _reread_goal_and_checkpoint(checkpointer, thread_id)
     except Exception:
@@ -1554,8 +1534,8 @@ async def _prepare_goal_continuation_input(
     if updated_goal is None:
         return None
 
-    # Final guard: the persist above bumped the checkpoint id, so only the visible
-    # conversation signature is meaningful for detecting a racing user turn here.
+    # 마지막 guard. 위의 저장이 checkpoint id를 올렸으므로, 여기서 경쟁하는 사용자 turn을
+    # 감지하는 데 의미가 있는 것은 보이는 대화의 signature뿐이다.
     try:
         latest_goal, latest_checkpoint_tuple = await _reread_goal_and_checkpoint(checkpointer, thread_id)
     except Exception:
@@ -1564,14 +1544,12 @@ async def _prepare_goal_continuation_input(
     if not _goal_instance_matches(updated_goal, latest_goal) or latest_checkpoint_tuple is None:
         return None
     if visible_conversation_signature(await _materialized_checkpoint_messages(accessor, thread_id)) != conversation_signature_before:
-        # Do not pass continuation_count here: the persist above already
-        # committed it (as next_count). Re-passing next_count would make
-        # _persist_goal_evaluation's race guard (#4088) see that same write as
-        # a "current_count" bump and add another +1 on top of it, silently
-        # double-counting this single continuation attempt against the
-        # continuation budget even though it is being stood down, not
-        # delivered. Omitting it leaves the already-committed count untouched,
-        # matching every other stand-down call site in this function.
+        # 여기서는 continuation_count를 넘기지 않는다. 위의 저장이 이미 그 값을
+        # (next_count로) 커밋했다. next_count를 다시 넘기면 _persist_goal_evaluation의
+        # race guard(#4088)가 그 write를 "current_count" 증가로 보고 +1을 더 얹어서,
+        # 실제로는 전달되지 않고 물러나는 이 continuation 시도 하나를 continuation
+        # budget에서 조용히 두 번 세게 된다. 생략하면 이미 커밋된 카운트가 그대로
+        # 유지되며, 이 함수의 다른 모든 stand-down 호출 지점과 동일해진다.
         await _persist(
             latest_goal,
             evaluation,
@@ -1617,12 +1595,11 @@ async def _publish_restored_checkpoint_values(
 
 @dataclass(frozen=True)
 class RollbackPoint:
-    """Materialized pre-run state used to restore the thread after cancellation.
+    """취소 이후 thread를 복원하는 데 쓰는, materialize된 run 이전 state.
 
-    Raw checkpoint blobs cannot reconstruct Delta-channel messages (their
-    checkpoints omit the materialized value), so rollback preserves those
-    messages plus delta mode's materialized non-message state in addition to
-    the raw pending writes.
+    raw checkpoint blob으로는 Delta 채널 메시지를 복원할 수 없으므로(그 checkpoint에는
+    materialize된 값이 없다), rollback은 raw pending writes에 더해 그 메시지와 delta
+    모드에서 materialize된 비메시지 state까지 보존한다.
     """
 
     config: dict[str, Any]
@@ -1637,10 +1614,10 @@ async def _capture_rollback_point(
     checkpointer: Any,
     read_config: dict[str, Any],
 ) -> RollbackPoint | None:
-    """Materialize the pre-run checkpoint state and its raw pending writes.
+    """run 이전 checkpoint state와 그 raw pending writes를 materialize한다.
 
-    Returns ``None`` when the thread has no checkpoint yet; the caller keeps
-    the existing delete/reset rollback contract for that case.
+    thread에 아직 checkpoint가 없으면 ``None``을 반환한다. 그 경우 호출자는 기존
+    삭제/초기화 rollback 계약을 그대로 따른다.
     """
     snapshot = await accessor.aget(read_config)
     snapshot_config = getattr(snapshot, "config", None) or {}
@@ -1674,7 +1651,7 @@ def _complete_state_replacement_values(
     run_id: str,
     operation: str,
 ) -> dict[str, Any]:
-    """Build a whole-state replacement through the graph's effective schema."""
+    """graph의 실제 schema를 통해 전체 state 교체 값을 만든다."""
     writable_fields = graph_writable_channels(mutation_graph)
     reducer_fields = graph_reducer_channels(mutation_graph)
     if writable_fields is None or reducer_fields is None:
@@ -1685,9 +1662,9 @@ def _complete_state_replacement_values(
         if field_name in selected_values:
             replacement = copy.deepcopy(selected_values[field_name])
         elif field_name in current_values:
-            # LangGraph has no public "unset channel" update. A fresh channel
-            # exposes its schema default when one exists (for example [] / {});
-            # optional and otherwise-unconstructible channels reset to None.
+            # LangGraph에는 공개된 "채널 해제" 업데이트가 없다. 새 채널은 schema 기본값이
+            # 있으면 그것을 노출하고(예: [] / {}), optional이거나 달리 생성할 수 없는
+            # 채널은 None으로 초기화된다.
             channel = mutation_graph.channels.get(field_name)
             replacement = copy.deepcopy(channel.get()) if channel is not None and channel.is_available() else None
         else:
@@ -1704,37 +1681,31 @@ async def _linearize_delta_checkpoint_resume(
     thread_id: str,
     run_id: str,
 ) -> list[Any] | None:
-    """Replace a delta-mode checkpoint fork with an equivalent linear write.
+    """delta 모드의 checkpoint fork를 동등한 선형 write로 대체한다.
 
-    Resuming from an older checkpoint forks the lineage, and in ``delta`` mode
-    the fork's state cannot be materialized correctly: the delta history walk
-    collects **every** ``pending_writes`` entry stored on each on-path
-    ancestor, but a shared parent also carries the writes of the sibling child
-    that was abandoned. Those writes are replayed into the fork, so the run
-    starts from a message list that still contains the answer it was supposed
-    to replace — regenerating in a branched thread surfaced this as the old
-    assistant message reappearing beside the new one after a reload (#4458).
-    Reproduced on postgres, sqlite, and the in-memory saver; ``full`` mode is
-    unaffected because its checkpoints carry complete ``channel_values`` and
-    need no replay.
+    오래된 checkpoint에서 재개하면 계보가 fork되는데, ``delta`` 모드에서는 그 fork의
+    state를 올바르게 materialize할 수 없다. delta 이력 순회는 경로상의 각 조상에 저장된
+    ``pending_writes`` 항목을 **전부** 모으는데, 공유된 부모는 버려진 형제 자식의 write도
+    함께 갖고 있기 때문이다. 그 write들이 fork로 replay되므로, run은 자신이 대체하려던
+    답변이 여전히 들어 있는 메시지 목록에서 시작한다. 분기된 thread에서 재생성할 때
+    새로고침 후 예전 assistant 메시지가 새 것 옆에 다시 나타나는 형태로 드러났다 (#4458).
+    postgres, sqlite, in-memory saver에서 모두 재현되었다. ``full`` 모드는 checkpoint가
+    완전한 ``channel_values``를 담고 있어 replay가 필요 없으므로 영향받지 않는다.
 
-    The upstream contract (`BaseCheckpointSaver.get_delta_channel_history` and
-    the savers overriding it) is where write-to-child ownership belongs, so
-    this does not reimplement it. Instead the fork is expressed as what it
-    means: materialize the requested checkpoint's state and write it with
-    replace semantics on the **current head**, which has no other children,
-    then run linearly. Every materialized channel is restored; channels that
-    exist only on the newer head are reset to their schema default (or
-    ``None`` when the channel has no constructible default). The abandoned
-    turn stays in checkpoint history as the rewritten head's ancestry.
+    write-to-child 소유권은 upstream 계약(`BaseCheckpointSaver.get_delta_channel_history`와
+    이를 override하는 saver들)의 몫이므로 여기서 다시 구현하지 않는다. 대신 fork를 그
+    의미대로 표현한다. 요청된 checkpoint의 state를 materialize한 다음, 다른 자식이 없는
+    **현재 head**에 교체 의미로 쓰고 선형으로 진행한다. materialize된 모든 채널이
+    복원되며, 더 새로운 head에만 존재하는 채널은 schema 기본값(생성 가능한 기본값이 없으면
+    ``None``)으로 초기화된다. 버려진 turn은 재작성된 head의 조상으로 checkpoint 이력에
+    남는다.
 
-    Returns the materialized messages when the resume was linearized, or
-    ``None`` when there was nothing to do (full mode, no checkpoint selector,
-    a non-root namespace, or a selector that already names the head). Failures
-    propagate: silently falling back to the fork would persist the corrupted
-    history this exists to prevent. The worker call site holds
-    ``_checkpoint_thread_lock`` across rollback capture and this rewrite; do
-    not reacquire that non-reentrant lock inside this helper.
+    재개가 선형화되었으면 materialize된 메시지를, 할 일이 없었으면(full 모드, checkpoint
+    선택자 없음, 비 root namespace, 또는 이미 head를 가리키는 선택자) ``None``을 반환한다.
+    실패는 그대로 전파한다. 조용히 fork로 되돌아가면 이 함수가 막으려는 손상된 이력이
+    저장되기 때문이다. worker 호출 지점은 rollback 캡처와 이 재작성 전체에 걸쳐
+    ``_checkpoint_thread_lock``을 잡고 있다. 재진입 불가능한 그 lock을 이 헬퍼 안에서 다시
+    잡으면 안 된다.
     """
     if checkpointer is None or accessor.mode != "delta":
         return None
@@ -1745,14 +1716,14 @@ async def _linearize_delta_checkpoint_resume(
     if not isinstance(checkpoint_id, str) or not checkpoint_id:
         return None
     if configurable.get("checkpoint_ns"):
-        # Subgraph namespaces have their own lineage; the Gateway only selects
-        # root checkpoints, so leave anything else untouched.
+        # subgraph namespace는 자체 계보를 갖는다. Gateway는 root checkpoint만 선택하므로
+        # 그 외에는 건드리지 않는다.
         return None
 
     head_config: dict[str, Any] = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
     head = await accessor.aget(head_config)
     if _checkpoint_id(head) == checkpoint_id:
-        # Selecting the head is already linear — no sibling can exist yet.
+        # head를 선택하는 것은 이미 선형이다. 아직 형제가 존재할 수 없다.
         return None
 
     source_config: dict[str, Any] = {"configurable": {"thread_id": thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id}}
@@ -1762,9 +1733,9 @@ async def _linearize_delta_checkpoint_resume(
     if not isinstance(messages, list):
         raise RuntimeError(f"Run {run_id} could not materialize resume checkpoint {checkpoint_id}")
 
-    # Write through the thread's effective schema so every application and
-    # middleware channel can be restored. Reducer channels need Overwrite to
-    # replace their already-aggregated value instead of merging it again.
+    # thread의 실제 schema를 통해 써서 모든 애플리케이션·middleware 채널이 복원될 수 있게
+    # 한다. reducer 채널은 이미 집계된 값을 다시 병합하지 않고 교체하려면 Overwrite가
+    # 필요하다.
     mutation_graph = build_state_mutation_graph("checkpoint_resume", accessor.mode, graph_state_schema(getattr(accessor, "graph", None)))
     selected_values = dict(values)
     head_values = getattr(head, "values", None) or {}
@@ -1794,14 +1765,13 @@ async def _rollback_to_pre_run_checkpoint(
     rollback_point: RollbackPoint | None,
     snapshot_capture_failed: bool,
 ) -> bool:
-    """Restore the complete pre-run state and report whether it completed.
+    """run 이전 state 전체를 복원하고 완료되었는지 보고한다.
 
-    Full mode forks the captured pre-run checkpoint and overwrites messages;
-    all other channels inherit from that parent. Delta mode cannot safely fork
-    once the cancelled path has attached writes to the same parent, so it
-    replaces every captured channel on the current head instead. Both writes
-    use a state-only mutation graph whose synthetic ``rollback_restore`` node
-    finishes immediately and schedules no agent work.
+    full 모드는 캡처된 run 이전 checkpoint를 fork하고 messages를 덮어쓴다. 나머지 채널은
+    그 부모에서 상속된다. delta 모드는 취소된 경로가 같은 부모에 write를 붙인 뒤에는
+    안전하게 fork할 수 없으므로, 대신 캡처된 모든 채널을 현재 head에 교체해 쓴다. 두 write
+    모두 state 전용 mutation graph를 쓰며, 그 합성 ``rollback_restore`` node는 즉시 끝나고
+    agent 작업을 예약하지 않는다.
     """
     if checkpointer is None:
         logger.info("Run %s rollback requested but no checkpointer is configured", run_id)
@@ -1822,20 +1792,19 @@ async def _rollback_to_pre_run_checkpoint(
         return False
 
     if accessor is None:
-        # Unreachable in practice: a rollback point can only be captured
-        # through the bound accessor. Stay fail-closed.
+        # 실제로는 도달하지 않는다. rollback 지점은 바인딩된 accessor를 통해서만 캡처될
+        # 수 있다. fail-closed를 유지한다.
         logger.warning("Run %s rollback skipped: agent accessor unavailable", run_id)
         return False
 
-    # Compile with the thread's effective schema so middleware-contributed
-    # channels survive (the base ThreadState fallback would silently drop
-    # them).
+    # thread의 실제 schema로 컴파일해서 middleware가 기여한 채널이 살아남게 한다(기본
+    # ThreadState fallback은 그것들을 조용히 버린다).
     mutation_graph = build_state_mutation_graph("rollback_restore", accessor.mode, graph_state_schema(getattr(accessor, "graph", None)))
     mutation_accessor = CheckpointStateAccessor.bind(mutation_graph, checkpointer, mode=accessor.mode)
     if accessor.mode == "delta":
-        # A delta rollback fork has the same write-ownership problem as a
-        # checkpoint resume: the captured parent now carries writes from the
-        # cancelled sibling. Restore linearly on the current head instead.
+        # delta rollback fork는 checkpoint 재개와 같은 write 소유권 문제를 갖는다. 캡처된
+        # 부모가 이제 취소된 형제의 write를 갖고 있기 때문이다. 대신 현재 head에 선형으로
+        # 복원한다.
         restore_config: dict[str, Any] = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
         current = await accessor.aget(restore_config)
         raw_current_values = getattr(current, "values", None) or {}
@@ -1898,16 +1867,14 @@ def _new_checkpoint_marker() -> dict[str, str]:
 
 
 def _bump_channel_version(checkpointer: Any, current_version: Any) -> Any:
-    """Return a strictly-different next version for a checkpoint channel.
+    """checkpoint 채널의 다음 버전을 반드시 다른 값으로 반환한다.
 
-    DB-backed LangGraph savers (PostgresSaver / v4 SqliteSaver blob layout)
-    persist channel blobs keyed by ``channel_versions[<channel>]``, so the
-    new value MUST differ from the prior value. We delegate to the
-    checkpointer's ``get_next_version`` when available — that is the canonical
-    versioning scheme each saver picks (int, monotonic float, or
-    UUID-shaped string). When the checkpointer doesn't expose it (or it
-    returns ``None``/an unchanged value), fall back to a defensive bump that
-    still guarantees inequality.
+    DB 기반 LangGraph saver(PostgresSaver / v4 SqliteSaver blob 레이아웃)는 채널 blob을
+    ``channel_versions[<channel>]``를 키로 저장하므로, 새 값은 이전 값과 **반드시** 달라야
+    한다. 가능하면 checkpointer의 ``get_next_version``에 위임한다. 그것이 각 saver가 고른
+    표준 버전 체계(int, 단조 증가 float, UUID 형태 문자열)다. checkpointer가 그것을
+    노출하지 않거나 ``None``/변하지 않은 값을 반환하면, 그래도 불일치를 보장하는 방어적
+    증가로 fallback한다.
     """
     get_next_version = getattr(checkpointer, "get_next_version", None)
     if callable(get_next_version):
@@ -1917,17 +1884,16 @@ def _bump_channel_version(checkpointer: Any, current_version: Any) -> Any:
             next_version = None
         if next_version is not None and next_version != current_version:
             return next_version
-        # fall through to defensive bump
+        # 방어적 증가로 넘어간다
 
     if isinstance(current_version, bool):
-        # ``bool`` is a subclass of ``int``; treat True/False as 1/0 instead of
-        # adding to the boolean itself, which would produce an int anyway but
-        # via a path that surprises readers.
+        # ``bool``은 ``int``의 하위 클래스다. boolean 자체에 더하면 결과는 어차피 int지만
+        # 읽는 사람을 놀라게 하는 경로이므로, True/False를 1/0으로 취급한다.
         return int(current_version) + 1
     if isinstance(current_version, int):
         return current_version + 1
     if isinstance(current_version, float):
-        # Match LangGraph's default float versioning (monotonic increment).
+        # LangGraph의 기본 float 버전 체계(단조 증가)에 맞춘다.
         return current_version + 1.0
     if isinstance(current_version, str):
         try:
@@ -1977,7 +1943,7 @@ def _title_generation_state(channel_values: dict[str, Any], graph_input: Any | N
 
 
 def valid_duration_entry(run_id: Any, duration_seconds: Any) -> bool:
-    """Check that (run_id, duration_seconds) is a well-formed duration entry."""
+    """(run_id, duration_seconds)가 올바른 형태의 duration 항목인지 확인한다."""
     return isinstance(run_id, str) and bool(run_id) and isinstance(duration_seconds, int) and not isinstance(duration_seconds, bool)
 
 
@@ -1987,12 +1953,11 @@ async def persist_run_durations(
     thread_id: str,
     durations: dict[str, int],
 ) -> bool:
-    """Merge validated run durations into a metadata-only checkpoint.
+    """검증된 run duration을 metadata 전용 checkpoint에 병합한다.
 
-    Durations accumulate so the history fast path can serve every known turn
-    from the latest checkpoint.  Per-entry overhead is negligible (~50 bytes
-    per run_id) compared to the messages channel blob written on every graph
-    checkpoint, so no pruning is needed.
+    duration은 누적되므로 이력 fast path가 최신 checkpoint 하나로 알려진 모든 turn을
+    제공할 수 있다. 항목당 오버헤드(run_id당 약 50바이트)는 graph checkpoint마다 쓰이는
+    messages 채널 blob에 비하면 무시할 수준이라 pruning이 필요 없다.
     """
     updates = {run_id: max(0, duration_seconds) for run_id, duration_seconds in durations.items() if valid_duration_entry(run_id, duration_seconds)}
     if not updates:
@@ -2055,7 +2020,7 @@ async def _persist_run_duration(
     run_id: str,
     duration_seconds: int,
 ) -> None:
-    """Persist one completed run duration in the thread checkpoint metadata."""
+    """완료된 run 하나의 duration을 thread checkpoint metadata에 저장한다."""
     await persist_run_durations(
         checkpointer=checkpointer,
         thread_id=thread_id,
@@ -2064,12 +2029,11 @@ async def _persist_run_duration(
 
 
 async def _ensure_interrupted_title(*, checkpointer: Any, thread_id: str, app_config: AppConfig | None, graph_input: Any | None = None) -> str | None:
-    """Persist a local fallback title for interrupted first-turn runs.
+    """첫 turn이 중단된 run에 대해 로컬 fallback title을 저장한다.
 
-    Returns the title that is now persisted (existing or newly written), or
-    ``None`` when no checkpoint is available or no title text can be derived.
-    Idempotent: re-invoking against a checkpoint that already carries a title
-    short-circuits without writing a new checkpoint.
+    현재 저장된 title(기존 값이거나 새로 쓴 값)을 반환하고, 사용할 checkpoint가 없거나
+    title 텍스트를 유도할 수 없으면 ``None``을 반환한다. 멱등하다. 이미 title이 있는
+    checkpoint에 대해 다시 호출하면 새 checkpoint를 쓰지 않고 곧바로 빠져나온다.
     """
     from deerflow.agents.middlewares.title_middleware import TitleMiddleware
 
@@ -2089,8 +2053,8 @@ async def _ensure_interrupted_title(*, checkpointer: Any, thread_id: str, app_co
         if not title:
             return None
 
-        # ``empty_checkpoint()`` creates a fresh id every time; only real tuples
-        # carry an identity stable enough for the stale-snapshot comparison.
+        # ``empty_checkpoint()``는 매번 새 id를 만든다. 오래된 snapshot 비교에 쓸 만큼
+        # 안정적인 identity는 실제 튜플만 갖고 있다.
         base_identity = _checkpoint_identity(ckpt_tuple, checkpoint) if ckpt_tuple is not None else None
         latest_tuple = await _call_checkpointer_method(checkpointer, "aget_tuple", "get_tuple", ckpt_config)
         latest_checkpoint = copy.deepcopy(getattr(latest_tuple, "checkpoint", {}) or {}) if latest_tuple is not None else empty_checkpoint()
@@ -2111,13 +2075,12 @@ async def _ensure_interrupted_title(*, checkpointer: Any, thread_id: str, app_co
         marker = _new_checkpoint_marker()
         checkpoint.update({"id": marker["id"], "ts": marker["ts"], "channel_values": channel_values})
 
-        # Bump ``channel_versions["title"]`` and declare the bump in ``new_versions``
-        # so DB-backed savers (SqliteSaver v4 / PostgresSaver) actually persist the
-        # new blob — those savers strip inline ``channel_values`` from ``put`` and
-        # only write blobs for channels listed in ``new_versions``. The legacy
-        # single-table sqlite saver ignores ``new_versions`` and inlines the
-        # snapshot, so this path is correct for both layouts. Mirrors
-        # ``_rollback_to_pre_run_checkpoint`` in the same file.
+        # ``channel_versions["title"]``을 올리고 그 증가를 ``new_versions``에 선언해서
+        # DB 기반 saver(SqliteSaver v4 / PostgresSaver)가 실제로 새 blob을 저장하게 한다.
+        # 그 saver들은 ``put``에서 인라인 ``channel_values``를 떼어내고 ``new_versions``에
+        # 나열된 채널의 blob만 쓴다. 구형 단일 테이블 sqlite saver는 ``new_versions``를
+        # 무시하고 snapshot을 인라인하므로, 이 경로는 두 레이아웃 모두에 맞다. 같은 파일의
+        # ``_rollback_to_pre_run_checkpoint``와 같은 방식이다.
         channel_versions = dict(checkpoint.get("channel_versions", {}) or {})
         next_title_version = _bump_channel_version(checkpointer, channel_versions.get("title"))
         channel_versions["title"] = next_title_version
@@ -2130,9 +2093,8 @@ async def _ensure_interrupted_title(*, checkpointer: Any, thread_id: str, app_co
         metadata["writes"] = {"runtime_interrupt_title": {"title": title}}
 
         checkpoint_ns = _checkpoint_namespace(latest_tuple)
-        # Parent to the checkpoint this write was derived from - a parentless
-        # raw write would sever Delta-channel replay ancestry (and truncate
-        # full-mode history walks).
+        # 이 write가 파생된 checkpoint를 부모로 삼는다. 부모 없는 raw write는 Delta 채널
+        # replay 계보를 끊고 full 모드 이력 순회도 잘라먹는다.
         write_config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": latest_identity}}
         await _call_checkpointer_method(
             checkpointer,
@@ -2149,14 +2111,13 @@ async def _ensure_interrupted_title(*, checkpointer: Any, thread_id: str, app_co
 
 
 def _lg_mode_to_sse_event(mode: str) -> str:
-    """Map LangGraph internal stream_mode name to SSE event name.
+    """LangGraph 내부 stream_mode 이름을 SSE 이벤트 이름으로 매핑한다.
 
-    LangGraph's ``astream(stream_mode="messages")`` produces message
-    tuples.  The SSE protocol calls this ``messages-tuple`` when the
-    client explicitly requests it, but the default SSE event name used
-    by LangGraph Platform is simply ``"messages"``.
+    LangGraph의 ``astream(stream_mode="messages")``는 message 튜플을 만든다. SSE 프로토콜에서는
+    클라이언트가 명시적으로 요청할 때 이것을 ``messages-tuple``이라 부르지만, LangGraph
+    Platform이 쓰는 기본 SSE 이벤트 이름은 그냥 ``"messages"``다.
     """
-    # All LG modes map 1:1 to SSE event names — "messages" stays "messages"
+    # 모든 LG 모드는 SSE 이벤트 이름과 1:1로 대응한다. "messages"는 "messages" 그대로다
     return mode
 
 
@@ -2173,7 +2134,7 @@ def _error_fallback_message_from_metadata(metadata: dict[str, Any], content: Any
 
 
 def _message_id(obj: Any) -> str | None:
-    """Best-effort extraction of a stable message id from a message-like object."""
+    """message 형태 객체에서 안정적인 message id를 best-effort로 추출한다."""
     msg_id = getattr(obj, "id", None)
     if isinstance(msg_id, str) and msg_id:
         return msg_id
@@ -2185,14 +2146,13 @@ def _message_id(obj: Any) -> str | None:
 
 
 def _try_extract_from_message(obj: Any, pre_existing_ids: set[str] | None = None) -> str | None:
-    """Try to extract fallback marker from a single message object or dict.
+    """message 객체나 dict 하나에서 fallback 마커 추출을 시도한다.
 
-    Messages whose id appears in ``pre_existing_ids`` are skipped — those are
-    history checkpointed by a *prior* run on this thread and any fallback
-    marker on them was already accounted for when that earlier run finished.
-    Without this filter, a single past run that ended with a fallback marker
-    would mark every subsequent run on the same thread as ``error``, because
-    LangGraph replays the full message history through ``stream_mode="values"``.
+    id가 ``pre_existing_ids``에 있는 메시지는 건너뛴다. 그것들은 이 thread의 *이전* run이
+    checkpoint한 이력이고, 거기 붙은 fallback 마커는 그 run이 끝날 때 이미 처리되었기
+    때문이다. 이 필터가 없으면 fallback 마커로 끝난 과거 run 하나가 같은 thread의 모든
+    후속 run을 ``error``로 표시하게 된다. LangGraph가 ``stream_mode="values"``로 전체
+    메시지 이력을 replay하기 때문이다.
     """
     if pre_existing_ids:
         msg_id = _message_id(obj)
@@ -2211,19 +2171,17 @@ def _try_extract_from_message(obj: Any, pre_existing_ids: set[str] | None = None
 
 
 def _extract_llm_error_fallback_message(value: Any, pre_existing_ids: set[str] | None = None) -> str | None:
-    """Find LLM fallback markers in streamed LangGraph chunks.
+    """stream된 LangGraph chunk에서 LLM fallback 마커를 찾는다.
 
-    Error fallback messages returned by model-call middleware are not guaranteed
-    to pass through LLM end callbacks, but they do appear in graph state chunks.
+    model-call middleware가 반환하는 error fallback 메시지는 LLM end callback을 반드시
+    거친다는 보장이 없지만, graph state chunk에는 나타난다.
 
-    Messages whose id appears in ``pre_existing_ids`` are ignored — they are
-    history from prior runs on the same thread (LangGraph replays the full
-    messages channel in ``stream_mode="values"`` chunks), and any error
-    fallback in that history was already resolved when its run finished.
+    id가 ``pre_existing_ids``에 있는 메시지는 무시한다. 그것들은 같은 thread의 이전 run에서
+    온 이력이고(LangGraph는 ``stream_mode="values"`` chunk로 messages 채널 전체를 replay한다),
+    그 이력의 error fallback은 해당 run이 끝날 때 이미 처리되었다.
     """
-    # Fast path: large state chunks produced by stream_mode="values" have a
-    # top-level "messages" list. Scanning only that list avoids expensive deep
-    # recursion into large state dicts.
+    # fast path: stream_mode="values"가 만드는 큰 state chunk에는 최상위 "messages"
+    # 리스트가 있다. 그 리스트만 훑으면 큰 state dict를 깊게 재귀 탐색하는 비용을 피한다.
     if isinstance(value, dict):
         messages = value.get("messages")
         if isinstance(messages, (list, tuple)):
@@ -2231,15 +2189,14 @@ def _extract_llm_error_fallback_message(value: Any, pre_existing_ids: set[str] |
                 result = _try_extract_from_message(msg, pre_existing_ids)
                 if result is not None:
                     return result
-            # Fallback marker is attached to an AI message in the messages
-            # channel; it will never appear elsewhere in a values chunk.
+            # fallback 마커는 messages 채널의 AI 메시지에 붙는다. values chunk의 다른
+            # 곳에는 절대 나타나지 않는다.
             return None
-        # No top-level "messages" — this is likely an "updates" chunk (small
-        # dict keyed by node name). Fall through to deep walk, which is cheap
-        # for these payloads.
+        # 최상위 "messages"가 없다면 "updates" chunk(노드 이름을 키로 하는 작은 dict)일
+        # 가능성이 높다. 아래 깊은 순회로 넘어간다. 이런 payload에는 저렴하다.
 
-    # Deep walk for updates / messages / tuple / list modes. Payloads are
-    # small, so full recursion is acceptable here.
+    # updates / messages / tuple / list 모드를 위한 깊은 순회. payload가 작으므로 여기서는
+    # 전체 재귀가 허용된다.
     seen: set[int] = set()
 
     def walk(obj: Any) -> str | None:
@@ -2270,7 +2227,7 @@ def _extract_llm_error_fallback_message(value: Any, pre_existing_ids: set[str] |
 
 
 def _collect_pre_existing_message_ids(values: Any) -> set[str]:
-    """Collect stable message IDs from graph-materialized channel values."""
+    """graph가 materialize한 channel value에서 안정적인 message ID를 모은다."""
     if not isinstance(values, dict):
         return set()
     messages = values.get("messages")
@@ -2284,15 +2241,14 @@ def _unpack_stream_item(
     lg_modes: list[str],
     stream_subgraphs: bool,
 ) -> tuple[str | None, Any, tuple[str, ...]]:
-    """Unpack a multi-mode or subgraph stream item into (mode, chunk, namespace).
+    """다중 모드 또는 subgraph stream 항목을 (mode, chunk, namespace)로 분해한다.
 
-    ``namespace`` is the subgraph namespace tuple LangGraph prefixes onto each
-    frame when ``subgraphs=True``; it is empty for root-graph frames. Delegated
-    subagent graphs inherit the parent's checkpoint namespace (see
-    ``subagents/executor.py``), so their frames arrive here with a non-empty
-    namespace and must not be mistaken for root frames.
+    ``namespace``는 ``subgraphs=True``일 때 LangGraph가 각 frame 앞에 붙이는 subgraph
+    namespace 튜플이며, root graph frame에서는 비어 있다. 위임된 subagent graph는 부모의
+    checkpoint namespace를 상속하므로(``subagents/executor.py`` 참고) 그 frame은 비어 있지
+    않은 namespace로 도착하며 root frame으로 오인하면 안 된다.
 
-    Returns ``(None, None, ())`` if the item cannot be parsed.
+    항목을 파싱할 수 없으면 ``(None, None, ())``을 반환한다.
     """
     if stream_subgraphs:
         if isinstance(item, tuple) and len(item) == 3:
@@ -2308,17 +2264,17 @@ def _unpack_stream_item(
         mode, chunk = item
         return str(mode), chunk, ()
 
-    # Fallback: single-element output from first mode
+    # fallback: 첫 번째 모드의 단일 요소 출력
     return lg_modes[0] if lg_modes else None, item, ()
 
 
 def _compose_sse_event(sse_event: str, namespace: tuple[str, ...]) -> str:
-    """Namespace-qualified SSE event name, LangGraph Platform style.
+    """LangGraph Platform 방식의, namespace가 붙은 SSE 이벤트 이름.
 
-    Root frames keep the bare event name; subgraph frames become
-    ``mode|ns1|ns2`` so clients can tell them apart. The LangGraph SDK parses
-    exactly this shape (``event.split("|").slice(1)``) and routes
-    subagent-namespaced values away from the thread view.
+    root frame은 이벤트 이름을 그대로 두고, subgraph frame은 ``mode|ns1|ns2``가 되어
+    클라이언트가 구분할 수 있게 한다. LangGraph SDK는 정확히 이 형태를
+    (``event.split("|").slice(1)``로) 파싱해 subagent namespace가 붙은 값을 thread 뷰에서
+    빼낸다.
     """
     if not namespace:
         return sse_event
@@ -2335,14 +2291,13 @@ async def _publish_stream_item(
     file_tool_chunk_batcher: Any,
     subagent_events: Any,
 ) -> None:
-    """Publish one stream frame, preserving the subgraph namespace.
+    """subgraph namespace를 유지한 채 stream frame 하나를 publish한다.
 
-    A subgraph frame published under a bare event name impersonates the root
-    graph: a delegated subagent's ``values`` snapshot then replaces the whole
-    thread view in SDK clients and its token chunks flood the parent message
-    stream (#4399). Subgraph frames therefore keep their namespace in the event
-    name and bypass the root-only consumers (file-tool chunk batcher, subagent
-    event persistence — task_* lifecycle events are root frames already).
+    subgraph frame을 이름 그대로의 이벤트로 publish하면 root graph를 사칭하게 된다. 그러면
+    위임된 subagent의 ``values`` snapshot이 SDK 클라이언트의 thread 뷰 전체를 대체하고, 그
+    토큰 chunk가 부모 message stream을 뒤덮는다 (#4399). 따라서 subgraph frame은 이벤트
+    이름에 namespace를 유지하고 root 전용 소비자(file-tool chunk batcher, subagent 이벤트
+    저장 — task_* lifecycle 이벤트는 이미 root frame이다)를 건너뛴다.
     """
     sse_event = _compose_sse_event(_lg_mode_to_sse_event(mode), namespace)
     if namespace:

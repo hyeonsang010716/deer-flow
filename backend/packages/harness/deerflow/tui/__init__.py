@@ -1,1 +1,1 @@
-"""DeerFlow terminal workbench (TUI), embedded over DeerFlowClient."""
+"""DeerFlowClient 위에 embedded로 올린 DeerFlow terminal workbench(TUI)."""

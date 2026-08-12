@@ -1,4 +1,4 @@
-"""ORM model for thread metadata."""
+"""thread metadata의 ORM model."""
 
 from __future__ import annotations
 

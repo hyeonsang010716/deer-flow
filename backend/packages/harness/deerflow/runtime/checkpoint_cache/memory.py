@@ -1,4 +1,4 @@
-"""Process-local LRU backend. Zero serialization on the hit path."""
+"""프로세스 로컬 LRU backend. hit 경로에서는 직렬화를 전혀 하지 않는다."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from deerflow.runtime.checkpoint_cache.base import CheckpointCacheStats, thread_
 
 
 def _copy_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """Copy-on-read/write: fresh writes list; seed shared (never mutated in place)."""
+    """읽기/쓰기 시 복사한다. writes는 새 list로 만들고, seed는 공유한다(제자리 변경 없음)."""
     copied: dict[str, Any] = {"writes": list(entry["writes"])}
     if "seed" in entry:
         copied["seed"] = entry["seed"]
@@ -59,7 +59,7 @@ class MemoryCheckpointHistoryCache:
         self.set_many(entries)
 
     def delete_thread(self, key_prefix: str, thread_id: str) -> None:
-        """Purge every entry of one thread (lifecycle, not invalidation)."""
+        """한 thread의 모든 항목을 제거한다(무효화가 아니라 lifecycle 정리다)."""
         stem = thread_key_stem(key_prefix, thread_id)
         for key in [k for k in self._data if k.startswith(stem)]:
             del self._data[key]

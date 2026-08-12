@@ -8,7 +8,7 @@ from pathlib import Path, PureWindowsPath
 from deerflow.config.runtime_paths import runtime_home
 from deerflow.utils.thread_id import validate_thread_id
 
-# Virtual path prefix seen by agents inside the sandbox
+# sandbox 안에서 에이전트가 보게 되는 가상 경로 prefix
 VIRTUAL_PATH_PREFIX = "/mnt/user-data"
 
 _SAFE_USER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -20,41 +20,40 @@ logger = logging.getLogger(__name__)
 
 
 def _default_local_base_dir() -> Path:
-    """Return the caller project's writable DeerFlow state directory."""
+    """호출자 프로젝트의 쓰기 가능한 DeerFlow 상태 디렉터리를 반환한다."""
     return runtime_home()
 
 
 def _validate_thread_id(thread_id: str) -> str:
-    """Validate a thread ID before using it in filesystem paths."""
+    """파일시스템 경로에 쓰기 전에 thread ID를 검증한다."""
     return validate_thread_id(thread_id)
 
 
 def _validate_user_id(user_id: str) -> str:
-    """Validate a user ID before using it in filesystem paths."""
+    """파일시스템 경로에 쓰기 전에 user ID를 검증한다."""
     if not _SAFE_USER_ID_RE.match(user_id):
         raise ValueError(f"Invalid user_id {user_id!r}: only alphanumeric characters, hyphens, and underscores are allowed.")
     return user_id
 
 
 def _validate_integration_id(integration_id: str) -> str:
-    """Validate an integration ID before using it in filesystem paths."""
+    """파일시스템 경로에 쓰기 전에 integration ID를 검증한다."""
     if not _SAFE_INTEGRATION_ID_RE.match(integration_id):
         raise ValueError(f"Invalid integration_id {integration_id!r}: only alphanumeric characters, dots, hyphens, and underscores are allowed.")
-    # The charset allows dots for names like ``some.integration``; reject the
-    # bare ``.``/``..`` path components so a future caller cannot escape the
-    # per-integration namespace via ``_join_host_path(..., integration_id, ...)``.
+    # ``some.integration`` 같은 이름을 위해 점을 허용하므로, ``.``/``..`` 단독 경로 요소는
+    # 거부한다. 그래야 나중에 ``_join_host_path(..., integration_id, ...)``로 integration
+    # 네임스페이스를 벗어날 수 없다.
     if integration_id in {".", ".."}:
         raise ValueError(f"Invalid integration_id {integration_id!r}: '.' and '..' are not allowed.")
     return integration_id
 
 
 def make_safe_user_id(raw: str) -> str:
-    """Normalize an external identity into the user-id charset (``[A-Za-z0-9_-]``).
+    """외부 identity를 user-id 문자 집합(``[A-Za-z0-9_-]``)으로 정규화한다.
 
-    IM channel ids (Feishu/Slack/Telegram) may contain characters that
-    :func:`_validate_user_id` rejects. Already-safe ids pass through unchanged;
-    lossy ones get a short digest suffix so two distinct inputs never share a
-    storage bucket.
+    IM channel id(Feishu/Slack/Telegram)에는 :func:`_validate_user_id`가 거부하는 문자가
+    들어갈 수 있다. 이미 안전한 id는 그대로 통과시키고, 변환으로 정보가 손실되는 경우에는
+    짧은 digest를 덧붙여 서로 다른 입력이 같은 저장소 버킷을 공유하지 않게 한다.
     """
     if not raw:
         raise ValueError("user_id must be a non-empty string.")
@@ -66,18 +65,17 @@ def make_safe_user_id(raw: str) -> str:
 
 
 def _legacy_safe_user_id(raw: str, sanitized: str) -> str:
-    """Bucket name produced by the previous (SHA-1) digest revision for ``raw``."""
+    """``raw``에 대해 이전 SHA-1 digest 방식이 만들던 버킷 이름을 반환한다."""
     digest = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:_SAFE_USER_ID_DIGEST_HEX_LEN]
     return f"{sanitized}-{digest}"
 
 
 def _join_host_path(base: str, *parts: str) -> str:
-    """Join host filesystem path segments while preserving native style.
+    """host 파일시스템 경로 조각을 원래 표기 방식을 유지한 채 이어붙인다.
 
-    Docker Desktop on Windows expects bind mount sources to stay in Windows
-    path form (for example ``C:\\repo\\backend\\.deer-flow``).  Using
-    ``Path(base) / ...`` on a POSIX host can accidentally rewrite those paths
-    with mixed separators, so this helper preserves the original style.
+    Windows의 Docker Desktop은 bind mount source가 Windows 경로 형태로 유지되기를
+    기대한다(예: ``C:\\repo\\backend\\.deer-flow``). POSIX host에서 ``Path(base) / ...``를
+    쓰면 구분자가 섞인 경로로 잘못 바뀔 수 있어, 이 헬퍼가 원래 표기를 보존한다.
     """
     if not parts:
         return base
@@ -95,34 +93,34 @@ def _join_host_path(base: str, *parts: str) -> str:
 
 
 def join_host_path(base: str, *parts: str) -> str:
-    """Join host filesystem path segments while preserving native style."""
+    """host 파일시스템 경로 조각을 원래 표기 방식을 유지한 채 이어붙인다."""
     return _join_host_path(base, *parts)
 
 
 class Paths:
     """
-    Centralized path configuration for DeerFlow application data.
+    DeerFlow 애플리케이션 데이터의 경로 설정을 한곳에 모은 클래스.
 
-    Directory layout (host side):
+    디렉터리 구조(host 기준):
         {base_dir}/
         ├── memory.json
-        ├── USER.md          <-- global user profile (injected into all agents)
+        ├── USER.md          <-- 전역 user 프로필(모든 에이전트에 주입)
         ├── agents/
         │   └── {agent_name}/
         │       ├── config.yaml
-        │       ├── SOUL.md  <-- agent personality/identity (injected alongside lead prompt)
+        │       ├── SOUL.md  <-- 에이전트 성격/정체성(lead prompt와 함께 주입)
         │       └── memory.json
         └── threads/
             └── {thread_id}/
-                └── user-data/         <-- mounted as /mnt/user-data/ inside sandbox
+                └── user-data/         <-- sandbox 안에서 /mnt/user-data/로 mount
                     ├── workspace/     <-- /mnt/user-data/workspace/
                     ├── uploads/       <-- /mnt/user-data/uploads/
                     └── outputs/       <-- /mnt/user-data/outputs/
 
-    BaseDir resolution (in priority order):
-        1. Constructor argument `base_dir`
-        2. DEER_FLOW_HOME environment variable
-        3. Caller project fallback: `{project_root}/.deer-flow`
+    base_dir 결정 순서:
+        1. 생성자 인자 `base_dir`
+        2. DEER_FLOW_HOME 환경변수
+        3. 호출자 프로젝트 fallback: `{project_root}/.deer-flow`
     """
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
@@ -130,28 +128,28 @@ class Paths:
 
     @property
     def host_base_dir(self) -> Path:
-        """Host-visible base dir for Docker volume mount sources.
+        """Docker volume mount source로 쓰이는 host 기준 base dir.
 
-        When running inside Docker with a mounted Docker socket (DooD), the Docker
-        daemon runs on the host and resolves mount paths against the host filesystem.
-        Set DEER_FLOW_HOST_BASE_DIR to the host-side path that corresponds to this
-        container's base_dir so that sandbox container volume mounts work correctly.
+        Docker socket을 mount한 채 Docker 안에서 실행하면(DooD) Docker daemon은 host에서
+        돌면서 mount 경로를 host 파일시스템 기준으로 해석한다. 이 컨테이너의 base_dir에
+        대응하는 host 경로를 DEER_FLOW_HOST_BASE_DIR에 지정해야 sandbox 컨테이너의 volume
+        mount가 제대로 동작한다.
 
-        Falls back to base_dir when the env var is not set (native/local execution).
+        환경변수가 없으면(네이티브/로컬 실행) base_dir로 fallback한다.
         """
         if env := os.getenv("DEER_FLOW_HOST_BASE_DIR"):
             return Path(env)
         return self.base_dir
 
     def _host_base_dir_str(self) -> str:
-        """Return the host base dir as a raw string for bind mounts."""
+        """bind mount용으로 host base dir을 원시 문자열로 반환한다."""
         if env := os.getenv("DEER_FLOW_HOST_BASE_DIR"):
             return env
         return str(self.base_dir)
 
     @property
     def base_dir(self) -> Path:
-        """Root directory for all application data."""
+        """모든 애플리케이션 데이터의 루트 디렉터리."""
         if self._base_dir is not None:
             return self._base_dir
 
@@ -162,44 +160,42 @@ class Paths:
 
     @property
     def memory_file(self) -> Path:
-        """Path to the persisted memory file: `{base_dir}/memory.json`."""
+        """저장된 memory 파일 경로: `{base_dir}/memory.json`."""
         return self.base_dir / "memory.json"
 
     @property
     def user_md_file(self) -> Path:
-        """Path to the global user profile file: `{base_dir}/USER.md`."""
+        """전역 user 프로필 파일 경로: `{base_dir}/USER.md`."""
         return self.base_dir / "USER.md"
 
     @property
     def agents_dir(self) -> Path:
-        """Legacy root for shared (pre user-isolation) custom agents: `{base_dir}/agents/`.
+        """user 격리 이전의 공유 custom agent legacy 루트: `{base_dir}/agents/`.
 
-        New code should use :meth:`user_agents_dir` instead. This property remains
-        only as a read-side fallback for installations that have not yet run the
-        ``migrate_user_isolation.py`` script.
+        새 코드는 :meth:`user_agents_dir`을 써야 한다. 이 property는 아직
+        ``migrate_user_isolation.py``를 돌리지 않은 설치본을 위한 읽기 전용 fallback으로만
+        남아 있다.
         """
         return self.base_dir / "agents"
 
     def agent_dir(self, name: str) -> Path:
-        """Legacy per-agent directory (no user isolation): `{base_dir}/agents/{name}/`."""
+        """user 격리가 없던 legacy agent 디렉터리: `{base_dir}/agents/{name}/`."""
         return self.agents_dir / name.lower()
 
     def agent_memory_file(self, name: str) -> Path:
-        """Legacy per-agent memory file: `{base_dir}/agents/{name}/memory.json`."""
+        """legacy agent memory 파일: `{base_dir}/agents/{name}/memory.json`."""
         return self.agent_dir(name) / "memory.json"
 
     def user_dir(self, user_id: str) -> Path:
-        """Directory for a specific user: `{base_dir}/users/{user_id}/`."""
+        """특정 user의 디렉터리: `{base_dir}/users/{user_id}/`."""
         return self.base_dir / "users" / _validate_user_id(user_id)
 
     def prepare_user_dir_for_raw_id(self, raw_user_id: str) -> str:
-        """Return the safe user ID and migrate this ID's legacy unsafe-id bucket.
+        """안전한 user ID를 반환하고, 이 ID의 legacy unsafe-id 버킷을 이관한다.
 
-        A previous branch revision used SHA-1 for unsafe external user IDs.
-        New IDs use SHA-256; the legacy bucket name is recomputed from the same
-        raw ID, so only this user's own old bucket can ever be moved — a
-        different raw ID sharing the sanitized prefix produces a different
-        legacy digest and is never touched.
+        이전 리비전은 안전하지 않은 외부 user ID에 SHA-1을 썼고 지금은 SHA-256을 쓴다.
+        legacy 버킷 이름은 동일한 raw ID로 다시 계산하므로 이 user 자신의 옛 버킷만
+        옮겨진다. sanitize된 prefix가 같은 다른 raw ID는 legacy digest가 달라 건드리지 않는다.
         """
         safe_user_id = make_safe_user_id(raw_user_id)
         sanitized = _UNSAFE_USER_ID_CHAR_RE.sub("-", raw_user_id)
@@ -219,84 +215,82 @@ class Paths:
         return safe_user_id
 
     def user_memory_file(self, user_id: str) -> Path:
-        """Per-user memory file: `{base_dir}/users/{user_id}/memory.json`."""
+        """user별 memory 파일: `{base_dir}/users/{user_id}/memory.json`."""
         return self.user_dir(user_id) / "memory.json"
 
     def user_agents_dir(self, user_id: str) -> Path:
-        """Per-user root for that user's custom agents: `{base_dir}/users/{user_id}/agents/`."""
+        """해당 user의 custom agent 루트: `{base_dir}/users/{user_id}/agents/`."""
         return self.user_dir(user_id) / "agents"
 
     def user_agent_dir(self, user_id: str, agent_name: str) -> Path:
-        """Per-user per-agent directory: `{base_dir}/users/{user_id}/agents/{name}/`."""
+        """user별 agent 디렉터리: `{base_dir}/users/{user_id}/agents/{name}/`."""
         return self.user_agents_dir(user_id) / agent_name.lower()
 
     def user_agent_memory_file(self, user_id: str, agent_name: str) -> Path:
-        """Per-user per-agent memory: `{base_dir}/users/{user_id}/agents/{name}/memory.json`."""
+        """user별 agent memory: `{base_dir}/users/{user_id}/agents/{name}/memory.json`."""
         return self.user_agent_dir(user_id, agent_name) / "memory.json"
 
     def user_skills_dir(self, user_id: str) -> Path:
-        """Per-user root for that user's custom skills: `{base_dir}/users/{user_id}/skills/`."""
+        """해당 user의 custom skill 루트: `{base_dir}/users/{user_id}/skills/`."""
         return self.user_dir(user_id) / "skills"
 
     def user_custom_skills_dir(self, user_id: str) -> Path:
-        """Per-user custom skills directory: `{base_dir}/users/{user_id}/skills/custom/`.
+        """user별 custom skill 디렉터리: `{base_dir}/users/{user_id}/skills/custom/`.
 
-        This is the user-scoped replacement for the global ``{base_dir}/skills/custom/``
-        directory. Custom skills are written here; public skills remain under the
-        global ``{base_dir}/skills/public/`` (read-only).
+        전역 ``{base_dir}/skills/custom/``을 대체하는 user 단위 위치다. custom skill은 여기에
+        기록되고, public skill은 전역 ``{base_dir}/skills/public/``에 읽기 전용으로 남는다.
         """
         return self.user_skills_dir(user_id) / "custom"
 
     def integration_skills_dir(self) -> Path:
-        """Globally installed managed integration skills.
+        """전역으로 설치된 managed integration skill.
 
-        Layout: ``{base_dir}/integrations/skills/{provider}/{skill}/``. The
-        package contents are shared and read-only; credentials and enabled
-        state remain user-scoped elsewhere under ``users/{user_id}``.
+        구조: ``{base_dir}/integrations/skills/{provider}/{skill}/``. 패키지 내용은 공유되며
+        읽기 전용이고, 자격 증명과 활성 상태는 ``users/{user_id}`` 아래에 user 단위로 남는다.
         """
         return self.base_dir / "integrations" / "skills"
 
     @property
     def skills_view_dir(self) -> Path:
-        """Global sandbox-visible skills projection: ``{base_dir}/skills_view/``."""
+        """sandbox에 노출되는 전역 skill projection: ``{base_dir}/skills_view/``."""
         return self.base_dir / "skills_view"
 
     @property
     def public_skills_view_dir(self) -> Path:
-        """Enabled public skills exposed to sandboxes."""
+        """sandbox에 노출되는 활성 public skill."""
         return self.skills_view_dir / "public"
 
     def user_skills_view_dir(self, user_id: str) -> Path:
-        """Per-user sandbox-visible skills projection root."""
+        """user별 sandbox 노출 skill projection 루트."""
         return self.user_dir(user_id) / "skills_view"
 
     def user_custom_skills_view_dir(self, user_id: str) -> Path:
-        """Enabled custom skills exposed to one user's sandboxes."""
+        """한 user의 sandbox에 노출되는 활성 custom skill."""
         return self.user_skills_view_dir(user_id) / "custom"
 
     def user_legacy_skills_view_dir(self, user_id: str) -> Path:
-        """Enabled legacy skills exposed to one user's sandboxes."""
+        """한 user의 sandbox에 노출되는 활성 legacy skill."""
         return self.user_skills_view_dir(user_id) / "legacy"
 
     def user_integration_skills_view_dir(self, user_id: str) -> Path:
-        """Enabled managed integration skills exposed to one user's sandboxes."""
+        """한 user의 sandbox에 노출되는 활성 managed integration skill."""
         return self.user_skills_view_dir(user_id) / "integrations"
 
     def thread_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """
-        Host path for a thread's data.
+        thread 데이터의 host 경로.
 
-        When *user_id* is provided:
+        *user_id*가 주어지면:
             `{base_dir}/users/{user_id}/threads/{thread_id}/`
-        Otherwise (legacy layout):
+        아니면(legacy 구조):
             `{base_dir}/threads/{thread_id}/`
 
-        This directory contains a `user-data/` subdirectory that is mounted
-        as `/mnt/user-data/` inside the sandbox.
+        이 디렉터리에는 sandbox 안에서 `/mnt/user-data/`로 mount되는 `user-data/`
+        하위 디렉터리가 들어 있다.
 
         Raises:
-            ValueError: If `thread_id` or `user_id` contains unsafe characters (path
-                        separators or `..`) that could cause directory traversal.
+            ValueError: `thread_id`나 `user_id`에 directory traversal을 일으킬 수 있는
+                        위험한 문자(경로 구분자나 `..`)가 들어 있는 경우.
         """
         if user_id is not None:
             return self.user_dir(user_id) / "threads" / _validate_thread_id(thread_id)
@@ -304,7 +298,7 @@ class Paths:
 
     def sandbox_work_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """
-        Host path for the agent's workspace directory.
+        에이전트 workspace 디렉터리의 host 경로.
         Host: `{base_dir}/threads/{thread_id}/user-data/workspace/`
         Sandbox: `/mnt/user-data/workspace/`
         """
@@ -312,7 +306,7 @@ class Paths:
 
     def sandbox_uploads_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """
-        Host path for user-uploaded files.
+        user가 업로드한 파일의 host 경로.
         Host: `{base_dir}/threads/{thread_id}/user-data/uploads/`
         Sandbox: `/mnt/user-data/uploads/`
         """
@@ -320,7 +314,7 @@ class Paths:
 
     def sandbox_outputs_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """
-        Host path for agent-generated artifacts.
+        에이전트가 생성한 artifact의 host 경로.
         Host: `{base_dir}/threads/{thread_id}/user-data/outputs/`
         Sandbox: `/mnt/user-data/outputs/`
         """
@@ -328,77 +322,75 @@ class Paths:
 
     def acp_workspace_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """
-        Host path for the ACP workspace of a specific thread.
+        특정 thread의 ACP workspace host 경로.
         Host: `{base_dir}/threads/{thread_id}/acp-workspace/`
         Sandbox: `/mnt/acp-workspace/`
 
-        Each thread gets its own isolated ACP workspace so that concurrent
-        sessions cannot read each other's ACP agent outputs.
+        thread마다 격리된 ACP workspace를 가지므로 동시에 진행되는 session끼리 서로의
+        ACP 에이전트 출력을 읽을 수 없다.
         """
         return self.thread_dir(thread_id, user_id=user_id) / "acp-workspace"
 
     def sandbox_user_data_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """
-        Host path for the user-data root.
+        user-data 루트의 host 경로.
         Host: `{base_dir}/threads/{thread_id}/user-data/`
         Sandbox: `/mnt/user-data/`
         """
         return self.thread_dir(thread_id, user_id=user_id) / "user-data"
 
     def host_thread_dir(self, thread_id: str, *, user_id: str | None = None) -> str:
-        """Host path for a thread directory, preserving Windows path syntax."""
+        """thread 디렉터리의 host 경로. Windows 경로 표기를 보존한다."""
         if user_id is not None:
             return _join_host_path(self._host_base_dir_str(), "users", _validate_user_id(user_id), "threads", _validate_thread_id(thread_id))
         return _join_host_path(self._host_base_dir_str(), "threads", _validate_thread_id(thread_id))
 
     def host_sandbox_user_data_dir(self, thread_id: str, *, user_id: str | None = None) -> str:
-        """Host path for a thread's user-data root."""
+        """thread의 user-data 루트 host 경로."""
         return _join_host_path(self.host_thread_dir(thread_id, user_id=user_id), "user-data")
 
     def host_sandbox_work_dir(self, thread_id: str, *, user_id: str | None = None) -> str:
-        """Host path for the workspace mount source."""
+        """workspace mount source의 host 경로."""
         return _join_host_path(self.host_sandbox_user_data_dir(thread_id, user_id=user_id), "workspace")
 
     def host_sandbox_uploads_dir(self, thread_id: str, *, user_id: str | None = None) -> str:
-        """Host path for the uploads mount source."""
+        """uploads mount source의 host 경로."""
         return _join_host_path(self.host_sandbox_user_data_dir(thread_id, user_id=user_id), "uploads")
 
     def host_sandbox_outputs_dir(self, thread_id: str, *, user_id: str | None = None) -> str:
-        """Host path for the outputs mount source."""
+        """outputs mount source의 host 경로."""
         return _join_host_path(self.host_sandbox_user_data_dir(thread_id, user_id=user_id), "outputs")
 
     def host_acp_workspace_dir(self, thread_id: str, *, user_id: str | None = None) -> str:
-        """Host path for the ACP workspace mount source."""
+        """ACP workspace mount source의 host 경로."""
         return _join_host_path(self.host_thread_dir(thread_id, user_id=user_id), "acp-workspace")
 
     def host_user_custom_skills_dir(self, user_id: str) -> str:
-        """Host path for a user's custom skills directory, preserving Windows path syntax."""
+        """user의 custom skill 디렉터리 host 경로. Windows 경로 표기를 보존한다."""
         return _join_host_path(self._host_base_dir_str(), "users", _validate_user_id(user_id), "skills", "custom")
 
     def host_integration_skills_dir(self) -> str:
-        """Host path for globally installed managed integration skills."""
+        """전역 설치된 managed integration skill의 host 경로."""
         return _join_host_path(self._host_base_dir_str(), "integrations", "skills")
 
     def host_user_integration_config_dir(self, user_id: str, integration_id: str) -> str:
-        """Host path for a user's managed integration runtime config directory."""
+        """user의 managed integration 런타임 config 디렉터리 host 경로."""
         return _join_host_path(self._host_base_dir_str(), "users", _validate_user_id(user_id), "integrations", _validate_integration_id(integration_id), "config")
 
     def host_user_integration_data_dir(self, user_id: str, integration_id: str) -> str:
-        """Host path for a user's managed integration runtime data directory."""
+        """user의 managed integration 런타임 data 디렉터리 host 경로."""
         return _join_host_path(self._host_base_dir_str(), "users", _validate_user_id(user_id), "integrations", _validate_integration_id(integration_id), "data")
 
     def ensure_thread_dirs(self, thread_id: str, *, user_id: str | None = None) -> None:
-        """Create all standard sandbox directories for a thread.
+        """thread에 필요한 표준 sandbox 디렉터리를 모두 만든다.
 
-        Directories are created with mode 0o777 so that sandbox containers
-        (which may run as a different UID than the host backend process) can
-        write to the volume-mounted paths without "Permission denied" errors.
-        The explicit chmod() call is necessary because Path.mkdir(mode=...) is
-        subject to the process umask and may not yield the intended permissions.
+        디렉터리는 0o777로 만든다. sandbox 컨테이너가 host backend 프로세스와 다른 UID로
+        실행될 수 있어서, 그래야 volume mount된 경로에 "Permission denied" 없이 쓸 수 있다.
+        Path.mkdir(mode=...)는 프로세스 umask의 영향을 받아 의도한 권한이 되지 않으므로
+        chmod()를 따로 호출한다.
 
-        Includes the ACP workspace directory so it can be volume-mounted into
-        the sandbox container at ``/mnt/acp-workspace`` even before the first
-        ACP agent invocation.
+        ACP workspace 디렉터리도 포함한다. 그래야 첫 ACP 에이전트 호출 전에도 sandbox
+        컨테이너의 ``/mnt/acp-workspace``로 volume mount할 수 있다.
         """
         for d in [
             self.sandbox_work_dir(thread_id, user_id=user_id),
@@ -410,36 +402,36 @@ class Paths:
             d.chmod(0o777)
 
     def delete_thread_dir(self, thread_id: str, *, user_id: str | None = None) -> None:
-        """Delete all persisted data for a thread.
+        """thread에 저장된 데이터를 모두 삭제한다.
 
-        The operation is idempotent: missing thread directories are ignored.
+        멱등하게 동작한다. thread 디렉터리가 없으면 그냥 넘어간다.
         """
         thread_dir = self.thread_dir(thread_id, user_id=user_id)
         if thread_dir.exists():
             shutil.rmtree(thread_dir)
 
     def resolve_virtual_path(self, thread_id: str, virtual_path: str, *, user_id: str | None = None) -> Path:
-        """Resolve a sandbox virtual path to the actual host filesystem path.
+        """sandbox 가상 경로를 실제 host 파일시스템 경로로 변환한다.
 
         Args:
-            thread_id: The thread ID.
-            virtual_path: Virtual path as seen inside the sandbox, e.g.
+            thread_id: thread ID.
+            virtual_path: sandbox 안에서 보이는 가상 경로. 예:
                           ``/mnt/user-data/outputs/report.pdf``.
-                          Leading slashes are stripped before matching.
-            user_id: Optional user ID for user-scoped path resolution.
+                          비교 전에 앞쪽 슬래시는 제거한다.
+            user_id: user 단위 경로 해석을 위한 user ID(선택).
 
         Returns:
-            The resolved absolute host filesystem path.
+            변환된 절대 host 파일시스템 경로.
 
         Raises:
-            ValueError: If the path does not start with the expected virtual
-                        prefix or a path-traversal attempt is detected.
+            ValueError: 경로가 예상한 가상 prefix로 시작하지 않거나 path traversal 시도가
+                        감지된 경우.
         """
         stripped = virtual_path.lstrip("/")
         prefix = VIRTUAL_PATH_PREFIX.lstrip("/")
 
-        # Require an exact segment-boundary match to avoid prefix confusion
-        # (e.g. reject paths like "mnt/user-dataX/...").
+        # prefix 혼동을 막기 위해 경로 세그먼트 경계까지 정확히 일치해야 한다
+        # (예: "mnt/user-dataX/..." 같은 경로는 거부한다).
         if stripped != prefix and not stripped.startswith(prefix + "/"):
             raise ValueError(f"Path must start with /{prefix}")
 
@@ -461,7 +453,7 @@ _paths: Paths | None = None
 
 
 def get_paths() -> Paths:
-    """Return the global Paths singleton (lazy-initialized)."""
+    """전역 Paths singleton을 반환한다(지연 초기화)."""
     global _paths
     if _paths is None:
         _paths = Paths()
@@ -469,10 +461,10 @@ def get_paths() -> Paths:
 
 
 def resolve_path(path: str) -> Path:
-    """Resolve *path* to an absolute ``Path``.
+    """*path*를 절대 ``Path``로 변환한다.
 
-    Relative paths are resolved relative to the application base directory.
-    Absolute paths are returned as-is (after normalisation).
+    상대 경로는 애플리케이션 base 디렉터리를 기준으로 해석한다. 절대 경로는 정규화만 거쳐
+    그대로 반환한다.
     """
     p = Path(path)
     if not p.is_absolute():

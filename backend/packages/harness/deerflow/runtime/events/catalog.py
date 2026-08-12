@@ -1,8 +1,7 @@
-"""Canonical names and categories for persisted run events.
+"""저장되는 run event의 표준 이름과 category.
 
-Producers import these definitions instead of repeating event-name/category
-pairs. The public JSON contract is checked against this catalog in backend
-tests, so either side changing without the other fails CI.
+producer는 event 이름/category 쌍을 반복해서 적는 대신 여기 정의를 import한다. backend
+테스트가 공개 JSON contract를 이 catalog와 대조하므로, 한쪽만 바뀌면 CI가 실패한다.
 """
 
 from __future__ import annotations

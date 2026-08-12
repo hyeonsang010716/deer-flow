@@ -1,6 +1,6 @@
-"""SQLAlchemy-backed feedback storage.
+"""SQLAlchemy 기반 feedback 저장소.
 
-Each method acquires its own short-lived session.
+각 메서드는 짧게 쓰고 버리는 자체 session을 얻는다.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class FeedbackRepository:
         d = row.to_dict()
         val = d.get("created_at")
         if isinstance(val, datetime):
-            # SQLite drops tzinfo on read; normalize via ``coerce_iso`` so output is always tz-aware.
+            # SQLite는 읽을 때 tzinfo를 버린다. 출력이 항상 tz-aware가 되도록 ``coerce_iso``로 정규화한다.
             d["created_at"] = coerce_iso(val)
         return d
 
@@ -39,7 +39,7 @@ class FeedbackRepository:
         message_id: str | None = None,
         comment: str | None = None,
     ) -> dict:
-        """Create a feedback record. rating must be +1 or -1."""
+        """feedback 레코드를 만든다. rating은 +1 또는 -1이어야 한다."""
         if rating not in (1, -1):
             raise ValueError(f"rating must be +1 or -1, got {rating}")
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.create")
@@ -133,7 +133,7 @@ class FeedbackRepository:
         user_id: str | None | _AutoSentinel = AUTO,
         comment: str | None = None,
     ) -> dict:
-        """Create or update feedback for (thread_id, run_id, user_id). rating must be +1 or -1."""
+        """(thread_id, run_id, user_id)에 대한 feedback을 만들거나 갱신한다. rating은 +1 또는 -1이어야 한다."""
         if rating not in (1, -1):
             raise ValueError(f"rating must be +1 or -1, got {rating}")
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.upsert")
@@ -171,7 +171,7 @@ class FeedbackRepository:
         run_id: str,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> bool:
-        """Delete the current user's feedback for a run. Returns True if a record was deleted."""
+        """현재 사용자의 run feedback을 삭제한다. 레코드를 삭제했으면 True를 반환한다."""
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.delete_by_run")
         async with self._sf() as session:
             stmt = select(FeedbackRow).where(
@@ -193,7 +193,7 @@ class FeedbackRepository:
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> dict[str, dict]:
-        """Return feedback grouped by run_id for a thread: {run_id: feedback_dict}."""
+        """thread의 feedback을 run_id별로 묶어 반환한다: {run_id: feedback_dict}."""
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_thread_grouped")
         stmt = select(FeedbackRow).where(FeedbackRow.thread_id == thread_id)
         if resolved_user_id is not None:
@@ -209,7 +209,7 @@ class FeedbackRepository:
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> dict[str, dict]:
-        """Return feedback for only the selected runs in one thread."""
+        """한 thread에서 선택된 run에 대한 feedback만 반환한다."""
         if not run_ids:
             return {}
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_run_ids")
@@ -224,7 +224,7 @@ class FeedbackRepository:
             return {row.run_id: self._row_to_dict(row) for row in result.scalars()}
 
     async def aggregate_by_run(self, thread_id: str, run_id: str) -> dict:
-        """Aggregate feedback stats for a run using database-side counting."""
+        """데이터베이스 쪽 집계로 run의 feedback 통계를 계산한다."""
         stmt = select(
             func.count().label("total"),
             func.coalesce(func.sum(case((FeedbackRow.rating == 1, 1), else_=0)), 0).label("positive"),

@@ -1,10 +1,9 @@
-"""Configuration for inbound webhook dedupe storage.
+"""inbound webhook dedupe 저장소 설정.
 
-Controls where the ChannelManager's inbound dedupe state lives. See issue #4120
-(cross-pod webhook dedupe). The default ``auto`` reuses the Postgres application
-database whenever database.backend='postgres', otherwise an in-process memory
-store. ``memory`` is per-pod and not shared across replicas; ``postgres`` shares
-state across pods.
+ChannelManager의 inbound dedupe state가 어디에 사는지를 결정한다. issue #4120(cross-pod
+webhook dedupe) 참고. 기본값 ``auto``는 database.backend='postgres'일 때 Postgres
+애플리케이션 DB를 재사용하고, 그 외에는 in-process memory store를 쓴다. ``memory``는 pod
+단위라 replica 간에 공유되지 않고, ``postgres``는 pod 간에 state를 공유한다.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ class DedupeStorageBackend(StrEnum):
 
 
 class DedupeStorageConfig(BaseModel):
-    """Where inbound webhook dedupe state lives."""
+    """inbound webhook dedupe state가 저장되는 위치."""
 
     backend: DedupeStorageBackend = Field(
         default=DedupeStorageBackend.AUTO,

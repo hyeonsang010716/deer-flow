@@ -1,13 +1,12 @@
-"""Pure-argument factory for DeerFlow agents.
+"""인자만으로 DeerFlow agent를 만드는 factory.
 
-``create_deerflow_agent`` accepts plain Python arguments — no YAML files, no
-global singletons.  It is the SDK-level entry point sitting between the raw
-``langchain.agents.create_agent`` primitive and the config-driven
-``make_lead_agent`` application factory.
+``create_deerflow_agent``는 평범한 Python 인자만 받는다. YAML 파일도, 전역 singleton도
+쓰지 않는다. 원시 ``langchain.agents.create_agent``와 config 기반 애플리케이션 factory인
+``make_lead_agent`` 사이에 있는 SDK 수준 진입점이다.
 
-Note: the factory assembly itself is config-free, but some injected runtime
-components (e.g. ``task_tool`` for subagent) may still read global config at
-invocation time.  Full config-free runtime is a Phase 2 goal.
+Note: factory 조립 자체는 config를 읽지 않지만, 주입되는 일부 runtime 컴포넌트(예: subagent용
+``task_tool``)는 호출 시점에 전역 config를 읽을 수 있다. 완전한 config-free runtime은
+Phase 2 목표다.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# TodoMiddleware prompts (minimal SDK version)
+# TodoMiddleware 프롬프트 (최소 SDK 버전)
 # ---------------------------------------------------------------------------
 
 _TODO_SYSTEM_PROMPT = """
@@ -57,7 +56,7 @@ _TODO_TOOL_DESCRIPTION = "Use this tool to create and manage a structured task l
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# 공개 API
 # ---------------------------------------------------------------------------
 
 
@@ -76,51 +75,49 @@ def create_deerflow_agent(
     checkpointer: BaseCheckpointSaver | None = None,
     name: str = "default",
 ) -> CompiledStateGraph:
-    """Create a DeerFlow agent from plain Python arguments.
+    """평범한 Python 인자만으로 DeerFlow agent를 만든다.
 
-    The factory assembly itself reads no config files.  Some injected runtime
-    components (e.g. ``task_tool``) may still depend on global config at
-    invocation time — see Phase 2 roadmap for full config-free runtime.
+    factory 조립 자체는 config 파일을 읽지 않는다. 주입되는 일부 runtime 컴포넌트(예:
+    ``task_tool``)는 호출 시점에 전역 config에 의존할 수 있다. 완전한 config-free runtime은
+    Phase 2 로드맵을 참고한다.
 
     Parameters
     ----------
     model:
-        Chat model instance.
+        chat model 인스턴스.
     tools:
-        User-provided tools.  Feature-injected tools are appended automatically.
+        사용자가 제공한 tool. feature가 주입하는 tool은 자동으로 덧붙는다.
     system_prompt:
-        System message.  ``None`` uses a minimal default.
+        system message. ``None``이면 최소한의 기본값을 쓴다.
     middleware:
-        **Full takeover** — if provided, this exact list is used.
-        Cannot be combined with *features* or *extra_middleware*.
+        **전체 대체** — 주면 이 리스트가 그대로 쓰인다.
+        *features*, *extra_middleware*와 함께 쓸 수 없다.
     features:
-        Declarative feature flags.  Cannot be combined with *middleware*.
+        선언적 feature 플래그. *middleware*와 함께 쓸 수 없다.
     extra_middleware:
-        Additional middlewares inserted into the auto-assembled chain via
-        ``@Next``/``@Prev`` positioning.  Cannot be used with *middleware*.
+        ``@Next``/``@Prev`` 위치 지정으로 자동 조립된 chain에 끼워 넣는 추가 middleware.
+        *middleware*와 함께 쓸 수 없다.
     plan_mode:
-        Enable TodoMiddleware for task tracking.
+        작업 추적용 TodoMiddleware를 활성화한다.
     state_schema:
-        LangGraph state type.  Defaults to ``ThreadState``.
+        LangGraph state 타입. 기본값은 ``ThreadState``다.
     checkpoint_channel_mode:
-        Checkpoint representation for accumulating channels.  Defaults to the
-        full-state compatibility schema.  ``"delta"`` requires the guarded
-        persistence paths (mode markers + compatibility gate) and is therefore
-        rejected when combined with *checkpointer* in this factory; without a
-        checkpointer the graph is ephemeral and delta is allowed.
+        누적 channel의 checkpoint 표현 방식. 기본값은 full-state 호환 schema다.
+        ``"delta"``는 보호된 persistence 경로(mode marker + 호환성 gate)를 요구하므로 이
+        factory에서 *checkpointer*와 함께 주면 거부한다. checkpointer가 없으면 graph는
+        일시적이므로 delta를 허용한다.
     checkpoint_snapshot_frequency:
-        DeltaChannel snapshot cadence for ``"delta"`` mode.  ``None`` uses the
-        process-frozen value, falling back to the config default.  Ignored in
-        ``"full"`` mode.
+        ``"delta"`` 모드의 DeltaChannel snapshot 주기. ``None``이면 프로세스에 고정된 값을
+        쓰고, 없으면 config 기본값으로 넘어간다. ``"full"`` 모드에서는 무시된다.
     checkpointer:
-        Optional persistence backend.
+        선택적 persistence backend.
     name:
-        Agent name (passed to middleware that cares, e.g. ``MemoryMiddleware``).
+        agent 이름. 이를 사용하는 middleware(예: ``MemoryMiddleware``)에 전달된다.
 
     Raises
     ------
     ValueError
-        If both *middleware* and *features*/*extra_middleware* are provided.
+        *middleware*와 *features*/*extra_middleware*를 함께 준 경우.
     """
     if middleware is not None and features is not None:
         raise ValueError("Cannot specify both 'middleware' and 'features'.  Use one or the other.")
@@ -152,7 +149,7 @@ def create_deerflow_agent(
             plan_mode=plan_mode,
             extra_middleware=extra_middleware or [],
         )
-        # Deduplicate by tool name — user-provided tools take priority.
+        # tool 이름 기준으로 중복을 제거한다. 사용자가 준 tool이 우선이다.
         existing_names = {t.name for t in effective_tools}
         for t in extra_tools:
             if t.name not in existing_names:
@@ -177,7 +174,7 @@ def create_deerflow_agent(
 
 
 # ---------------------------------------------------------------------------
-# Internal: feature-driven middleware assembly
+# 내부: feature 기반 middleware 조립
 # ---------------------------------------------------------------------------
 
 
@@ -188,37 +185,39 @@ def _assemble_from_features(
     plan_mode: bool = False,
     extra_middleware: list[AgentMiddleware] | None = None,
 ) -> tuple[list[AgentMiddleware], list[BaseTool]]:
-    """Build an ordered middleware chain + extra tools from *feat*.
+    """*feat*으로부터 순서가 정해진 middleware chain과 추가 tool을 만든다.
 
-    Middleware order matches ``make_lead_agent`` (14 middlewares):
+    middleware 순서는 ``make_lead_agent``와 같다(middleware 14개).
 
-      0-2. Sandbox infrastructure (ThreadData → Uploads → Sandbox)
-      3.   DanglingToolCallMiddleware (always)
-      4.   GuardrailMiddleware (guardrail feature)
-      5.   ToolErrorHandlingMiddleware (always)
-      6.   SummarizationMiddleware (summarization feature)
-      7.   TodoMiddleware (plan_mode parameter)
-      8.   TitleMiddleware (auto_title feature)
-      9.   MemoryMiddleware (memory feature)
-      10.  ViewImageMiddleware (vision feature)
-      11.  SubagentLimitMiddleware (subagent feature)
-      12.  LoopDetectionMiddleware (loop_detection feature)
-      13.  ClarificationMiddleware (always last)
+      0-2. sandbox 인프라 (ThreadData → Uploads → Sandbox)
+      3.   DanglingToolCallMiddleware (항상)
+      4.   GuardrailMiddleware (guardrail 기능)
+      5.   ToolErrorHandlingMiddleware (항상)
+      6.   SummarizationMiddleware (summarization 기능)
+      7.   TodoMiddleware (plan_mode 인자)
+      8.   TitleMiddleware (auto_title 기능)
+      9.   MemoryMiddleware (memory 기능)
+      10.  ViewImageMiddleware (vision 기능)
+      11.  SubagentLimitMiddleware (subagent 기능)
+      12.  LoopDetectionMiddleware (loop_detection 기능)
+      13.  ClarificationMiddleware (항상 마지막)
 
-    Two-phase ordering:
-      1. Built-in chain — fixed sequential append.
-      2. Extra middleware — inserted via @Next/@Prev.
+    순서 결정은 두 단계로 나뉜다.
 
-    Each feature value is handled as:
-      - ``False``: skip
-      - ``True``: create the built-in default middleware (not available for
-        ``summarization`` and ``guardrail`` — these require a custom instance)
-      - ``AgentMiddleware`` instance: use directly (custom replacement)
+      1. 내장 chain은 고정된 순서로 덧붙인다.
+      2. 추가 middleware는 @Next/@Prev로 끼워 넣는다.
+
+    각 feature 값은 다음과 같이 처리한다.
+
+      - ``False``: 건너뛴다.
+      - ``True``: 내장 기본 middleware를 만든다(``summarization``과 ``guardrail``은 불가.
+        이 둘은 직접 만든 인스턴스가 필요하다).
+      - ``AgentMiddleware`` 인스턴스: 그대로 사용한다(커스텀 대체).
     """
     chain: list[AgentMiddleware] = []
     extra_tools: list[BaseTool] = []
 
-    # --- [0-2] Sandbox infrastructure ---
+    # --- [0-2] sandbox 인프라 ---
     if feat.sandbox is not False:
         if isinstance(feat.sandbox, AgentMiddleware):
             chain.append(feat.sandbox)
@@ -231,7 +230,7 @@ def _assemble_from_features(
             chain.append(UploadsMiddleware())
             chain.append(SandboxMiddleware(lazy_init=True))
 
-    # --- [3] DanglingToolCall (always) ---
+    # --- [3] DanglingToolCall (항상) ---
     chain.append(DanglingToolCallMiddleware())
 
     # --- [4] Guardrail ---
@@ -241,7 +240,7 @@ def _assemble_from_features(
         else:
             raise ValueError("guardrail=True requires a custom AgentMiddleware instance (no built-in GuardrailMiddleware yet)")
 
-    # --- [5] ToolErrorHandling (always) ---
+    # --- [5] ToolErrorHandling (항상) ---
     chain.append(ToolErrorHandlingMiddleware())
 
     # --- [6] Summarization ---
@@ -342,15 +341,15 @@ def _assemble_from_features(
 
             chain.append(TokenBudgetMiddleware.from_config(TokenBudgetConfig()))
 
-    # --- [14] Clarification (always last among built-ins) ---
+    # --- [14] Clarification (내장 middleware 중 항상 마지막) ---
     chain.append(ClarificationMiddleware())
     extra_tools.append(ask_clarification_tool)
 
-    # --- Insert extra_middleware via @Next/@Prev ---
+    # --- @Next/@Prev로 extra_middleware를 끼워 넣는다 ---
     if extra_middleware:
         _insert_extra(chain, extra_middleware)
-        # Invariant: ClarificationMiddleware must always be last.
-        # @Next(ClarificationMiddleware) could push it off the tail.
+        # 불변식: ClarificationMiddleware는 항상 마지막이어야 한다.
+        # @Next(ClarificationMiddleware)가 이를 끝에서 밀어낼 수 있다.
         clar_idx = next(i for i, m in enumerate(chain) if isinstance(m, ClarificationMiddleware))
         if clar_idx != len(chain) - 1:
             chain.append(chain.pop(clar_idx))
@@ -359,19 +358,19 @@ def _assemble_from_features(
 
 
 # ---------------------------------------------------------------------------
-# Internal: extra middleware insertion with @Next/@Prev
+# 내부: @Next/@Prev를 사용한 추가 middleware 삽입
 # ---------------------------------------------------------------------------
 
 
 def _insert_extra(chain: list[AgentMiddleware], extras: list[AgentMiddleware]) -> None:
-    """Insert extra middlewares into *chain* using ``@Next``/``@Prev`` anchors.
+    """``@Next``/``@Prev`` anchor를 사용해 추가 middleware를 *chain*에 끼워 넣는다.
 
-    Algorithm:
-      1. Validate: no middleware has both @Next and @Prev.
-      2. Conflict detection: two extras targeting same anchor (same or opposite direction) → error.
-      3. Insert unanchored extras before ClarificationMiddleware.
-      4. Insert anchored extras iteratively (supports cross-external anchoring).
-      5. If an anchor cannot be resolved after all rounds → error.
+    알고리즘:
+      1. 검증: @Next와 @Prev를 동시에 가진 middleware는 없어야 한다.
+      2. 충돌 탐지: 두 추가 middleware가 같은 anchor를 가리키면(방향이 같든 반대든) 에러.
+      3. anchor 없는 항목은 ClarificationMiddleware 앞에 넣는다.
+      4. anchor 있는 항목은 반복적으로 넣는다(추가 middleware끼리의 anchor도 지원).
+      5. 모든 라운드를 돌아도 anchor를 찾지 못하면 에러.
     """
     next_targets: dict[type, type] = {}
     prev_targets: dict[type, type] = {}
@@ -403,13 +402,13 @@ def _insert_extra(chain: list[AgentMiddleware], extras: list[AgentMiddleware]) -
         else:
             unanchored.append(mw)
 
-    # Unanchored → before ClarificationMiddleware
+    # anchor 없는 항목은 ClarificationMiddleware 앞에 넣는다.
     clarification_idx = next(i for i, m in enumerate(chain) if isinstance(m, ClarificationMiddleware))
     for mw in unanchored:
         chain.insert(clarification_idx, mw)
         clarification_idx += 1
 
-    # Anchored → iterative insertion (supports external-to-external anchoring)
+    # anchor 있는 항목은 반복 삽입한다(외부 middleware끼리의 anchor도 지원).
     pending = list(anchored)
     max_rounds = len(pending) + 1
     for _ in range(max_rounds):

@@ -12,16 +12,15 @@ from langchain_openai import ChatOpenAI
 
 
 def _fix_messages(messages: list) -> list:
-    """Sanitize incoming messages for MindIE compatibility.
+    """MindIE 호환을 위해 들어오는 메시지를 정리한다.
 
-    MindIE's chat template may fail to parse LangChain's native tool_calls
-    or ToolMessage roles, resulting in 0-token generation errors. This function
-    flattens multi-modal list contents into strings and converts tool-related
-    messages into raw text with XML tags expected by the underlying model.
+    MindIE의 chat template은 LangChain의 네이티브 tool_calls나 ToolMessage role을 파싱하지 못해
+    0-token 생성 오류를 낼 수 있다. 이 함수는 multi-modal list 내용을 문자열로 펼치고, tool 관련
+    메시지를 바탕 모델이 기대하는 XML 태그가 붙은 raw 텍스트로 변환한다.
     """
     fixed = []
     for msg in messages:
-        # Flatten content if it's a list of blocks
+        # 내용이 block list면 펼친다
         if isinstance(msg.content, list):
             parts = []
             for block in msg.content:
@@ -33,7 +32,7 @@ def _fix_messages(messages: list) -> list:
         else:
             text = msg.content or ""
 
-        # Convert AIMessage with tool_calls to raw XML text format
+        # tool_calls가 있는 AIMessage를 raw XML 텍스트 형식으로 변환한다
         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", []):
             xml_parts = []
             for tool in msg.tool_calls:
@@ -43,18 +42,17 @@ def _fix_messages(messages: list) -> list:
             fixed.append(AIMessage(content=full_text.strip() or " "))
             continue
 
-        # Wrap tool execution results in XML tags and convert to HumanMessage.
-        # Escape the tool output so a result containing a literal "</tool_response>"
-        # (e.g. from read_file on an untrusted file, bash output, or an MCP tool the
-        # ToolResultSanitizationMiddleware allowlist does not cover) cannot close the
-        # framing early and inject trailing text into the turn — matching the escaping
-        # already applied to tool-call names/args above.
+        # tool 실행 결과를 XML 태그로 감싸 HumanMessage로 변환한다.
+        # tool 출력을 escape해서, "</tool_response>" 문자열이 그대로 들어 있는 결과(예: 신뢰할 수
+        # 없는 파일에 대한 read_file, bash 출력, ToolResultSanitizationMiddleware allowlist가
+        # 다루지 않는 MCP 도구)가 framing을 조기에 닫고 뒤에 텍스트를 주입하지 못하게 한다 —
+        # 위에서 tool-call 이름/인자에 이미 적용한 escape와 동일한 이유다.
         if isinstance(msg, ToolMessage):
             tool_result_text = f"<tool_response>\n{html.escape(text, quote=False)}\n</tool_response>"
             fixed.append(HumanMessage(content=tool_result_text))
             continue
 
-        # Fallback to prevent completely empty message content
+        # 메시지 내용이 완전히 비지 않도록 하는 fallback
         if not text.strip():
             text = " "
 
@@ -64,14 +62,14 @@ def _fix_messages(messages: list) -> list:
 
 
 def _parse_xml_tool_call_to_dict(content: str) -> tuple[str, list[dict]]:
-    """Parse XML-style tool calls from model output into LangChain dicts.
+    """모델 출력의 XML 형식 tool call을 LangChain dict로 파싱한다.
 
     Args:
-        content: The raw text output from the model.
+        content: 모델이 낸 raw 텍스트 출력.
 
     Returns:
-        A tuple containing the cleaned text (with XML blocks removed) and
-        a list of tool call dictionaries formatted for LangChain.
+        XML block을 제거한 정리된 텍스트와, LangChain 형식의 tool call dict list로 이루어진
+        tuple.
     """
     if not isinstance(content, str) or "<tool_call>" not in content:
         return content, []
@@ -88,9 +86,8 @@ def _parse_xml_tool_call_to_dict(content: str) -> tuple[str, list[dict]]:
             continue
         function_name = html.unescape(func_match.group(1).strip())
 
-        # Ignore nested tool blocks when extracting parameters for this call.
-        # Nested `<tool_call>` sections represent separate invocations and
-        # their `<parameter>` tags must not leak into the current call args.
+        # 이 호출의 파라미터를 뽑을 때 중첩된 tool block은 무시한다. 중첩된 `<tool_call>`
+        # 구간은 별개의 호출이므로 그 `<parameter>` 태그가 현재 호출 인자로 새면 안 된다.
         param_source_parts: list[str] = []
         nested_cursor = 0
         for nested_start, nested_end, _ in _iter_tool_call_blocks(inner_content):
@@ -105,8 +102,8 @@ def _parse_xml_tool_call_to_dict(content: str) -> tuple[str, list[dict]]:
             key = html.unescape(param_match.group(1).strip())
             raw_value = html.unescape(param_match.group(2).strip())
 
-            # Attempt to deserialize string values into native Python types
-            # to satisfy downstream Pydantic validation.
+            # 이후 Pydantic 검증을 통과하도록 문자열 값을 네이티브 Python 타입으로
+            # 역직렬화해 본다.
             parsed_value = raw_value
             if raw_value.startswith(("[", "{")) or raw_value in ("true", "false", "null") or raw_value.isdigit():
                 try:
@@ -126,7 +123,7 @@ def _parse_xml_tool_call_to_dict(content: str) -> tuple[str, list[dict]]:
 
 
 def _iter_tool_call_blocks(content: str) -> Iterator[tuple[int, int, str]]:
-    """Iterate `<tool_call>...</tool_call>` blocks and tolerate nesting."""
+    """`<tool_call>...</tool_call>` block을 순회하며 중첩도 허용한다."""
     token_pattern = re.compile(r"</?tool_call>")
     depth = 0
     block_start = -1
@@ -152,7 +149,7 @@ def _iter_tool_call_blocks(content: str) -> Iterator[tuple[int, int, str]]:
 
 
 def _decode_escaped_newlines_outside_fences(content: str) -> str:
-    """Decode literal `\\n` outside fenced code blocks."""
+    """fenced code block 바깥의 리터럴 `\\n`을 디코딩한다."""
     if "\\n" not in content:
         return content
 
@@ -165,18 +162,18 @@ def _decode_escaped_newlines_outside_fences(content: str) -> str:
 
 
 class MindIEChatModel(ChatOpenAI):
-    """Chat model adapter for MindIE engine.
+    """MindIE 엔진용 chat model adapter.
 
-    Addresses compatibility issues including:
-    - Flattening multimodal list contents to strings.
-    - Intercepting and parsing hardcoded XML tool calls into LangChain standard.
-    - Handling stream=True dropping choices when tools are present by falling back
-      to non-streaming generation and yielding simulated chunks.
-    - Fixing over-escaped newline characters from gateway responses.
+    다음 호환성 문제를 처리한다:
+    - multimodal list 내용을 문자열로 펼친다.
+    - 하드코딩된 XML tool call을 가로채 LangChain 표준으로 파싱한다.
+    - tool이 있을 때 stream=True가 choices를 누락하는 문제를 비streaming 생성으로 fallback한 뒤
+      가짜 chunk를 내보내 처리한다.
+    - gateway 응답의 과도하게 escape된 개행 문자를 고친다.
     """
 
     def __init__(self, **kwargs):
-        """Normalize timeout kwargs without creating long-lived clients."""
+        """오래 사는 client를 만들지 않고 timeout kwargs를 정규화한다."""
         connect_timeout = kwargs.pop("connect_timeout", 30.0)
         read_timeout = kwargs.pop("read_timeout", 900.0)
         write_timeout = kwargs.pop("write_timeout", 60.0)
@@ -194,12 +191,12 @@ class MindIEChatModel(ChatOpenAI):
         super().__init__(**kwargs)
 
     def _patch_result_with_tools(self, result: ChatResult) -> ChatResult:
-        """Apply post-generation fixes to the model result."""
+        """모델 결과에 생성 후 보정을 적용한다."""
         for gen in result.generations:
             msg = gen.message
 
             if isinstance(msg.content, str):
-                # Keep escaped newlines inside fenced code blocks untouched.
+                # fenced code block 안의 escape된 개행은 건드리지 않는다.
                 msg.content = _decode_escaped_newlines_outside_fences(msg.content)
 
                 if "<tool_call>" in msg.content:
@@ -221,7 +218,7 @@ class MindIEChatModel(ChatOpenAI):
         return self._patch_result_with_tools(result)
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-        # Route standard queries to native streaming for lower TTFB
+        # 일반 질의는 TTFB를 낮추기 위해 네이티브 streaming으로 보낸다
         if not kwargs.get("tools"):
             async for chunk in super()._astream(_fix_messages(messages), stop=stop, run_manager=run_manager, **kwargs):
                 if isinstance(chunk.message.content, str):
@@ -229,9 +226,9 @@ class MindIEChatModel(ChatOpenAI):
                 yield chunk
             return
 
-        # Fallback for tool-enabled requests:
-        # MindIE currently drops choices when stream=True and tools are present.
-        # We await the full generation and yield chunks to simulate streaming.
+        # tool을 쓰는 요청의 fallback:
+        # 현재 MindIE는 stream=True이면서 tool이 있으면 choices를 누락한다. 생성이 끝날 때까지
+        # 기다린 뒤 chunk로 쪼개 내보내 streaming을 흉내 낸다.
         result = await self._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
         for gen in result.generations:
@@ -239,7 +236,7 @@ class MindIEChatModel(ChatOpenAI):
             content = msg.content
             standard_tool_calls = getattr(msg, "tool_calls", [])
 
-            # Yield text in chunks to allow downstream UI/Markdown parsers to render smoothly
+            # 하위 UI/Markdown 파서가 매끄럽게 렌더링하도록 텍스트를 chunk 단위로 내보낸다
             if isinstance(content, str) and content:
                 chunk_size = 15
                 for i in range(0, len(content), chunk_size):

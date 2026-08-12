@@ -1,10 +1,9 @@
-"""SQLAlchemy declarative base with automatic to_dict support.
+"""to_dict를 자동 지원하는 SQLAlchemy declarative base.
 
-All DeerFlow ORM models inherit from this Base. It provides a generic
-to_dict() method via SQLAlchemy's inspect() so individual models don't
-need to write their own serialization logic.
+모든 DeerFlow ORM model이 이 Base를 상속한다. SQLAlchemy의 inspect()를 이용해 범용 to_dict()
+메서드를 제공하므로 각 model이 직렬화 로직을 따로 작성할 필요가 없다.
 
-LangGraph's checkpointer tables are NOT managed by this Base.
+LangGraph의 checkpointer 테이블은 이 Base가 관리하지 **않는다**.
 """
 
 from __future__ import annotations
@@ -17,33 +16,33 @@ from sqlalchemy.orm import DeclarativeBase
 
 @cache
 def _column_keys(cls: type) -> tuple[str, ...]:
-    """Mapped column keys for an ORM class, in mapper order.
+    """ORM class의 mapped column 키를 mapper 순서대로 반환한다.
 
-    ``to_dict``/``__repr__`` run per row (e.g. once per event when serializing a
-    messages page), so the SQLAlchemy mapper reflection is cached per class —
-    the mapping is fixed at class-definition time, so this never goes stale.
+    ``to_dict``/``__repr__``는 row마다 실행되므로(예: messages page 직렬화 시 event마다 한 번)
+    SQLAlchemy mapper reflection 결과를 class 단위로 캐싱한다. 매핑은 class 정의 시점에 확정되므로
+    이 캐시는 절대 낡지 않는다.
     """
     return tuple(c.key for c in sa_inspect(cls).mapper.column_attrs)
 
 
 class Base(DeclarativeBase):
-    """Base class for all DeerFlow ORM models.
+    """모든 DeerFlow ORM model의 기반 class.
 
-    Provides:
-    - Automatic to_dict() via SQLAlchemy column inspection.
-    - Standard __repr__() showing all column values.
+    제공하는 것:
+    - SQLAlchemy column inspection을 이용한 자동 to_dict().
+    - 모든 column 값을 보여주는 표준 __repr__().
     """
 
     def to_dict(self, *, exclude: set[str] | None = None) -> dict:
-        """Convert ORM instance to plain dict.
+        """ORM 인스턴스를 평범한 dict로 변환한다.
 
-        Uses cached mapped-column keys (see :func:`_column_keys`).
+        캐싱된 mapped column 키를 사용한다(:func:`_column_keys` 참고).
 
         Args:
-            exclude: Optional set of column keys to omit.
+            exclude: 제외할 column 키 집합(선택).
 
         Returns:
-            Dict of {column_key: value} for all mapped columns.
+            모든 mapped column에 대한 {column_key: value} dict.
         """
         keys = _column_keys(type(self))
         if exclude:

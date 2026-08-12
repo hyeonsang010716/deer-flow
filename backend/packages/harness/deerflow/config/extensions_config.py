@@ -1,4 +1,4 @@
-"""Unified extensions configuration for MCP servers and skills."""
+"""MCP server와 skill을 함께 다루는 통합 extensions 설정."""
 
 import json
 import logging
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_mcp_transport_alias(data: Any) -> Any:
-    """Promote MCP-spec ``transport`` to ``type`` when ``type`` is absent."""
+    """``type``이 없으면 MCP 스펙의 ``transport``를 ``type``으로 승격한다."""
     if isinstance(data, dict):
         transport = data.get("transport")
         if transport and not data.get("type"):
@@ -27,7 +27,7 @@ def normalize_mcp_transport_alias(data: Any) -> Any:
 
 
 class McpRoutingConfig(BaseModel):
-    """Soft routing hints for MCP tool preference."""
+    """MCP 도구 선호도를 나타내는 soft routing 힌트."""
 
     mode: Literal["off", "prefer"] = Field(
         default="off",
@@ -56,14 +56,14 @@ class McpRoutingConfig(BaseModel):
 
 
 class McpToolOverride(BaseModel):
-    """Per-tool MCP configuration overrides."""
+    """도구 단위 MCP 설정 override."""
 
     routing: McpRoutingConfig = Field(default_factory=McpRoutingConfig)
     model_config = ConfigDict(extra="allow")
 
 
 class McpOAuthConfig(BaseModel):
-    """OAuth configuration for an MCP server (HTTP/SSE transports)."""
+    """MCP server의 OAuth 설정(HTTP/SSE transport 전용)."""
 
     enabled: bool = Field(default=True, description="Whether OAuth token injection is enabled")
     token_url: str = Field(description="OAuth token endpoint URL")
@@ -86,7 +86,7 @@ class McpOAuthConfig(BaseModel):
 
 
 class McpServerConfig(BaseModel):
-    """Configuration for a single MCP server."""
+    """MCP server 하나에 대한 설정."""
 
     enabled: bool = Field(default=True, description="Whether this MCP server is enabled")
     type: str = Field(default="stdio", description="Transport type: 'stdio', 'sse', or 'http'")
@@ -120,20 +120,19 @@ class McpServerConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _accept_transport_alias(cls, data: Any) -> Any:
-        """Accept the MCP-spec ``transport`` field as an alias for ``type``.
+        """MCP 스펙의 ``transport`` 필드를 ``type``의 alias로 받아들인다.
 
-        The official MCP configuration schema uses ``transport`` to indicate
-        the transport mechanism (``stdio``/``sse``/``http``). Earlier versions
-        of this project only honored ``type``, which caused remote SSE/HTTP
-        servers configured with just ``transport`` to be incorrectly treated as
-        ``stdio`` (the default). This validator normalizes the two so either
-        spelling works, with ``type`` taking precedence when both are provided.
+        공식 MCP 설정 스키마는 transport 방식(``stdio``/``sse``/``http``)을
+        ``transport``로 표기한다. 예전 버전은 ``type``만 인식해서 ``transport``만
+        지정한 원격 SSE/HTTP server가 기본값인 ``stdio``로 잘못 처리됐다.
+        이 validator가 둘을 정규화해 어느 표기든 동작하게 하며, 둘 다 있으면
+        ``type``이 우선한다.
         """
         return normalize_mcp_transport_alias(data)
 
 
 def resolve_effective_mcp_routing(server_config: McpServerConfig | None, original_tool_name: str) -> dict[str, Any]:
-    """Merge server-level routing with per-tool overrides for one MCP tool."""
+    """MCP 도구 하나에 대해 server 단위 routing과 도구 단위 override를 병합한다."""
     if server_config is None:
         return McpRoutingConfig().model_dump(mode="json")
 
@@ -145,13 +144,13 @@ def resolve_effective_mcp_routing(server_config: McpServerConfig | None, origina
 
 
 class SkillStateConfig(BaseModel):
-    """Configuration for a single skill's state."""
+    """skill 하나의 상태 설정."""
 
     enabled: bool = Field(default=True, description="Whether this skill is enabled")
 
 
 class ExtensionsConfig(BaseModel):
-    """Unified configuration for MCP servers and skills."""
+    """MCP server와 skill을 함께 다루는 통합 설정."""
 
     middlewares: list[str] = Field(
         default_factory=list,
@@ -169,54 +168,42 @@ class ExtensionsConfig(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     def to_file_dict(self) -> dict[str, Any]:
-        """Serialize in the public extensions_config.json shape."""
+        """공개 extensions_config.json 형태로 직렬화한다."""
         return self.model_dump(by_alias=True)
 
     @classmethod
     def resolve_config_path(cls, config_path: str | None = None) -> Path | None:
-        """Resolve the extensions config file path.
+        """extensions 설정 파일 경로를 결정한다.
 
-        Priority:
-        1. If provided `config_path` argument, use it.
-        2. If provided `DEER_FLOW_EXTENSIONS_CONFIG_PATH` environment variable, use it.
-        3. Otherwise, search the caller project root for `extensions_config.json`, then `mcp_config.json`.
-        4. For backward compatibility, also search legacy backend/repository-root defaults.
-        5. If not found via search, return None (extensions are optional).
+        우선순위:
+        1. `config_path` 인자가 있으면 그것을 쓴다.
+        2. `DEER_FLOW_EXTENSIONS_CONFIG_PATH` 환경변수가 있으면 그것을 쓴다.
+        3. 없으면 호출자 프로젝트 루트에서 `extensions_config.json`, 그 다음 `mcp_config.json`을 찾는다.
+        4. 하위 호환을 위해 legacy backend/저장소 루트 기본 위치도 찾는다.
+        5. 그래도 못 찾으면 None을 반환한다(extensions는 선택 사항).
 
         Args:
-            config_path: Optional path to extensions config file.
-
-        Resolution order:
-            1. If provided `config_path` argument, use it.
-            2. If provided `DEER_FLOW_EXTENSIONS_CONFIG_PATH` environment variable, use it.
-            3. Otherwise, search the caller project root for
-               `extensions_config.json`, then legacy `mcp_config.json`.
-            4. Finally, search backend/repository-root defaults for monorepo compatibility.
+            config_path: extensions 설정 파일 경로(선택).
 
         Returns:
-            Path to the extensions config file if found via the resolution
-            order above.
+            위 순서로 찾은 extensions 설정 파일 경로.
 
-            An explicit `config_path` argument or a set
-            `DEER_FLOW_EXTENSIONS_CONFIG_PATH` is an operator assertion that
-            one particular file must be used, so a missing file in either of
-            those two modes raises ``FileNotFoundError`` (see Raises below)
-            instead of degrading to "no config" — a bad Docker mount, typo,
-            or deleted production config should surface as a loud, actionable
-            error rather than silently starting with every MCP server and
-            skill absent.
+            명시적 `config_path` 인자나 설정된 `DEER_FLOW_EXTENSIONS_CONFIG_PATH`는
+            "이 파일을 반드시 쓰라"는 운영자의 단언이다. 따라서 두 모드에서 파일이
+            없으면 "설정 없음"으로 격하하지 않고 ``FileNotFoundError``를 던진다
+            (아래 Raises 참고). 잘못된 Docker mount, 오타, 삭제된 운영 설정은 모든
+            MCP server와 skill이 사라진 채 조용히 기동하는 대신 눈에 띄는 오류로
+            드러나야 한다.
 
-            Only the fallback *search* mode (no explicit argument and no env
-            var set) returns ``None`` when nothing is found: that case means
-            extensions were never configured in the first place, which is the
-            legitimate "extensions are optional" case some callers (e.g. the
-            MCP tools-cache staleness check in `deerflow.mcp.cache`) rely on
-            as a clean, expected signal.
+            fallback *탐색* 모드(인자도 환경변수도 없는 경우)만 아무것도 못 찾았을 때
+            ``None``을 반환한다. 이 경우는 애초에 extensions를 설정한 적이 없다는
+            뜻이고, 일부 호출자(예: `deerflow.mcp.cache`의 MCP tools-cache staleness
+            검사)가 정상적인 신호로 의존하는 "extensions는 선택 사항" 케이스다.
 
         Raises:
-            FileNotFoundError: If `config_path` is given, or
-                `DEER_FLOW_EXTENSIONS_CONFIG_PATH` is set, and the resolved
-                path does not exist.
+            FileNotFoundError: `config_path`가 주어졌거나
+                `DEER_FLOW_EXTENSIONS_CONFIG_PATH`가 설정됐는데 해당 경로가
+                존재하지 않는 경우.
         """
         if config_path:
             path = Path(config_path)
@@ -244,26 +231,25 @@ class ExtensionsConfig(BaseModel):
                 if path.exists():
                     return path
 
-            # Extensions are optional: unlike the explicit config_path/env-var
-            # branches above, finding nothing here is the expected case, so
-            # return None rather than raising.
+            # extensions는 선택 사항이다. 위의 명시적 config_path/환경변수 분기와 달리
+            # 여기서 아무것도 못 찾는 것은 정상이므로 예외 대신 None을 반환한다.
             return None
 
     @classmethod
     def from_file(cls, config_path: str | None = None) -> "ExtensionsConfig":
-        """Load extensions config from JSON file.
+        """JSON 파일에서 extensions 설정을 읽는다.
 
-        See `resolve_config_path` for more details.
+        자세한 경로 결정 규칙은 `resolve_config_path`를 참고한다.
 
         Args:
-            config_path: Path to the extensions config file.
+            config_path: extensions 설정 파일 경로.
 
         Returns:
-            ExtensionsConfig: The loaded config, or empty config if file not found.
+            ExtensionsConfig: 읽어들인 설정. 파일이 없으면 빈 설정.
         """
         resolved_path = cls.resolve_config_path(config_path)
         if resolved_path is None:
-            # Return empty config if extensions config file is not found
+            # extensions 설정 파일이 없으면 빈 설정을 반환한다.
             return cls(mcp_servers={}, skills={})
 
         try:
@@ -278,24 +264,23 @@ class ExtensionsConfig(BaseModel):
 
     @classmethod
     def resolve_env_variables(cls, config: Any) -> Any:
-        """Recursively resolve environment variables in the config.
+        """설정 안의 환경변수를 재귀적으로 치환한다.
 
-        Environment variables are resolved using the `os.getenv` function. Example: $OPENAI_API_KEY
+        환경변수는 `os.getenv`로 해석한다. 예: $OPENAI_API_KEY
 
         Args:
-            config: The config to resolve environment variables in.
+            config: 환경변수를 치환할 설정.
 
         Returns:
-            The config with environment variables resolved.
+            환경변수가 치환된 설정.
         """
         if isinstance(config, str):
             if not config.startswith("$"):
                 return config
             env_value = os.getenv(config[1:])
             if env_value is None:
-                # Unresolved placeholder — store empty string so downstream
-                # consumers (e.g. MCP servers) don't receive the literal "$VAR"
-                # token as an actual environment value.
+                # 치환되지 않은 placeholder는 빈 문자열로 둔다. 그래야 downstream
+                # 소비자(예: MCP server)가 "$VAR" 리터럴을 실제 환경값으로 받지 않는다.
                 return ""
             return env_value
 
@@ -311,31 +296,30 @@ class ExtensionsConfig(BaseModel):
         return config
 
     def get_enabled_mcp_servers(self) -> dict[str, McpServerConfig]:
-        """Get only the enabled MCP servers.
+        """활성화된 MCP server만 반환한다.
 
         Returns:
-            Dictionary of enabled MCP servers.
+            활성화된 MCP server 딕셔너리.
         """
         return {name: config for name, config in self.mcp_servers.items() if config.enabled}
 
     def is_skill_enabled(self, skill_name: str, skill_category: str) -> bool:
-        """Check if a skill is enabled.
+        """skill이 활성화됐는지 확인한다.
 
         Args:
-            skill_name: Name of the skill
-            skill_category: Category of the skill (public, custom, or legacy)
+            skill_name: skill 이름.
+            skill_category: skill 카테고리(public, custom, legacy).
 
         Returns:
-            True if enabled, False otherwise.
+            활성화됐으면 True, 아니면 False.
 
         Note:
-            All skill categories (public, custom, legacy) respect the
-            extensions_config enabled/disabled state.  When no explicit
-            entry exists, skills default to enabled.
+            모든 카테고리(public, custom, legacy)가 extensions_config의
+            활성/비활성 상태를 따른다. 명시적 항목이 없으면 활성으로 본다.
         """
         skill_config = self.skills.get(skill_name)
         if skill_config is None:
-            # Default to enabled for all skill categories
+            # 모든 skill 카테고리는 기본값이 활성이다.
             return skill_category in ("public", "custom", "legacy", "integrations")
         return skill_config.enabled
 
@@ -344,7 +328,7 @@ _extensions_config: ExtensionsConfig | None = None
 
 
 def _fsync_directory_best_effort(directory: Path) -> None:
-    """Persist a directory entry update where the platform supports it."""
+    """플랫폼이 지원하는 경우 디렉터리 엔트리 변경을 디스크에 반영한다."""
     if os.name == "nt":
         return
 
@@ -365,7 +349,7 @@ def _fsync_directory_best_effort(directory: Path) -> None:
 
 
 def atomic_write_extensions_config(path: Path, data: dict[str, Any]) -> None:
-    """Write extensions config without exposing a truncated or partial file."""
+    """잘리거나 반쯤 쓰인 파일이 노출되지 않도록 extensions 설정을 기록한다."""
     path = Path(path)
     target_path = path.resolve(strict=False) if path.is_symlink() else path
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -408,13 +392,13 @@ def atomic_write_extensions_config(path: Path, data: dict[str, Any]) -> None:
 
 
 def get_extensions_config() -> ExtensionsConfig:
-    """Get the extensions config instance.
+    """extensions 설정 인스턴스를 반환한다.
 
-    Returns a cached singleton instance. Use `reload_extensions_config()` to reload
-    from file, or `reset_extensions_config()` to clear the cache.
+    캐시된 singleton을 돌려준다. 파일에서 다시 읽으려면 `reload_extensions_config()`를,
+    캐시를 비우려면 `reset_extensions_config()`를 쓴다.
 
     Returns:
-        The cached ExtensionsConfig instance.
+        캐시된 ExtensionsConfig 인스턴스.
     """
     global _extensions_config
     if _extensions_config is None:
@@ -422,37 +406,31 @@ def get_extensions_config() -> ExtensionsConfig:
     return _extensions_config
 
 
-#: Serializes read-modify-write cycles on ``extensions_config.json`` across every
-#: writer. Both the skills router (skill enable/disable) and the MCP router
-#: (server config updates) read this file, merge a change and write it back.
-#: While each RMW ran inline on the event loop they were implicitly serialized;
-#: once a writer offloads its RMW to a worker thread the loop is free to
-#: interleave the other writer inside the read->write window, and the second
-#: write silently drops the first one's change.
+#: 모든 writer의 ``extensions_config.json`` read-modify-write 사이클을 직렬화한다.
+#: skills router(skill 활성/비활성)와 MCP router(server 설정 갱신)가 모두 이 파일을
+#: 읽고 변경을 병합한 뒤 다시 쓴다. RMW가 event loop에서 inline으로 돌 때는 암묵적으로
+#: 직렬화됐지만, 한쪽이 RMW를 worker thread로 넘기는 순간 loop가 read->write 구간에
+#: 다른 writer를 끼워 넣을 수 있고, 나중 쓰기가 앞선 변경을 조용히 덮어쓴다.
 #:
-#: This is a ``threading.Lock`` rather than an ``asyncio.Lock``, and it must be
-#: acquired *inside* the worker that performs the RMW. An asyncio lock held
-#: around ``await asyncio.to_thread(...)`` protects only the awaiting task: if
-#: that task is cancelled the context manager releases immediately while the
-#: worker thread keeps writing, letting a second writer in. Owning the lock from
-#: the worker keeps it held until the write and reload actually finish. It also
-#: has no event-loop affinity, so writers running on different loops still
-#: exclude each other.
+#: ``asyncio.Lock``이 아니라 ``threading.Lock``이며, RMW를 수행하는 worker *안에서*
+#: 획득해야 한다. ``await asyncio.to_thread(...)``를 감싼 asyncio lock은 대기 중인
+#: task만 보호한다. 그 task가 취소되면 context manager는 즉시 lock을 풀지만 worker
+#: thread는 계속 쓰기 때문에 두 번째 writer가 들어온다. worker가 직접 소유하면 쓰기와
+#: reload가 실제로 끝날 때까지 유지된다. 또한 event loop 종속성이 없어 서로 다른 loop의
+#: writer끼리도 배제된다.
 extensions_config_write_lock = threading.Lock()
 
 
 def reload_extensions_config(config_path: str | None = None) -> ExtensionsConfig:
-    """Reload the extensions config from file and update the cached instance.
+    """extensions 설정을 파일에서 다시 읽고 캐시를 갱신한다.
 
-    This is useful when the config file has been modified and you want
-    to pick up the changes without restarting the application.
+    설정 파일이 바뀌었을 때 애플리케이션을 재시작하지 않고 변경을 반영하는 용도다.
 
     Args:
-        config_path: Optional path to extensions config file. If not provided,
-                     uses the default resolution strategy.
+        config_path: extensions 설정 파일 경로(선택). 없으면 기본 경로 결정 전략을 쓴다.
 
     Returns:
-        The newly loaded ExtensionsConfig instance.
+        새로 읽어들인 ExtensionsConfig 인스턴스.
     """
     global _extensions_config
     _extensions_config = ExtensionsConfig.from_file(config_path)
@@ -460,23 +438,22 @@ def reload_extensions_config(config_path: str | None = None) -> ExtensionsConfig
 
 
 def reset_extensions_config() -> None:
-    """Reset the cached extensions config instance.
+    """캐시된 extensions 설정 인스턴스를 비운다.
 
-    This clears the singleton cache, causing the next call to
-    `get_extensions_config()` to reload from file. Useful for testing
-    or when switching between different configurations.
+    singleton 캐시를 지워서 다음 `get_extensions_config()` 호출이 파일에서 다시 읽게
+    한다. 테스트나 설정 전환 시 유용하다.
     """
     global _extensions_config
     _extensions_config = None
 
 
 def set_extensions_config(config: ExtensionsConfig) -> None:
-    """Set a custom extensions config instance.
+    """extensions 설정 인스턴스를 직접 주입한다.
 
-    This allows injecting a custom or mock config for testing purposes.
+    테스트용 custom/mock 설정을 넣을 때 쓴다.
 
     Args:
-        config: The ExtensionsConfig instance to use.
+        config: 사용할 ExtensionsConfig 인스턴스.
     """
     global _extensions_config
     _extensions_config = config

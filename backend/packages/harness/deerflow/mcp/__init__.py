@@ -1,4 +1,4 @@
-"""MCP (Model Context Protocol) integration using langchain-mcp-adapters."""
+"""langchain-mcp-adapters를 이용한 MCP(Model Context Protocol) 통합."""
 
 from .cache import (
     get_cached_mcp_tools,

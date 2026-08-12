@@ -10,11 +10,10 @@ class NamedTool(Protocol):
     name: str
 
 
-# Framework built-ins that remain available even when an active skill declares
-# allowed-tools. They support controlled file/review/discovery workflows rather
-# than extending the reviewed/activated skill's own business-tool authority.
-# In particular, promotion through tool_search does not restore a tool removed
-# by SkillToolPolicyMiddleware, and describe_skill only returns catalog metadata.
+# 활성 skill이 allowed-tools를 선언해도 계속 쓸 수 있는 프레임워크 내장 tool. 리뷰/활성화된
+# skill 자신의 business tool 권한을 넓히는 것이 아니라, 통제된 파일/리뷰/탐색 워크플로를
+# 뒷받침한다. 특히 tool_search를 통한 promotion은 SkillToolPolicyMiddleware가 제거한 tool을
+# 되살리지 않으며, describe_skill은 catalog metadata만 반환한다.
 ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES = frozenset(
     {
         "describe_skill",
@@ -26,12 +25,11 @@ ALWAYS_AVAILABLE_BUILTIN_TOOL_NAMES = frozenset(
 
 
 def allowed_tool_names_for_skills(skills: list[Skill]) -> set[str] | None:
-    """Return the union of explicit skill allowed-tools declarations.
+    """명시적으로 선언된 skill allowed-tools의 합집합을 반환한다.
 
-    None means legacy allow-all behavior. It is returned only when no loaded
-    skill declares allowed-tools. Once any skill declares the field, legacy
-    skills without the field contribute no tools instead of disabling the
-    explicit restrictions from other skills.
+    None은 legacy의 전체 허용 동작을 뜻하며, 로드된 어떤 skill도 allowed-tools를 선언하지 않은
+    경우에만 반환된다. 어느 한 skill이라도 그 필드를 선언하면, 필드가 없는 legacy skill은 다른
+    skill의 명시적 제한을 무력화하는 대신 아무 tool도 기여하지 않는다.
     """
     if not skills:
         return None

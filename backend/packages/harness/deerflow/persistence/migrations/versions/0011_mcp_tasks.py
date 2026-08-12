@@ -1,4 +1,4 @@
-"""durable long-running MCP tasks.
+"""durable long-running MCP task 테이블을 추가한다.
 
 Revision ID: 0011_mcp_tasks
 Revises: 0010_run_cancel_request

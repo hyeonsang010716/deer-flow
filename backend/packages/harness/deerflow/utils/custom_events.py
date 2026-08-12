@@ -1,4 +1,4 @@
-"""Compatibility helpers for DeerFlow custom stream events."""
+"""DeerFlow custom stream event 호환 헬퍼."""
 
 from __future__ import annotations
 
@@ -23,11 +23,10 @@ def _event_name(payload: dict[str, Any]) -> str | None:
 
 
 def emit_custom_event(payload: dict[str, Any], *, writer: StreamWriter) -> None:
-    """Emit one event to LangGraph's custom stream and callback APIs.
+    """LangGraph의 custom stream과 callback API로 이벤트를 하나 내보낸다.
 
-    The writer remains the primary compatibility path. Callback dispatch is
-    best-effort so an optional ``astream_events`` consumer cannot break an
-    existing DeerFlow run.
+    writer가 여전히 주된 호환 경로다. callback dispatch는 best-effort이므로, 선택적인
+    ``astream_events`` consumer가 기존 DeerFlow run을 망가뜨릴 수 없다.
     """
 
     writer(payload)
@@ -43,7 +42,7 @@ def emit_custom_event(payload: dict[str, Any], *, writer: StreamWriter) -> None:
 
 
 async def aemit_custom_event(payload: dict[str, Any], *, writer: StreamWriter) -> None:
-    """Async counterpart to :func:`emit_custom_event`."""
+    """:func:`emit_custom_event`의 async 버전."""
 
     writer(payload)
     event_name = _event_name(payload)

@@ -1,4 +1,4 @@
-"""Shared URL safety checks for server-side web tools."""
+"""서버 측 웹 도구가 공유하는 URL 안전성 검사."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ _BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal"}
 
 
 def resolve_host_addresses(hostname: str) -> list[ipaddress._BaseAddress]:
-    """Resolve a hostname to all IP addresses for SSRF screening."""
+    """SSRF 검사를 위해 hostname을 모든 IP 주소로 resolve한다."""
     addresses: list[ipaddress._BaseAddress] = []
     try:
         infos = socket.getaddrinfo(hostname, None)
@@ -27,7 +27,7 @@ def resolve_host_addresses(hostname: str) -> list[ipaddress._BaseAddress]:
 
 
 def is_blocked_address(address: ipaddress._BaseAddress) -> bool:
-    """Return True for addresses web tools should not reach by default."""
+    """웹 도구가 기본적으로 접근하면 안 되는 주소면 True를 반환한다."""
     return address.is_private or address.is_loopback or address.is_link_local or address.is_reserved or address.is_multicast or address.is_unspecified
 
 
@@ -38,12 +38,11 @@ def validate_public_http_url(
     action: str = "fetch",
     resolver: Callable[[str], list[ipaddress._BaseAddress]] | None = None,
 ) -> str | None:
-    """Validate an http(s) URL before a server-side web tool fetches it.
+    """서버 측 웹 도구가 fetch하기 전에 http(s) URL을 검증한다.
 
-    Returns an ``"Error: ..."`` string when the URL should be rejected, or
-    ``None`` when the caller may proceed.  The check is intentionally conservative
-    for self-hosted fetch/render services because those services run inside the
-    deployment network and can otherwise reach cloud metadata or private hosts.
+    거부해야 할 URL이면 ``"Error: ..."`` 문자열을, 진행해도 되면 ``None``을 반환한다.
+    self-hosted fetch/render 서비스에 대해 의도적으로 보수적으로 판단한다. 이런 서비스는
+    배포 네트워크 안에서 돌기 때문에 그대로 두면 클라우드 metadata나 사설 호스트에 닿을 수 있다.
     """
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:

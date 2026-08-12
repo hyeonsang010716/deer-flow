@@ -1,4 +1,4 @@
-"""Tool error handling middleware and shared runtime middleware builders."""
+"""도구 오류 처리 middleware와 공용 runtime middleware 빌더."""
 
 import logging
 import secrets
@@ -40,7 +40,7 @@ _RECOVERY_HINT = "Continue with available context, or choose an alternative tool
 
 
 def _stamp_task_exception_status(message: ToolMessage, *, tool_name: str, error: str) -> ToolMessage:
-    """Stamp failed metadata on task exception wrappers produced here."""
+    """여기서 만든 task 예외 wrapper에 failed 메타데이터를 찍는다."""
     if tool_name != _TASK_TOOL_NAME:
         return message
     content, metadata_error = format_subagent_result_message("failed", error=error)
@@ -54,7 +54,7 @@ def _stamp_task_exception_status(message: ToolMessage, *, tool_name: str, error:
 
 
 class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
-    """Convert tool exceptions into error ToolMessages so the run can continue."""
+    """도구 예외를 error ToolMessage로 변환해 run이 계속 진행되게 한다."""
 
     def __init__(self, *, app_config: AppConfig | None = None) -> None:
         super().__init__()
@@ -80,9 +80,8 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             name=tool_name,
             status="error",
         )
-        # This middleware is the producer for exception wrappers, so task
-        # failures raised before task_tool can build its own Command still
-        # carry the same structured metadata.
+        # 예외 wrapper는 이 middleware가 생산자다. 그래서 task_tool이 자체 Command를
+        # 만들기 전에 발생한 task 실패도 동일한 구조화 메타데이터를 갖는다.
         structured_error = f"{exc.__class__.__name__}: {detail}"
         message = _stamp_task_exception_status(message, tool_name=tool_name, error=structured_error)
         return stamp_exception_meta(message, structured_error)
@@ -113,7 +112,7 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         return message
 
     def _maybe_stamp(self, result: ToolMessage | Command, request: ToolCallRequest) -> ToolMessage | Command:
-        """Apply producer-bound metadata for tool results that need it."""
+        """생산자가 붙여야 하는 메타데이터를 해당 도구 결과에 적용한다."""
         if not isinstance(result, ToolMessage):
             return result
         tool_name = str(request.tool_call.get("name") or "")
@@ -128,7 +127,7 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         try:
             result = handler(request)
         except GraphBubbleUp:
-            # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+            # LangGraph 제어 흐름 시그널(interrupt/pause/resume)은 그대로 전파한다.
             raise
         except Exception as exc:
             logger.exception("Tool execution failed (sync): name=%s id=%s", request.tool_call.get("name"), request.tool_call.get("id"))
@@ -144,7 +143,7 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         try:
             result = await handler(request)
         except GraphBubbleUp:
-            # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+            # LangGraph 제어 흐름 시그널(interrupt/pause/resume)은 그대로 전파한다.
             raise
         except Exception as exc:
             logger.exception("Tool execution failed (async): name=%s id=%s", request.tool_call.get("name"), request.tool_call.get("id"))
@@ -161,7 +160,7 @@ def _build_runtime_middlewares(
     authorization_provider=None,
     authorization_infrastructure_tool_names: frozenset[str] = frozenset(),
 ) -> list[AgentMiddleware]:
-    """Build shared base middlewares for agent execution."""
+    """에이전트 실행에 공통으로 쓰이는 base middleware를 구성한다."""
     from deerflow.agents.middlewares.input_sanitization_middleware import InputSanitizationMiddleware
     from deerflow.agents.middlewares.llm_error_handling_middleware import LLMErrorHandlingMiddleware
     from deerflow.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
@@ -169,22 +168,20 @@ def _build_runtime_middlewares(
     from deerflow.agents.middlewares.tool_result_sanitization_middleware import ToolResultSanitizationMiddleware
     from deerflow.sandbox.middleware import SandboxMiddleware
 
-    # Layer 1 — outermost wrap_model_call wrappers (listed outer→inner).
-    # InputSanitizationMiddleware is first so it becomes the outermost
-    # wrapper — sanitised messages are what every inner middleware sees.
-    # ToolResultSanitizationMiddleware mirrors that guardrail for the other
-    # untrusted-content entry point: remote tool results (web_fetch /
-    # web_search) get the same framework/injection-tag neutralization. It sits
-    # inner of ToolOutputBudgetMiddleware (listed after it) so it neutralizes
-    # the raw tool output first; the budget wrapper then truncates the already
-    # neutralized text.
+    # Layer 1 — 최외곽 wrap_model_call wrapper(바깥→안쪽 순서로 나열).
+    # InputSanitizationMiddleware를 맨 앞에 둬서 최외곽 wrapper가 되게 한다.
+    # 안쪽 middleware는 모두 sanitize된 메시지만 본다.
+    # ToolResultSanitizationMiddleware는 신뢰할 수 없는 콘텐츠의 다른 유입 지점,
+    # 즉 원격 도구 결과(web_fetch / web_search)에 같은 framework/injection 태그
+    # 무력화를 적용한다. ToolOutputBudgetMiddleware보다 안쪽(뒤에 나열)이라
+    # 원본 도구 출력을 먼저 무력화하고, budget wrapper가 무력화된 텍스트를 자른다.
     outer_wrappers: list[AgentMiddleware] = [
         InputSanitizationMiddleware(),
         ToolOutputBudgetMiddleware.from_app_config(app_config),
         ToolResultSanitizationMiddleware(),
     ]
 
-    # Layer 2 — before_agent hooks that read/annotate thread-scoped data.
+    # Layer 2 — thread 범위 데이터를 읽거나 덧붙이는 before_agent hook.
     thread_hooks: list[AgentMiddleware] = [
         ThreadDataMiddleware(lazy_init=lazy_init),
     ]
@@ -194,7 +191,7 @@ def _build_runtime_middlewares(
         thread_hooks.append(UploadsMiddleware())
     thread_hooks.append(SandboxMiddleware(lazy_init=lazy_init))
 
-    # Layer 3 — post-processing append-only middlewares.
+    # Layer 3 — 뒤에 덧붙이기만 하는 후처리 middleware.
     tail: list[AgentMiddleware] = []
     if include_dangling_tool_call_patch:
         from deerflow.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
@@ -202,11 +199,10 @@ def _build_runtime_middlewares(
         tail.append(DanglingToolCallMiddleware())
     tail.append(LLMErrorHandlingMiddleware(app_config=app_config))
 
-    # Authorization uses the existing GuardrailMiddleware so execution-time
-    # deny, audit, and fail-closed handling stay in one proven implementation.
-    # It is appended before an explicit guardrail provider, making authorization
-    # the outer guard and avoiding an unnecessary external policy call for an
-    # already-denied tool.
+    # Authorization은 기존 GuardrailMiddleware를 재사용한다. 실행 시점 deny, audit,
+    # fail-closed 처리를 검증된 구현 한 곳에 모아 두기 위해서다.
+    # 명시적 guardrail provider보다 앞에 붙이므로 authorization이 바깥쪽 guard가 되고,
+    # 이미 거부된 도구에 대해 불필요한 외부 정책 호출을 하지 않는다.
     authorization_config = app_config.authorization
     if authorization_config.enabled is True:
         if authorization_provider is None:
@@ -228,7 +224,7 @@ def _build_runtime_middlewares(
                 )
             )
 
-    # Explicit guardrail middleware remains independently active when configured.
+    # 명시적 guardrail middleware는 설정되어 있으면 독립적으로 계속 동작한다.
     guardrails_config = app_config.guardrails
     if guardrails_config.enabled and guardrails_config.provider:
         import inspect
@@ -238,9 +234,9 @@ def _build_runtime_middlewares(
 
         provider_cls = resolve_variable(guardrails_config.provider.use)
         provider_kwargs = dict(guardrails_config.provider.config) if guardrails_config.provider.config else {}
-        # Pass framework hint if the provider accepts it (e.g. for config discovery).
-        # Built-in providers like AllowlistProvider don't need it, so only inject
-        # when the constructor accepts 'framework' or '**kwargs'.
+        # provider가 받아들이면 framework 힌트를 넘긴다(예: config 탐색 용도).
+        # AllowlistProvider 같은 내장 provider는 필요 없으므로 생성자가 'framework' 또는
+        # '**kwargs'를 받을 때만 주입한다.
         if "framework" not in provider_kwargs:
             try:
                 sig = inspect.signature(provider_cls.__init__)
@@ -255,20 +251,21 @@ def _build_runtime_middlewares(
 
     tail.append(SandboxAuditMiddleware())
 
-    # ReadBeforeWriteMiddleware is the outermost write gate: it blocks writes to files
-    # the model hasn't read in their current version.  It must sit outside ToolProgress
-    # and ToolErrorHandling so that a blocked write returns immediately without consuming
-    # a ToolProgress slot.  The middleware stamps deerflow_tool_meta on the blocked
-    # ToolMessage itself so downstream callers receive a well-formed result.
+    # ReadBeforeWriteMiddleware는 최외곽 쓰기 gate다. 모델이 현재 버전을 읽지 않은
+    # 파일에 대한 쓰기를 막는다. ToolProgress와 ToolErrorHandling보다 바깥에 있어야
+    # 차단된 쓰기가 ToolProgress 슬롯을 소모하지 않고 즉시 반환된다. 차단된
+    # ToolMessage에 직접 deerflow_tool_meta를 찍어 하위 호출자가 형식이 온전한
+    # 결과를 받게 한다.
     if app_config.read_before_write.enabled:
         from deerflow.agents.middlewares.read_before_write_middleware import ReadBeforeWriteMiddleware
 
         tail.append(ReadBeforeWriteMiddleware())
 
-    # ToolProgressMiddleware must be outer (lower index) so its wrap_tool_call handler
-    # chain includes ToolErrorHandlingMiddleware (inner), which stamps deerflow_tool_meta
-    # on every result before ToolProgressMiddleware reads it in _update_state_from_result.
-    # Framework rule: first in list = outermost (types.py: "compose with first in list as outermost layer").
+    # ToolProgressMiddleware는 바깥쪽(더 앞 index)이어야 한다. 그래야 wrap_tool_call
+    # handler 체인에 안쪽의 ToolErrorHandlingMiddleware가 포함되고, 이쪽이 모든 결과에
+    # deerflow_tool_meta를 찍은 뒤 ToolProgressMiddleware가 _update_state_from_result에서
+    # 그것을 읽는다.
+    # 프레임워크 규칙: 리스트의 첫 항목이 최외곽이다(types.py: "compose with first in list as outermost layer").
     tool_progress_config = app_config.tool_progress
     if tool_progress_config.enabled:
         from deerflow.agents.middlewares.tool_progress_middleware import ToolProgressMiddleware
@@ -279,10 +276,9 @@ def _build_runtime_middlewares(
 
     middlewares = [*outer_wrappers, *thread_hooks, *tail]
 
-    # Ordering invariants are declared in deerflow.extensions.ordering and
-    # validated once at the end of the composing builder, after extension
-    # contributions are merged in — otherwise a contribution could silently
-    # reverse an invariant this builder had already checked.
+    # 순서 불변식은 deerflow.extensions.ordering에 선언되어 있고, extension 기여분이
+    # 병합된 뒤 조립 빌더 끝에서 한 번 검증된다. 그러지 않으면 어떤 기여분이 이 빌더가
+    # 이미 확인한 불변식을 조용히 뒤집을 수 있다.
     return middlewares
 
 
@@ -293,7 +289,7 @@ def build_lead_runtime_middlewares(
     authorization_provider=None,
     deferred_setup: "DeferredToolSetup | None" = None,
 ) -> list[AgentMiddleware]:
-    """Middlewares shared by lead agent runtime before lead-only middlewares."""
+    """lead 전용 middleware 앞에 오는, lead agent runtime 공용 middleware."""
     return _build_runtime_middlewares(
         app_config=app_config,
         include_uploads=True,
@@ -317,7 +313,7 @@ def build_subagent_runtime_middlewares(
     authorization_provider=None,
     extensions=None,
 ) -> list[AgentMiddleware]:
-    """Middlewares shared by subagent runtime before subagent-only middlewares."""
+    """subagent 전용 middleware 앞에 오는, subagent runtime 공용 middleware."""
     if app_config is None:
         from deerflow.config import get_app_config
 
@@ -332,10 +328,10 @@ def build_subagent_runtime_middlewares(
         authorization_infrastructure_tool_names=(frozenset({deferred_setup.tool_search_tool.name}) if authorization_provider is not None and deferred_setup is not None and deferred_setup.tool_search_tool is not None else frozenset()),
     )
 
-    # Enabled/configured skills are discoverable metadata, not automatically
-    # active authority. Mirror the lead agent's activation + policy pair so a
-    # subagent keeps its ordinary tool set until a slash command or a completed
-    # SKILL.md read activates the corresponding allowed-tools declaration.
+    # 활성화/설정된 skill은 탐색용 메타데이터일 뿐 자동으로 부여되는 권한이 아니다.
+    # lead agent의 activation + policy 쌍을 그대로 두어, slash 명령이나 SKILL.md 읽기
+    # 완료로 해당 allowed-tools 선언이 활성화되기 전까지 subagent가 평소 도구 집합을
+    # 유지하게 한다.
     from deerflow.agents.middlewares.skill_activation_middleware import SkillActivationMiddleware
     from deerflow.agents.middlewares.skill_tool_policy_middleware import SkillToolPolicyMiddleware
 
@@ -369,11 +365,10 @@ def build_subagent_runtime_middlewares(
     if mcp_routing_middleware is not None:
         middlewares.append(mcp_routing_middleware)
 
-    # Hide deferred (MCP) tool schemas from the subagent's model binding until
-    # tool_search promotes them. This is the same wiring the lead agent gets. The deferred
-    # set + catalog hash come from the build-time setup (assembled after
-    # tool-policy filtering); promotion is read from graph state. Empty/None
-    # setup (deferral disabled or no MCP tool survived) is a pure no-op.
+    # tool_search가 승격하기 전까지 deferred(MCP) 도구 스키마를 subagent 모델 바인딩에서
+    # 숨긴다. lead agent와 동일한 배선이다. deferred 집합과 catalog hash는 빌드 시점
+    # setup(도구 정책 필터링 이후 조립)에서 오고, 승격 여부는 graph state에서 읽는다.
+    # setup이 비어 있거나 None이면(deferral 비활성 또는 살아남은 MCP 도구 없음) 순수 no-op이다.
     if deferred_setup is not None and deferred_setup.deferred_names:
         from deerflow.agents.middlewares.deferred_tool_filter_middleware import DeferredToolFilterMiddleware
 
@@ -382,44 +377,39 @@ def build_subagent_runtime_middlewares(
 
         assert_mcp_routing_before_deferred_filter(middlewares)
 
-    # LoopDetectionMiddleware — subagents inherit none of the lead's runaway
-    # guards today (see #3875): with no loop detection a degenerate subagent tool
-    # loop runs unchecked until ``max_turns``, re-sending a growing context each
-    # turn (the reported 4.4M-token burn). Mirror the lead chain so the loop is
-    # detected and broken. Subagents disallow ``task``, so only the tool-loop
-    # heuristic can fire here — no recursive-delegation path to false-positive on.
-    # Registered before SafetyFinishReasonMiddleware (earlier in the list).
-    # LangChain dispatches after_model hooks in REVERSE registration order, so
-    # SafetyFinishReasonMiddleware (appended below) executes first and strips
-    # safety-terminated tool_calls; LoopDetectionMiddleware then accounts on the
-    # cleaned message. This is the placement SafetyFinishReasonMiddleware's
-    # docstring requires ("register after LoopDetection") and mirrors the lead
-    # chain (``lead_agent/agent.py``). Phase 1 of #3875; a deterministic
-    # turn/token budget with lead-visible stop reason is Phase 2.
+    # LoopDetectionMiddleware — 현재 subagent는 lead의 폭주 방지 guard를 하나도
+    # 물려받지 않는다(#3875 참고). loop 감지가 없으면 망가진 subagent 도구 루프가
+    # ``max_turns``까지 그대로 돌면서 매 턴 커지는 context를 재전송한다(보고된 4.4M 토큰 소모).
+    # lead 체인을 그대로 따라 루프를 감지하고 끊는다. subagent는 ``task``를 쓸 수 없으므로
+    # 여기서는 tool-loop 휴리스틱만 발동한다. 재귀 위임 경로가 없어 오탐 여지도 없다.
+    # SafetyFinishReasonMiddleware보다 먼저 등록한다(리스트에서 더 앞).
+    # LangChain은 after_model hook을 등록 역순으로 실행하므로 아래에서 추가되는
+    # SafetyFinishReasonMiddleware가 먼저 돌아 safety로 종료된 tool_calls를 제거하고,
+    # 그다음 LoopDetectionMiddleware가 정리된 메시지를 집계한다. 이것이
+    # SafetyFinishReasonMiddleware docstring이 요구하는 배치("register after LoopDetection")이며
+    # lead 체인(``lead_agent/agent.py``)과 같다. #3875 Phase 1이고, lead가 볼 수 있는
+    # stop reason을 갖는 결정적 turn/token 예산은 Phase 2다.
     loop_detection_config = app_config.loop_detection
     if loop_detection_config.enabled:
         from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 
         middlewares.append(LoopDetectionMiddleware.from_config(loop_detection_config))
 
-    # TokenBudgetMiddleware — subagents inherit none of the lead's cost backstops
-    # today (#3875 Phase 2): a degenerate subagent can burn pathological token
-    # volume (the reported 4.4M run) before max_turns/timeout engage. Mirror the
-    # lead chain so the per-run budget hard-stop engages. ``subagents.token_budget``
-    # is enabled by default; per-agent override via
-    # ``subagents.agents.<name>.token_budget``. The hard-stop does not raise —
-    # it strips tool_calls so the run completes with a final answer — and the
-    # executor reads ``consume_stop_reason`` to mark the completed result
-    # ``token_capped`` for the lead. State is keyed by run_id and each task run
-    # builds a fresh middleware instance (see ``executor._create_agent``), so
-    # parallel subagents cannot cross-contaminate even though they share the
-    # parent thread_id/run_id in context.
+    # TokenBudgetMiddleware — 현재 subagent는 lead의 비용 방어선도 물려받지 않는다
+    # (#3875 Phase 2). 망가진 subagent가 max_turns/timeout이 걸리기 전에 병적인 양의
+    # 토큰을 태울 수 있다(보고된 4.4M run). lead 체인을 따라 run 단위 예산 hard-stop을
+    # 적용한다. ``subagents.token_budget``은 기본 활성이고,
+    # ``subagents.agents.<name>.token_budget``으로 에이전트별 override가 가능하다.
+    # hard-stop은 예외를 던지지 않고 tool_calls만 제거해 run이 최종 답변으로 끝나게 하며,
+    # executor가 ``consume_stop_reason``을 읽어 완료된 결과를 lead에게 ``token_capped``로
+    # 표시한다. 상태는 run_id로 구분되고 task run마다 새 middleware 인스턴스를 만들므로
+    # (``executor._create_agent`` 참고), context에서 부모 thread_id/run_id를 공유해도
+    # 병렬 subagent끼리 서로 오염시키지 않는다.
     #
-    # Default-ceiling coupling (#3875 Phase 3 review): the default ``max_tokens``
-    # is re-coupled to ``summarization.enabled`` — 1M when compaction is on, 2M
-    # when off. This ONLY applies to the default; a user-set budget (global or
-    # per-agent) always wins, so a deployment that pinned a value is never
-    # silently changed by flipping the summarization switch.
+    # 기본 상한 연동(#3875 Phase 3 리뷰): 기본 ``max_tokens``는 ``summarization.enabled``와
+    # 다시 연동된다. compaction이 켜져 있으면 1M, 꺼져 있으면 2M이다. 이는 기본값에만
+    # 적용되고 사용자가 지정한 예산(전역이든 에이전트별이든)이 항상 이긴다. 따라서 값을
+    # 고정해 둔 배포는 summarization 스위치를 바꿔도 조용히 바뀌지 않는다.
     summarization_enabled = app_config.summarization.enabled
     if agent_name is not None:
         token_budget_config = app_config.subagents.get_token_budget_for(agent_name, summarization_enabled=summarization_enabled)
@@ -434,23 +424,21 @@ def build_subagent_runtime_middlewares(
 
     middlewares.extend(load_configured_extension_middlewares(app_config))
 
-    # Same provider safety-termination guard the lead agent uses — subagents
-    # are equally exposed to truncated tool_calls returned with
-    # finish_reason=content_filter (and friends), and the bad call would then
-    # propagate back to the lead agent via the task tool result.
+    # lead agent가 쓰는 것과 동일한 provider safety 종료 guard다. subagent도
+    # finish_reason=content_filter(및 유사 사유)와 함께 잘린 tool_calls에 똑같이 노출되고,
+    # 그 잘못된 호출은 task 도구 결과를 통해 lead agent로 되돌아간다.
     safety_config = app_config.safety_finish_reason
     if safety_config.enabled:
         from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
 
         middlewares.append(SafetyFinishReasonMiddleware.from_config(safety_config))
 
-    # DurableContextMiddleware (#4039) — summarization stores compacted history in the
-    # ``summary_text`` state channel instead of writing a summary message back
-    # into ``messages``. Mirror the lead chain so subagents project that summary
-    # into subsequent model requests; otherwise a message-count keep policy can
-    # leave an assistant tool-call + tool-result tail with no leading user
-    # context, which strict providers reject. The same middleware also keeps
-    # skill references durable when their original read results are compacted.
+    # DurableContextMiddleware (#4039) — summarization은 압축된 히스토리를 ``messages``에
+    # summary 메시지로 되쓰지 않고 ``summary_text`` state 채널에 저장한다. lead 체인을 따라
+    # subagent도 그 summary를 이후 모델 요청에 투영한다. 그러지 않으면 메시지 개수 기반 keep
+    # 정책이 앞선 사용자 context 없이 assistant tool-call + tool-result 꼬리만 남길 수 있고,
+    # 엄격한 provider는 이를 거부한다. 같은 middleware가 원본 읽기 결과가 압축돼도 skill
+    # 참조를 지속시킨다.
     from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
 
     middlewares.append(
@@ -460,64 +448,55 @@ def build_subagent_runtime_middlewares(
         )
     )
 
-    # DeerFlowSummarizationMiddleware — subagents inherit none of the lead's
-    # context compaction today (#3875 Phase 3): a deep-research subagent
-    # (``max_turns`` up to 150) can accumulate >1M cumulative input before
-    # max_turns/timeout/token_budget engage, even though Phase 2's budget now
-    # caps the pathological tail. Gated on the SAME
-    # ``app_config.summarization.enabled`` switch the lead reads (per
-    # maintainer guidance in #3875) so a single config covers both chains —
-    # no separate ``subagents.summarization`` field. The shared factory
-    # returns ``None`` when summarization is disabled, so this is a pure
-    # no-op when the switch is off. Trigger/keep/model/prompt all come from
-    # the same ``summarization`` config the lead reads, so the two chains
-    # cannot drift.
+    # DeerFlowSummarizationMiddleware — 현재 subagent는 lead의 context compaction도
+    # 물려받지 않는다(#3875 Phase 3). deep-research subagent(``max_turns`` 최대 150)는
+    # Phase 2 예산이 병적인 꼬리를 막더라도 max_turns/timeout/token_budget이 걸리기 전에
+    # 누적 입력 1M을 넘길 수 있다. lead가 읽는 것과 동일한
+    # ``app_config.summarization.enabled`` 스위치로 제어해(#3875의 메인테이너 지침) 설정
+    # 하나가 두 체인을 모두 덮게 한다. 별도 ``subagents.summarization`` 필드는 없다.
+    # 공용 factory는 summarization이 꺼져 있으면 ``None``을 반환하므로 스위치가 꺼진
+    # 상태에서는 순수 no-op이다. trigger/keep/model/prompt 모두 lead가 읽는 동일한
+    # ``summarization`` 설정에서 오므로 두 체인이 어긋날 수 없다.
     #
-    # Placement differs from the lead chain: the lead appends summarization
-    # BEFORE the guard trio (loop/token/safety), here it is appended AFTER.
-    # This is benign — compaction runs in ``before_model`` regardless of
-    # relative position, and the guard middlewares account in ``after_model``
-    # — but noted because the relative order is not an exact mirror.
+    # 배치는 lead 체인과 다르다. lead는 guard 3종(loop/token/safety) 앞에 summarization을
+    # 붙이지만 여기서는 뒤에 붙인다. compaction은 상대 위치와 무관하게 ``before_model``에서
+    # 돌고 guard middleware는 ``after_model``에서 집계하므로 무해하지만, 정확한 대칭은
+    # 아니라는 점을 남긴다.
     #
-    # ``skip_memory_flush=True``: the factory otherwise attaches
-    # ``memory_flush_hook`` (when ``memory.enabled``), which flushes
-    # pre-compaction messages into the durable memory queue keyed by
-    # ``thread_id``. Subagents share the parent's ``thread_id`` in context, so
-    # without skipping the hook a subagent's internal turns would be written
-    # into the PARENT thread's durable memory (#3875 Phase 3 review).
+    # ``skip_memory_flush=True``: 그러지 않으면 factory가 ``memory.enabled``일 때
+    # ``memory_flush_hook``을 붙이는데, 이 hook은 compaction 이전 메시지를 ``thread_id``
+    # 기준 durable memory 큐로 flush한다. subagent는 context에서 부모의 ``thread_id``를
+    # 공유하므로 hook을 건너뛰지 않으면 subagent 내부 턴이 부모 thread의 durable memory에
+    # 기록된다(#3875 Phase 3 리뷰).
     #
-    # The middleware rewrites history via ``RemoveMessage(id=REMOVE_ALL_MESSAGES)``,
-    # which shrinks the messages channel mid-run;
-    # ``capture_new_step_messages`` must tolerate that contraction (see
-    # ``step_events.py``) or it drops steps captured after the compaction
-    # point. It does not implement ``consume_stop_reason``, so it does not
-    # interfere with the Phase 2 guard-cap stop-reason channel.
+    # 이 middleware는 ``RemoveMessage(id=REMOVE_ALL_MESSAGES)``로 히스토리를 재작성해
+    # run 도중 messages 채널을 줄인다. ``capture_new_step_messages``가 그 축소를 견뎌야
+    # 하며(``step_events.py`` 참고), 그러지 않으면 compaction 지점 이후 캡처된 step을
+    # 잃는다. ``consume_stop_reason``은 구현하지 않으므로 Phase 2의 guard-cap stop-reason
+    # 채널을 방해하지 않는다.
     from deerflow.agents.middlewares.summarization_middleware import create_summarization_middleware
 
     summarization_middleware = create_summarization_middleware(
         app_config=app_config,
         skip_memory_flush=True,
-        # The subagent's resolved model is the source of truth for null-model
-        # summarization: the subagent context/configurable does not carry the child
-        # model (it inherits the parent's), so passing it directly is what makes a
-        # distinct-model subagent summarize with its own model, not the parent's.
+        # null-model summarization의 기준은 subagent가 확정한 모델이다. subagent의
+        # context/configurable에는 자식 모델이 실려 있지 않고 부모 것을 물려받으므로,
+        # 직접 넘겨야 다른 모델을 쓰는 subagent가 부모 모델이 아닌 자기 모델로 요약한다.
         run_model_name=model_name,
     )
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
-    # SystemMessageCoalescingMiddleware (#4040) — DurableContextMiddleware above
-    # inserts a second ``SystemMessage(authority_contract)`` after the leading
-    # system prompt (subagents carry their prompt as a leading ``SystemMessage``
-    # in ``messages``, not via ``create_agent(system_prompt=...)``). Two system
-    # messages — or a non-leading one — are exactly what the strict backends this
-    # targets (vLLM/SGLang/Qwen/Anthropic) reject, so the durable fix would trade
-    # #4039's assistant-first 400 for a duplicate-system 400. Mirror the lead
-    # chain: append the coalescer innermost so it merges every SystemMessage into
-    # one leading ``system_message`` on the outgoing request. It only rewrites the
-    # per-request payload (no ``after_model``/``consume_stop_reason``), so it is
-    # inert to the Phase 2 guard-cap channel, and must sit inner of
-    # DurableContextMiddleware to observe the injected system message.
+    # SystemMessageCoalescingMiddleware (#4040) — 위의 DurableContextMiddleware가
+    # 선두 system prompt 뒤에 두 번째 ``SystemMessage(authority_contract)``를 삽입한다
+    # (subagent는 prompt를 ``create_agent(system_prompt=...)``가 아니라 ``messages``의
+    # 선두 ``SystemMessage``로 들고 다닌다). system 메시지가 둘이거나 선두가 아니면
+    # 대상 backend(vLLM/SGLang/Qwen/Anthropic)가 정확히 그걸 거부하므로, durable 수정이
+    # #4039의 assistant-first 400을 duplicate-system 400으로 바꿔치기할 뿐이다. lead 체인을
+    # 따라 coalescer를 가장 안쪽에 붙여 나가는 요청의 모든 SystemMessage를 선두
+    # ``system_message`` 하나로 병합한다. 요청 단위 payload만 재작성하고
+    # ``after_model``/``consume_stop_reason``이 없으므로 Phase 2 guard-cap 채널에 영향이
+    # 없으며, 주입된 system 메시지를 보려면 DurableContextMiddleware보다 안쪽이어야 한다.
     from deerflow.agents.middlewares.system_message_coalescing_middleware import SystemMessageCoalescingMiddleware
 
     middlewares.append(SystemMessageCoalescingMiddleware())

@@ -1,4 +1,4 @@
-"""GuardrailMiddleware - evaluates tool calls against a GuardrailProvider before execution."""
+"""GuardrailMiddleware — 도구 호출을 실행 전에 GuardrailProvider로 검사한다."""
 
 import logging
 from collections.abc import Awaitable, Callable
@@ -22,12 +22,13 @@ _REASON_MESSAGE_LIMIT = 500
 
 
 class GuardrailMiddleware(AgentMiddleware[AgentState]):
-    """Evaluate tool calls against a GuardrailProvider before execution.
+    """도구 호출을 실행 전에 GuardrailProvider로 검사한다.
 
-    Denied calls return an error ToolMessage so the agent can adapt.
-    If the provider raises, behavior depends on fail_closed:
-      - True (default): block the call
-      - False: allow it through with a warning
+    거부된 호출은 에이전트가 대안을 찾을 수 있도록 error ToolMessage를 반환한다.
+    provider가 예외를 던지면 fail_closed 설정에 따라 동작이 갈린다.
+
+    - True(기본값): 호출을 차단한다.
+    - False: 경고만 남기고 통과시킨다.
     """
 
     def __init__(self, provider: GuardrailProvider, *, fail_closed: bool = True, passport: str | None = None):
@@ -81,12 +82,11 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
         action: str,
         provider_error: bool,
     ) -> None:
-        """Persist a security-relevant guardrail decision to RunJournal.
+        """보안 관련 guardrail 판정을 RunJournal에 기록한다.
 
-        This follows the optional-Journal pattern used by existing middleware:
-        audit persistence is best-effort and must never change tool execution
-        behavior. Runtimes without ``__run_journal`` (including embedded and
-        subagent execution) skip persistence.
+        기존 미들웨어와 같은 optional-Journal 패턴을 따른다. 감사 기록은
+        best-effort이며 도구 실행 동작을 절대 바꾸지 않는다. ``__run_journal``이
+        없는 런타임(embedded 실행, 서브에이전트 실행 포함)은 기록을 건너뛴다.
         """
         journal = context.get("__run_journal")
         if journal is None:
@@ -99,8 +99,8 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
             "tool_name": guardrail_request.tool_name,
             "tool_call_id": guardrail_request.tool_call_id,
             "agent_id": guardrail_request.agent_id,
-            # Native subagents do not currently inherit __run_journal; custom
-            # runtimes may still provide one with subagent attribution.
+            # 네이티브 서브에이전트는 아직 __run_journal을 상속받지 않는다.
+            # 다만 커스텀 런타임은 서브에이전트 귀속 정보를 담아 제공할 수 있다.
             "is_subagent": guardrail_request.is_subagent,
             "user_role": guardrail_request.user_role,
             "allow": decision.allow,
@@ -133,7 +133,7 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
         try:
             decision = self.provider.evaluate(gr)
         except GraphBubbleUp:
-            # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+            # LangGraph 제어 흐름 시그널(interrupt/pause/resume)은 그대로 전파한다.
             raise
         except Exception:
             logger.exception("Guardrail provider error (sync)")
@@ -180,7 +180,7 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
         try:
             decision = await self.provider.aevaluate(gr)
         except GraphBubbleUp:
-            # Preserve LangGraph control-flow signals (interrupt/pause/resume).
+            # LangGraph 제어 흐름 시그널(interrupt/pause/resume)은 그대로 전파한다.
             raise
         except Exception:
             logger.exception("Guardrail provider error (async)")

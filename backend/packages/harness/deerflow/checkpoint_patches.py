@@ -1,11 +1,9 @@
-"""Compatibility patches for third-party checkpoint machinery.
+"""서드파티 checkpoint 기계장치에 대한 호환성 패치.
 
-Lives at the top-level package (not ``deerflow.runtime``) so it can be
-imported from ``deerflow.agents.thread_state`` without pulling in the heavy
-``deerflow.runtime`` package __init__ (which eagerly imports the runs
-machinery). Anchored from ``deerflow.agents.thread_state`` so every process
-that builds a DeerFlow graph (gateway, workers, in-process LangGraph
-runtime, tests) runs with the fixes in place.
+``deerflow.runtime``이 아니라 최상위 패키지에 둔다. 그래야 ``deerflow.agents.thread_state``에서
+import할 때 runs 기계장치를 즉시 import하는 무거운 ``deerflow.runtime`` 패키지 __init__을
+끌어오지 않는다. ``deerflow.agents.thread_state``에서 앵커링하므로 DeerFlow 그래프를 만드는
+모든 프로세스(gateway, worker, in-process LangGraph runtime, 테스트)가 이 수정을 적용받는다.
 """
 
 from __future__ import annotations
@@ -25,10 +23,10 @@ from packaging.version import Version
 logger = logging.getLogger(__name__)
 
 _PATCH_FLAG = "_deerflow_delta_history_patched"
-# The patch was authored and verified against langgraph 1.2.9
-# (langgraph/checkpoint/memory/__init__.py::InMemorySaver.get_delta_channel_history).
-# On any newer LangGraph the override must be re-inspected before keeping the
-# patch: if upstream fixed or removed it, this module must stand down.
+# 이 패치는 langgraph 1.2.9
+# (langgraph/checkpoint/memory/__init__.py::InMemorySaver.get_delta_channel_history)를
+# 기준으로 작성·검증했다. 더 최신 LangGraph에서는 패치를 유지하기 전에 override를 다시 확인해야 한다.
+# upstream이 고쳤거나 제거했다면 이 모듈은 물러나야 한다.
 _PATCH_VALIDATED_LANGGRAPH_VERSION = Version("1.2.9")
 
 
@@ -41,7 +39,7 @@ async def _aget_delta_channel_history_via_base(self: Any, *, config: Any, channe
 
 
 def _upstream_override_present() -> bool:
-    """True while InMemorySaver still ships its own (buggy) override."""
+    """InMemorySaver가 여전히 자체 (버그 있는) override를 제공하는 동안 True."""
     return (
         getattr(InMemorySaver, "get_delta_channel_history", None) is not None
         and InMemorySaver.get_delta_channel_history is not BaseCheckpointSaver.get_delta_channel_history
@@ -50,31 +48,26 @@ def _upstream_override_present() -> bool:
 
 
 def ensure_inmemory_delta_history_patch() -> None:
-    """Fix InMemorySaver dropping writes on full -> delta migrated threads.
+    """full -> delta로 migrate된 thread에서 InMemorySaver가 write를 잃는 문제를 고친다.
 
-    ``InMemorySaver.get_delta_channel_history`` overrides the base walk with a
-    single-pass version that, upon reaching the first checkpoint carrying a
-    non-empty plain-value blob for a channel, skips that checkpoint's *own*
-    pending writes as "subsumed" by the blob. That is only true when the blob
-    was written by that same checkpoint. When the version was carried forward
-    from an older ancestor - exactly the first superstep after a full -> delta
-    migration, where the input write lands on a checkpoint still referencing
-    the pre-delta blob version - those pending writes postdate the blob and
-    are silently dropped: the first message appended after migration vanishes
-    from materialized state.
+    ``InMemorySaver.get_delta_channel_history``는 base walk를 single-pass 버전으로 override한다.
+    이 버전은 어떤 채널에 비어 있지 않은 plain-value blob을 가진 첫 checkpoint에 도달하면
+    그 checkpoint *자신의* pending write를 blob에 "포함된" 것으로 보고 건너뛴다. 이는 blob을
+    바로 그 checkpoint가 썼을 때만 참이다. 버전이 더 오래된 조상에서 그대로 이어져 온 경우 —
+    정확히 full -> delta migration 직후의 첫 superstep, 즉 입력 write가 아직 pre-delta blob
+    버전을 참조하는 checkpoint에 떨어지는 상황 — 그 pending write들은 blob보다 나중이므로
+    조용히 버려진다. 그 결과 migration 후 처음 추가된 메시지가 materialize된 state에서 사라진다.
 
-    Both the base implementation (used by the SQLite savers) and the Postgres
-    override collect the terminating checkpoint's writes *before* treating its
-    blob as the seed, which is the correct order. This patch delegates
-    InMemorySaver to the base implementation - one ``get_tuple`` per ancestor
-    instead of a single fused walk, which is fine for dict-backed storage.
+    base 구현(SQLite saver들이 사용)과 Postgres override는 둘 다 종단 checkpoint의 write를
+    blob을 seed로 삼기 *전에* 수집하는데, 이것이 올바른 순서다. 이 패치는 InMemorySaver를
+    base 구현에 위임한다. 융합된 단일 walk 대신 조상마다 ``get_tuple`` 한 번을 쓰지만
+    dict 기반 저장소에서는 문제없다.
 
-    Idempotent. Guarded: stands down when the upstream override disappears or
-    the assignment fails, and warns once LangGraph moves past the validated
-    version so the patch is re-inspected instead of silently overriding an
-    upstream fix. Remove once LangGraph fixes the override upstream (no
-    upstream issue exists yet; re-check ``InMemorySaver.get_delta_channel_history``
-    on every langgraph upgrade).
+    멱등하다. upstream override가 사라지거나 대입이 실패하면 물러나도록 방어했고,
+    LangGraph가 검증된 버전을 넘어가면 upstream 수정을 조용히 덮어쓰지 않도록 경고를 남겨
+    패치를 재검토하게 한다. LangGraph가 upstream에서 override를 고치면 제거한다
+    (아직 upstream 이슈는 없다. langgraph를 올릴 때마다
+    ``InMemorySaver.get_delta_channel_history``를 다시 확인한다).
     """
     if getattr(InMemorySaver, _PATCH_FLAG, False):
         return
@@ -90,8 +83,8 @@ def ensure_inmemory_delta_history_patch() -> None:
         )
     try:
         if not _upstream_override_present():
-            # Upstream removed its override (fixed or refactored): the base
-            # implementation is already in use, nothing to patch.
+            # upstream이 override를 제거했다(수정 또는 리팩터링).
+            # 이미 base 구현이 쓰이고 있으므로 패치할 것이 없다.
             return
         InMemorySaver.get_delta_channel_history = _get_delta_channel_history_via_base  # type: ignore[method-assign]
         InMemorySaver.aget_delta_channel_history = _aget_delta_channel_history_via_base  # type: ignore[method-assign]
@@ -105,16 +98,15 @@ _unpatched_binop_update = BinaryOperatorAggregate.update
 
 
 def _as_overwrite(value: Any) -> tuple[bool, Any]:
-    """Local stand-in for langgraph's private ``_get_overwrite``.
+    """langgraph의 private ``_get_overwrite``를 대신하는 로컬 구현.
 
-    Matches only the public ``Overwrite`` *class* form - the sole form
-    DeerFlow's write paths produce for these Union channels (the branch and
-    ``/state`` routes wrap replace-style writes in ``Overwrite(...)``).
-    Avoiding the underscored ``_get_overwrite`` import keeps an upstream
-    refactor that drops it - plausibly the very release that fixes the bug -
-    from failing this module's import and crashing startup before the probe
-    can stand the patch down. The dict sentinel form upstream also accepts is
-    an internal serialization detail DeerFlow never emits into these channels.
+    공개 ``Overwrite`` *클래스* 형태만 매칭한다. DeerFlow의 write 경로가 이 Union 채널들에
+    만들어내는 유일한 형태다(branch와 ``/state`` 라우트가 replace 방식 write를
+    ``Overwrite(...)``로 감싼다). 밑줄로 시작하는 ``_get_overwrite``를 import하지 않는 이유는,
+    upstream이 그것을 제거하는 리팩터링(하필 버그를 고치는 바로 그 릴리스일 수 있다)을 했을 때
+    이 모듈의 import가 실패해 probe가 패치를 물리기도 전에 startup이 죽는 것을 막기 위해서다.
+    upstream이 함께 받아들이는 dict sentinel 형태는 내부 직렬화 세부사항이며 DeerFlow는
+    이 채널들에 그것을 내보내지 않는다.
     """
     if isinstance(value, Overwrite):
         return True, value.value
@@ -122,11 +114,10 @@ def _as_overwrite(value: Any) -> tuple[bool, Any]:
 
 
 def _binop_first_write_stores_overwrite_wrapper() -> bool:
-    """Probe whether upstream still stores an Overwrite first write literally.
+    """upstream이 아직도 Overwrite 첫 write를 그대로 저장하는지 탐지한다.
 
-    Uses a Union-typed channel (no constructible default, so it starts
-    MISSING) - the same shape as ``ThreadState``'s ``sandbox`` / ``goal`` /
-    ``todos`` / ``promoted`` channels.
+    Union 타입 채널(생성 가능한 기본값이 없어 MISSING에서 시작한다)을 쓴다.
+    ``ThreadState``의 ``sandbox`` / ``goal`` / ``todos`` / ``promoted`` 채널과 같은 형태다.
     """
     channel = BinaryOperatorAggregate(dict | None, lambda existing, new: new)
     channel.key = "deerflow-overwrite-probe"
@@ -135,12 +126,11 @@ def _binop_first_write_stores_overwrite_wrapper() -> bool:
 
 
 def _binop_update_unwrapping_empty_channel(self: Any, values: Sequence[Any]) -> bool:
-    """``BinaryOperatorAggregate.update`` that unwraps an Overwrite first write.
+    """Overwrite 첫 write를 풀어주는 ``BinaryOperatorAggregate.update``.
 
-    Only intercepts the empty-channel + leading-Overwrite case; everything
-    else delegates to the upstream implementation. The intercepted case
-    mirrors upstream's own post-Overwrite batch semantics: later plain values
-    are skipped and a second Overwrite raises ``InvalidUpdateError``.
+    빈 채널 + 선두 Overwrite 조합만 가로채고 나머지는 upstream 구현에 위임한다.
+    가로챈 경우의 동작은 upstream의 post-Overwrite 배치 의미를 그대로 따른다.
+    뒤따르는 plain 값은 건너뛰고, 두 번째 Overwrite는 ``InvalidUpdateError``를 던진다.
     """
     if not self.is_available() and values:
         is_overwrite, overwrite_value = _as_overwrite(values[0])
@@ -158,29 +148,25 @@ def _binop_update_unwrapping_empty_channel(self: Any, values: Sequence[Any]) -> 
 
 
 def ensure_binop_overwrite_first_write_patch() -> None:
-    """Fix ``Overwrite`` first writes being stored literally on empty channels.
+    """빈 채널에 ``Overwrite`` 첫 write가 그대로 저장되는 문제를 고친다.
 
-    Upstream ``BinaryOperatorAggregate.update`` seeds an empty channel
-    (``self.value is MISSING``) with ``values[0]`` verbatim - without the
-    Overwrite unwrapping the rest of the method applies. Channels whose type
-    is a Union (``SandboxState | None``, ``GoalState | None``, ...) have no
-    constructible default, so they start MISSING; a replace-style write into
-    a fresh thread (thread branching) or a never-written channel (state
-    update) then persists the ``Overwrite`` wrapper itself into the
-    checkpoint, and the next consumer crashes with ``TypeError: 'Overwrite'
-    object is not subscriptable`` (#4380). ``DeltaChannel.update`` already
-    unwraps in the same situation, so this also removes a behavioral
-    inconsistency between the two reducer channel types.
+    upstream ``BinaryOperatorAggregate.update``는 빈 채널(``self.value is MISSING``)을
+    ``values[0]``으로 그대로 seed한다. 메서드의 나머지 부분이 적용하는 Overwrite unwrapping을
+    거치지 않는다. 타입이 Union인 채널(``SandboxState | None``, ``GoalState | None``, ...)은
+    생성 가능한 기본값이 없어 MISSING에서 시작하므로, 새 thread(thread branching)나 한 번도
+    쓰이지 않은 채널(state update)에 replace 방식 write가 들어오면 ``Overwrite`` wrapper 자체가
+    checkpoint에 저장되고, 다음 소비자가 ``TypeError: 'Overwrite' object is not subscriptable``로
+    죽는다(#4380). ``DeltaChannel.update``는 같은 상황에서 이미 unwrap하므로, 이 패치는
+    두 reducer 채널 타입 간의 동작 불일치도 함께 없앤다.
 
-    Idempotent. Guarded by a behavioral probe instead of a version pin: if a
-    future LangGraph unwraps the first write itself, the probe reports the
-    bug as absent and the patch stands down.
+    멱등하다. 버전 고정이 아니라 동작 probe로 방어한다. 미래의 LangGraph가 첫 write를 직접
+    unwrap하면 probe가 버그 없음을 보고하고 패치는 물러난다.
     """
     if getattr(BinaryOperatorAggregate, _BINOP_PATCH_FLAG, False):
         return
     try:
         if not _binop_first_write_stores_overwrite_wrapper():
-            # Upstream unwraps the first write itself: nothing to patch.
+            # upstream이 첫 write를 직접 unwrap한다. 패치할 것이 없다.
             return
         BinaryOperatorAggregate.update = _binop_update_unwrapping_empty_channel  # type: ignore[method-assign]
         setattr(BinaryOperatorAggregate, _BINOP_PATCH_FLAG, True)

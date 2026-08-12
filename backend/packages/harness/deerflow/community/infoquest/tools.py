@@ -45,10 +45,10 @@ def _get_infoquest_client() -> InfoQuestClient:
 
 @tool("web_search", parse_docstring=True)
 def web_search_tool(query: str) -> str:
-    """Search the web.
+    """web을 검색한다.
 
     Args:
-        query: The query to search for.
+        query: 검색할 query.
     """
 
     client = _get_infoquest_client()
@@ -57,14 +57,14 @@ def web_search_tool(query: str) -> str:
 
 @tool("web_fetch", parse_docstring=True)
 def web_fetch_tool(url: str) -> str:
-    """Fetch the contents of a web page at a given URL.
-    Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
-    This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
-    Do NOT add www. to URLs that do NOT have them.
-    URLs must include the schema: https://example.com is a valid URL while example.com is an invalid URL.
+    """주어진 URL의 web page 내용을 가져온다.
+    사용자가 직접 제공했거나 web_search와 web_fetch 도구의 결과로 반환된 URL만 정확히 그대로 가져와라.
+    이 도구는 비공개 Google Docs나 로그인 장벽 뒤의 page처럼 인증이 필요한 콘텐츠에는 접근할 수 없다.
+    www.가 없는 URL에 www.를 임의로 붙이지 마라.
+    URL에는 schema를 반드시 포함해야 한다. https://example.com은 유효하지만 example.com은 유효하지 않다.
 
     Args:
-        url: The URL to fetch the contents of.
+        url: 내용을 가져올 URL.
     """
     client = _get_infoquest_client()
     result = client.fetch(url)
@@ -76,18 +76,18 @@ def web_fetch_tool(url: str) -> str:
 
 @tool("image_search", parse_docstring=True)
 def image_search_tool(query: str) -> str:
-    """Search for images online. Use this tool BEFORE image generation to find reference images for characters, portraits, objects, scenes, or any content requiring visual accuracy.
+    """온라인에서 이미지를 검색한다. 인물, 초상, 사물, 장면 등 시각적 정확도가 필요한 대상의 참고 이미지를 찾으려면 이미지 생성 전에 이 도구를 사용하라.
 
-    **When to use:**
-    - Before generating character/portrait images: search for similar poses, expressions, styles
-    - Before generating specific objects/products: search for accurate visual references
-    - Before generating scenes/locations: search for architectural or environmental references
-    - Before generating fashion/clothing: search for style and detail references
+    **사용 시점:**
+    - 캐릭터/인물 이미지 생성 전: 비슷한 포즈, 표정, 스타일을 검색한다
+    - 특정 사물/제품 이미지 생성 전: 정확한 시각적 레퍼런스를 검색한다
+    - 장면/장소 이미지 생성 전: 건축이나 환경 레퍼런스를 검색한다
+    - 패션/의상 이미지 생성 전: 스타일과 디테일 레퍼런스를 검색한다
 
-    The returned image URLs can be used as reference images in image generation to significantly improve quality.
+    반환된 이미지 URL을 이미지 생성의 참고 이미지로 사용하면 품질이 크게 향상된다.
 
     Args:
-        query: The query to search for images.
+        query: 이미지를 검색할 query.
     """
     client = _get_infoquest_client()
     return client.image_search(query)

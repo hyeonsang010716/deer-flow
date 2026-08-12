@@ -110,7 +110,7 @@ def get_changed_paths(before: WorkspaceSnapshot, after: WorkspaceSnapshot) -> se
 
 
 def get_changed_output_paths(before: WorkspaceSnapshot, after: WorkspaceSnapshot) -> list[str]:
-    """Return created or modified regular files under the outputs root."""
+    """outputs 루트 아래에서 생성되거나 수정된 일반 파일을 반환한다."""
     paths: list[str] = []
     for path in sorted(get_changed_paths(before, after)):
         snapshot = after.files.get(path)
@@ -123,11 +123,10 @@ def _status(
     before_file: FileSnapshot | None,
     after_file: FileSnapshot | None,
 ) -> WorkspaceChangeStatus:
-    # A symlink now occupying a path that was not already a symlink is always
-    # surfaced distinctly - whether it is brand new (before_file is None) or it
-    # just replaced a regular file (before_file is None => "deleted" would
-    # otherwise be reported even though the path is still alive on disk, just
-    # as a symlink that may point anywhere on the host).
+    # 원래 symlink가 아니던 경로를 symlink가 차지하게 되면 항상 별도로 드러낸다. 완전히 새로
+    # 생겼든(before_file이 None) 일반 파일을 방금 대체했든 마찬가지다(before_file이 None이면
+    # 경로가 디스크에 여전히 살아 있는데도 "deleted"로 보고되며, 그것도 host의 어디든 가리킬 수
+    # 있는 symlink 형태로 남는다).
     before_was_symlink = before_file is not None and before_file.symlink
     after_is_symlink = after_file is not None and after_file.symlink
     if after_is_symlink and not before_was_symlink:
@@ -208,11 +207,10 @@ def _snapshot_text(file: FileSnapshot | None) -> str | None:
 def _count_diff_lines(lines: list[str]) -> tuple[int, int]:
     additions = 0
     deletions = 0
-    # difflib.unified_diff always emits the two file headers ("--- a/…" then
-    # "+++ b/…") first; skip them by position. A prefix test can't tell them
-    # apart from a hunk-body line whose content starts with "-- "/"++ " (e.g. a
-    # deleted SQL comment "-- get users" becomes the diff line "--- get users"),
-    # which would then be dropped from the count.
+    # difflib.unified_diff는 항상 두 개의 파일 헤더("--- a/…" 다음 "+++ b/…")를 먼저 낸다.
+    # 위치로 건너뛴다. 접두사 검사로는 "-- "/"++ "로 시작하는 hunk 본문 줄과 구분할 수 없고
+    # (예: 삭제된 SQL 주석 "-- get users"는 diff 줄 "--- get users"가 된다), 그러면 그 줄이
+    # 집계에서 빠져 버린다.
     for line in lines[2:]:
         if line.startswith("+"):
             additions += 1

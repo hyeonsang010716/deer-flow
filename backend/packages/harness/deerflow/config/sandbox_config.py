@@ -7,12 +7,12 @@ SandboxOverflowPolicy = Literal["wait", "reject", "burst"]
 
 
 class SandboxOwnershipConfig(BaseModel):
-    """Configuration for cross-instance sandbox container ownership (#4206).
+    """인스턴스 간 sandbox 컨테이너 ownership 설정(#4206).
 
-    Gateway instances share sandbox containers but each keeps its own in-memory
-    warm pool. Without shared ownership state, one instance's reconciliation
-    adopts another's live container and later idle-destroys it. This selects
-    where that ownership state lives.
+    Gateway 인스턴스들은 sandbox 컨테이너를 공유하지만 warm pool은 각자 메모리에 따로 갖는다.
+    공유 ownership 상태가 없으면 한 인스턴스의 reconciliation이 다른 인스턴스가 쓰고 있는
+    컨테이너를 입양했다가 나중에 idle로 판단해 파괴한다. 이 설정은 그 ownership 상태를 어디에
+    둘지 고른다.
     """
 
     type: SandboxOwnershipType = Field(
@@ -46,7 +46,7 @@ class SandboxOwnershipConfig(BaseModel):
 
 
 class VolumeMountConfig(BaseModel):
-    """Configuration for a volume mount."""
+    """volume mount 하나에 대한 설정."""
 
     host_path: str = Field(
         ...,
@@ -67,34 +67,35 @@ class VolumeMountConfig(BaseModel):
 
 
 class SandboxConfig(BaseModel):
-    """Config section for a sandbox.
+    """sandbox 설정 섹션.
 
-    Common options:
-        use: Class path of the sandbox provider (required)
-        allow_host_bash: Enable host-side bash execution for LocalSandboxProvider.
-            Dangerous and intended only for fully trusted local workflows.
+    공통 옵션:
+        use: sandbox provider의 클래스 경로(필수).
+        allow_host_bash: LocalSandboxProvider에서 host 쪽 bash 실행을 허용한다.
+            위험하므로 완전히 신뢰할 수 있는 로컬 workflow에서만 쓴다.
 
-    AioSandboxProvider, BoxliteProvider, and E2BSandboxProvider shared options:
-        image: Sandbox image to use (Docker/AIO image or BoxLite OCI image)
-        replicas: Positive provider capacity. E2B shares it across Gateway
-            workers when ownership uses Redis; other modes/providers keep
-            process-local accounting.
-        idle_timeout: Idle timeout in seconds before released warm sandboxes/VMs are stopped (default: 600 = 10 minutes). Set to 0 to disable.
-        environment: Environment variables to inject into the sandbox (values starting with $ are resolved from host env)
+    AioSandboxProvider, BoxliteProvider, E2BSandboxProvider 공통 옵션:
+        image: 사용할 sandbox 이미지(Docker/AIO 이미지 또는 BoxLite OCI 이미지).
+        replicas: provider 용량(양수). E2B는 ownership이 Redis일 때 Gateway worker 간에
+            공유하고, 그 밖의 모드/provider는 프로세스 로컬로 집계한다.
+        idle_timeout: 반납된 warm sandbox/VM을 중지하기까지의 유휴 시간(초, 기본값 600 = 10분).
+            0이면 비활성화한다.
+        environment: sandbox에 주입할 환경변수($로 시작하는 값은 host 환경변수에서 해석).
 
-    BoxliteProvider specific options:
-        health_check_skip_seconds: Optional reclaim-time skip window in seconds for recently released warm VMs. Default behavior is 0.0 = always validate before reuse.
+    BoxliteProvider 전용 옵션:
+        health_check_skip_seconds: 최근 반납된 warm VM에 대해 reclaim 시 health check를
+            건너뛰는 구간(초). 기본값 0.0은 재사용 전 항상 검증한다는 뜻이다.
 
-    AioSandboxProvider specific options:
-        port: Base port for sandbox containers (default: 8080)
-        container_prefix: Prefix for container names (default: deer-flow-sandbox)
-        mounts: List of volume mounts to share directories with the container
-        thread_data_mounts: Override whether thread data is already visible to
-            the sandbox through shared mounts. Omit to auto-detect from the backend.
+    AioSandboxProvider 전용 옵션:
+        port: sandbox 컨테이너 기본 포트(기본값 8080).
+        container_prefix: 컨테이너 이름 prefix(기본값 deer-flow-sandbox).
+        mounts: 컨테이너와 디렉터리를 공유할 volume mount 목록.
+        thread_data_mounts: thread 데이터가 공유 mount로 이미 sandbox에 보이는지를 강제로
+            지정한다. 생략하면 backend에서 자동 감지한다.
 
-    AioSandboxProvider and E2BSandboxProvider shared options:
-        ownership: Cross-instance sandbox ownership store (memory | redis). Multi-instance
-            deployments sharing a sandbox backend need redis; see SandboxOwnershipConfig.
+    AioSandboxProvider와 E2BSandboxProvider 공통 옵션:
+        ownership: 인스턴스 간 sandbox ownership 저장소(memory | redis). sandbox backend를
+            공유하는 다중 인스턴스 배포에는 redis가 필요하다. SandboxOwnershipConfig 참고.
     """
 
     use: str = Field(

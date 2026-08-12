@@ -1,13 +1,13 @@
-"""AIO Sandbox Provider — orchestrates sandbox lifecycle with pluggable backends.
+"""AIO Sandbox Provider — 교체 가능한 backend와 함께 sandbox lifecycle을 관리한다.
 
-This provider composes:
-- SandboxBackend: how sandboxes are provisioned (local container vs remote/K8s)
+이 provider가 조합하는 것:
+- SandboxBackend: sandbox를 어떻게 provisioning하는지(로컬 컨테이너 vs 원격/K8s)
 
-The provider itself handles:
-- In-process caching for fast repeated access
-- Idle timeout management
-- Graceful shutdown with signal handling
-- Mount computation (thread-specific, skills)
+provider 자체가 처리하는 것:
+- 반복 접근을 빠르게 하기 위한 in-process 캐싱
+- idle timeout 관리
+- signal 처리를 통한 graceful shutdown
+- mount 계산(thread 전용, skills)
 """
 
 import asyncio
@@ -62,7 +62,7 @@ from .sandbox_info import SandboxInfo
 
 logger = logging.getLogger(__name__)
 
-# Default configuration
+# 기본 설정
 DEFAULT_IMAGE = "enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest"
 DEFAULT_PORT = 8080
 DEFAULT_CONTAINER_PREFIX = "deer-flow-sandbox"
@@ -73,12 +73,11 @@ atexit.register(_THREAD_LOCK_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
 
 class SandboxBeingDestroyedError(RuntimeError):
-    """A peer is tearing this container down, so it must not be handed out.
+    """peer가 이 컨테이너를 내리는 중이므로 넘겨주면 안 된다.
 
-    Raised on the acquire path when the ownership lease is in its teardown state.
-    The caller drops the container from tracking and lets the normal
-    discover-or-create path provision a fresh one, rather than handing an agent a
-    sandbox that is about to stop underneath it.
+    ownership lease가 teardown 상태일 때 acquire 경로에서 발생한다. 호출자는 컨테이너를
+    tracking에서 제거하고, 곧 밑에서 멈춰버릴 sandbox를 agent에게 넘기는 대신 일반적인
+    discover-or-create 경로가 새 것을 provisioning하게 한다.
     """
 
     def __init__(self, sandbox_id: str) -> None:
@@ -87,7 +86,7 @@ class SandboxBeingDestroyedError(RuntimeError):
 
 
 class SandboxIdentityCollisionError(RuntimeError):
-    """A deterministic ID is already tracked for a different user/thread."""
+    """결정적으로 계산된 ID가 이미 다른 user/thread용으로 tracking되고 있다."""
 
     def __init__(
         self,
@@ -122,7 +121,7 @@ def _open_lock_file(lock_path):
 
 
 async def _acquire_thread_lock_async(lock: threading.Lock) -> None:
-    """Acquire a threading.Lock without polling or using the default executor."""
+    """polling이나 default executor 없이 threading.Lock을 획득한다."""
     loop = asyncio.get_running_loop()
     acquire_future = loop.run_in_executor(_THREAD_LOCK_EXECUTOR, lock.acquire, True)
 
@@ -137,7 +136,7 @@ async def _acquire_thread_lock_async(lock: threading.Lock) -> None:
 
 
 def _release_cancelled_lock_acquire(lock: threading.Lock, task: asyncio.Future[bool]) -> None:
-    """Release a lock acquired after its awaiting coroutine was cancelled."""
+    """대기하던 coroutine이 취소된 뒤에 획득된 lock을 해제한다."""
     if task.cancelled():
         return
 
@@ -152,59 +151,58 @@ def _release_cancelled_lock_acquire(lock: threading.Lock, task: asyncio.Future[b
 
 
 class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
-    """Sandbox provider that manages containers running the AIO sandbox.
+    """AIO sandbox를 실행하는 컨테이너를 관리하는 sandbox provider.
 
-    Architecture:
-        This provider composes a SandboxBackend (how to provision), enabling:
-        - Local Docker/Apple Container mode (auto-start containers)
-        - Remote/K8s mode (connect to pre-existing sandbox URL)
+    구조:
+        SandboxBackend(provisioning 방식)를 조합해서 다음을 지원한다.
+        - 로컬 Docker/Apple Container 모드(컨테이너 자동 기동)
+        - 원격/K8s 모드(이미 존재하는 sandbox URL에 연결)
 
-    Configuration options in config.yaml under sandbox:
+    config.yaml의 sandbox 아래 설정 옵션:
         use: deerflow.community.aio_sandbox:AioSandboxProvider
-        image: <container image>
-        port: 8080                      # Base port for local containers
+        image: <컨테이너 이미지>
+        port: 8080                      # 로컬 컨테이너의 base port
         container_prefix: deer-flow-sandbox
-        idle_timeout: 600               # Idle timeout in seconds (0 to disable)
-        replicas: 3                     # Max concurrent sandbox containers (LRU eviction when exceeded)
-        thread_data_mounts: null        # null = backend auto-detection
-        mounts:                         # Volume mounts for local containers
+        idle_timeout: 600               # idle timeout(초). 0이면 비활성화
+        replicas: 3                     # 동시 sandbox 컨테이너 최대 개수(초과 시 LRU eviction)
+        thread_data_mounts: null        # null이면 backend 자동 감지
+        mounts:                         # 로컬 컨테이너의 volume mount
           - host_path: /path/on/host
             container_path: /path/in/container
             read_only: false
-        environment:                    # Environment variables for containers
+        environment:                    # 컨테이너 환경 변수
           NODE_ENV: production
           API_KEY: $MY_API_KEY
     """
 
-    # How long `_held_teardown_lease` waits for its heartbeat thread to exit
-    # before deferring the final lease release to that (still-running) thread.
-    # The store's socket timeout bounds each operation, but context exit can
-    # catch the heartbeat in one final refresh and must then wait for its final
-    # release. Keep this above both sequential five-second operation bounds so a
-    # normally timing-out refresh + release still finishes synchronously.
+    # `_held_teardown_lease`가 마지막 lease 해제를 (아직 실행 중인) heartbeat thread에
+    # 넘기기 전에 그 thread의 종료를 기다리는 시간. store의 socket timeout이 각 연산을
+    # 제한하지만, context 종료 시점이 heartbeat의 마지막 refresh와 겹칠 수 있고 그 뒤의
+    # 최종 release까지 기다려야 한다. 순차로 일어나는 5초짜리 연산 두 번보다 크게 잡아,
+    # 정상적으로 timeout되는 refresh + release가 여전히 동기적으로 끝나게 한다.
     _TEARDOWN_JOIN_TIMEOUT_SECONDS = 12.0
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._sandboxes: dict[str, AioSandbox] = {}  # sandbox_id -> AioSandbox instance
-        self._sandbox_infos: dict[str, SandboxInfo] = {}  # sandbox_id -> SandboxInfo (for destroy)
+        self._sandboxes: dict[str, AioSandbox] = {}  # sandbox_id -> AioSandbox 인스턴스
+        self._sandbox_infos: dict[str, SandboxInfo] = {}  # sandbox_id -> SandboxInfo (destroy용)
         self._thread_sandboxes: dict[tuple[str, str], str] = {}  # (user_id, thread_id) -> sandbox_id
-        self._thread_locks: dict[tuple[str, str], threading.Lock] = {}  # (user_id, thread_id) -> in-process lock
-        self._last_activity: dict[str, float] = {}  # sandbox_id -> last activity timestamp
-        # Warm pool: released sandboxes whose containers are still running.
-        # Maps sandbox_id -> (SandboxInfo, release_timestamp).
-        # Containers here can be reclaimed quickly (no cold-start) or destroyed
-        # when replicas capacity is exhausted.
+        self._thread_locks: dict[tuple[str, str], threading.Lock] = {}  # (user_id, thread_id) -> 프로세스 내 lock
+        self._last_activity: dict[str, float] = {}  # sandbox_id -> 마지막 활동 timestamp
+        # warm pool: release되었지만 컨테이너는 아직 살아 있는 sandbox들.
+        # sandbox_id -> (SandboxInfo, release timestamp) 매핑.
+        # 여기 있는 컨테이너는 cold-start 없이 빠르게 회수하거나, replicas 용량이
+        # 소진되면 파괴한다.
         self._warm_pool: dict[str, tuple[SandboxInfo, float]] = {}
         self._active_sandbox_identity: dict[str, tuple[str, str] | None] = {}
         self._warm_pool_identity: dict[str, tuple[str, str] | None] = {}
-        # sandbox_id -> when reconciliation first saw it running with no lease.
-        # Gates adoption behind a recovery grace (see _adoptable_after_grace).
+        # sandbox_id -> reconciliation이 lease 없이 실행 중인 상태로 처음 발견한 시각.
+        # recovery grace를 지나야 adoption을 허용한다(_adoptable_after_grace 참고).
         self._unowned_since: dict[str, float] = {}
-        # The two halves of same-process exclusion. The ownership store excludes
-        # peers and nothing else — `claim()` and `take()` both succeed against
-        # our own lease by design — so `del:` says nothing to this process's own
-        # threads. See _reserve_local_teardown / _acquire_epoch.
+        # 같은 프로세스 내 배제(exclusion)의 두 축. ownership store는 peer만 배제할 뿐이다
+        # — `claim()`과 `take()`는 설계상 우리 자신의 lease에 대해서는 모두 성공한다 —
+        # 따라서 `del:`은 이 프로세스의 다른 thread에게는 아무 의미가 없다.
+        # _reserve_local_teardown / _acquire_epoch 참고.
         self._local_teardown: set[str] = set()
         self._acquire_epoch: dict[str, int] = {}
         self._acquire_epoch_counter = 0
@@ -214,16 +212,16 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         self._idle_checker_thread: threading.Thread | None = None
         self._renewal_stop = threading.Event()
         self._renewal_thread: threading.Thread | None = None
-        # Per-instance id used for cross-instance sandbox ownership leases (#4206).
+        # 인스턴스 간 sandbox ownership lease에 쓰는 인스턴스별 id(#4206).
         self._owner_id = generate_owner_id()
 
         self._config = self._load_config()
         self._ownership_config = resolve_ownership_config(self._config.get("ownership"), stream_bridge=self._config.get("stream_bridge"))
         self._ownership: SandboxOwnershipStore = make_sandbox_ownership_store(self._ownership_config, owner_id=self._owner_id)
         if not self._ownership.supports_cross_process:
-            # Peers cannot see these leases, so every container looks like an
-            # orphan to them. Say so once rather than letting #4206 resurface
-            # silently on a multi-worker deployment that never set the config.
+            # peer는 이 lease를 볼 수 없으므로 모든 컨테이너가 orphan처럼 보인다. 설정을
+            # 하지 않은 multi-worker 배포에서 #4206이 조용히 재발하게 두지 말고 한 번
+            # 경고한다.
             logger.warning(
                 "Sandbox ownership store cannot coordinate across processes (sandbox.ownership.type: %s). "
                 "Safe for a single gateway instance only — multi-worker / load-balanced gateways sharing a "
@@ -233,46 +231,46 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             )
         self._backend: SandboxBackend = self._create_backend()
 
-        # Register shutdown handler
+        # shutdown handler 등록
         atexit.register(self.shutdown)
         self._register_signal_handlers()
 
-        # Reconcile orphaned containers from previous process lifecycles
+        # 이전 프로세스 수명 주기에서 남은 orphan 컨테이너를 정리한다
         self._reconcile_orphans()
 
-        # Renewal is independent of idle cleanup: an owner must keep proving it is
-        # alive even when the idle reaper is disabled, or peers adopt its live
-        # containers once the lease lapses (idle_timeout: 0 is a supported config).
+        # renewal은 idle cleanup과 독립적이다. idle reaper가 꺼져 있어도 owner는 계속
+        # 살아 있음을 증명해야 하며, 그렇지 않으면 lease가 만료된 순간 peer가 살아 있는
+        # 컨테이너를 가져간다(idle_timeout: 0은 지원되는 설정이다).
         self._start_lease_renewal()
 
-        # Start idle checker if enabled
+        # 활성화되어 있으면 idle checker를 시작한다
         if self._config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT) > 0:
             self._start_idle_checker()
 
     @property
     def uses_thread_data_mounts(self) -> bool:
-        """Whether thread workspace/uploads/outputs are visible via mounts.
+        """thread의 workspace/uploads/outputs가 mount를 통해 보이는지 여부.
 
-        Local container backends bind-mount the thread data directories, so files
-        written by the gateway are already visible when the sandbox starts.
-        Remote backends may require explicit file sync. Operators can override
-        this detection when gateway and remote sandboxes share the same storage.
+        로컬 컨테이너 backend는 thread 데이터 디렉터리를 bind-mount하므로 gateway가 쓴
+        파일이 sandbox 시작 시점에 이미 보인다. 원격 backend는 명시적인 파일 sync가
+        필요할 수 있다. gateway와 원격 sandbox가 같은 storage를 공유하는 경우 운영자가
+        이 자동 감지를 override할 수 있다.
         """
         override = self._config.get("thread_data_mounts")
         if override is not None:
             return override
         return isinstance(self._backend, LocalContainerBackend)
 
-    # ── Factory methods ──────────────────────────────────────────────────
+    # ── Factory 메서드 ────────────────────────────────────────────────────
 
     def _create_backend(self) -> SandboxBackend:
-        """Create the appropriate backend based on configuration.
+        """설정에 맞는 backend를 생성한다.
 
-        Selection logic (checked in order):
-        1. ``provisioner_url`` set → RemoteSandboxBackend (provisioner mode)
-              Provisioner dynamically creates Pods + Services in k3s.
-        2. Default → LocalContainerBackend (local mode)
-              Local provider manages container lifecycle directly (start/stop).
+        선택 로직(순서대로 확인):
+        1. ``provisioner_url``이 설정됨 → RemoteSandboxBackend(provisioner 모드)
+              provisioner가 k3s에 Pod + Service를 동적으로 생성한다.
+        2. 기본값 → LocalContainerBackend(로컬 모드)
+              로컬 provider가 컨테이너 lifecycle(start/stop)을 직접 관리한다.
         """
         provisioner_url = self._config.get("provisioner_url")
         if provisioner_url:
@@ -289,10 +287,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             environment=self._config["environment"],
         )
 
-    # ── Configuration ────────────────────────────────────────────────────
+    # ── 설정 ──────────────────────────────────────────────────────────────
 
     def _load_config(self) -> dict:
-        """Load sandbox configuration from app config."""
+        """app config에서 sandbox 설정을 읽어온다."""
         config = get_app_config()
         sandbox_config = config.sandbox
 
@@ -309,18 +307,18 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             "thread_data_mounts": getattr(sandbox_config, "thread_data_mounts", None),
             "environment": self._resolve_env_vars(sandbox_config.environment or {}),
             "ownership": getattr(sandbox_config, "ownership", None),
-            # A redis stream bridge means the deployment is multi-instance, which
-            # is what the ownership store must default to. Read the same source
-            # the bridge's own resolver reads, not just its env var.
+            # redis stream bridge를 쓴다는 것은 multi-instance 배포라는 뜻이고, ownership
+            # store도 거기에 맞춰 기본값을 정해야 한다. env var만 보지 말고 bridge의
+            # resolver가 읽는 것과 같은 소스를 읽는다.
             "stream_bridge": getattr(config, "stream_bridge", None),
-            # provisioner URL for dynamic pod management (e.g. http://provisioner:8002)
+            # 동적 pod 관리를 위한 provisioner URL (예: http://provisioner:8002)
             "provisioner_url": getattr(sandbox_config, "provisioner_url", None) or "",
             "provisioner_api_key": getattr(sandbox_config, "provisioner_api_key", None) or "",
         }
 
     @staticmethod
     def _resolve_env_vars(env_config: dict[str, str]) -> dict[str, str]:
-        """Resolve environment variable references (values starting with $)."""
+        """환경 변수 참조($로 시작하는 값)를 해석한다."""
         resolved = {}
         for key, value in env_config.items():
             if isinstance(value, str) and value.startswith("$"):
@@ -330,41 +328,35 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 resolved[key] = str(value)
         return resolved
 
-    # ── Cross-instance ownership leases ───────────────────────────────────
+    # ── 인스턴스 간 ownership lease ────────────────────────────────────────
 
     def _publish_ownership(self, sandbox_id: str) -> None:
-        """Take responsibility for *sandbox_id* on the acquire path.
+        """acquire 경로에서 *sandbox_id*에 대한 책임을 가져온다.
 
-        Takes over from whichever instance served this thread last — the
-        container is deterministic per (user, thread), so a turn routing here is
-        a legitimate handover. The previous owner's next renewal reports LOST and
-        it stops tracking the container without touching it.
+        이 thread를 마지막으로 처리한 인스턴스가 누구든 그로부터 넘겨받는다. 컨테이너는
+        (user, thread)마다 결정적이므로 여기로 라우팅된 turn은 정당한 인계다. 이전 owner는
+        다음 renewal에서 LOST를 보고받고, 컨테이너를 건드리지 않은 채 tracking만 중단한다.
 
-        Deliberately **not** fail-open. Swallowing the error and handing the
-        sandbox out anyway would leave it unowned while in active use, so a peer
-        would see an orphan and reap it — the exact failure this store exists to
-        stop. Callers must let this propagate.
+        의도적으로 fail-open이 **아니다**. 에러를 삼키고 sandbox를 그냥 넘겨주면 사용 중인데도
+        주인이 없는 상태가 되고, peer가 이를 orphan으로 보고 회수해버린다 — 바로 이 store가
+        막으려는 실패다. 호출자는 이 예외를 전파시켜야 한다.
 
-        The intent mark is published **before** the round trip, and that ordering
-        is the point. ``take()`` makes the takeover durable before it returns —
-        on redis the server has committed the SET while the reply is still in
-        flight — so bumping the epoch afterwards leaves a window where the store
-        already says the container is ours but the guard still reads as though it
-        were not. A renewal holding an older ``LOST`` walks straight through it,
-        drops the maps, and closes the client this call is about to hand back, so
-        acquire returns an id the provider no longer tracks and ``get()`` answers
-        ``None``. A guard must become visible no later than the transition it
-        guards; the epoch alone cannot, because it can only be written after the
-        call that performs the transition returns.
+        intent mark는 round trip **전에** 게시하며, 그 순서가 핵심이다. ``take()``는 반환하기
+        전에 인계를 durable하게 만든다 — redis에서는 응답이 아직 전송 중일 때 서버가 이미 SET을
+        커밋한 상태다 — 따라서 epoch를 그 뒤에 올리면 store는 이미 컨테이너가 우리 것이라고
+        말하는데 guard는 아직 아니라고 읽는 구간이 생긴다. 오래된 ``LOST``를 들고 있는 renewal이
+        그 틈으로 그대로 들어와 map을 비우고, 이 호출이 막 돌려주려던 client를 닫아버린다.
+        그러면 acquire는 provider가 더 이상 tracking하지 않는 id를 반환하고 ``get()``은
+        ``None``을 답한다. guard는 자신이 지키는 전이보다 늦지 않게 보여야 하는데, epoch만으로는
+        불가능하다. 전이를 수행하는 호출이 반환된 뒤에야 쓸 수 있기 때문이다.
 
-        So the two marks cover the two halves and are both needed: the intent
-        mark covers "an acquire is mid-flight", the epoch covers "an acquire
-        completed since you decided".
+        그래서 두 mark가 두 축을 나눠 맡고 둘 다 필요하다. intent mark는 "acquire가 진행 중"을,
+        epoch는 "당신이 판단한 이후 acquire가 완료됨"을 담당한다.
 
         Raises:
-            SandboxBeingDestroyedError: a peer is tearing this container down, so
-                it must not be handed to an agent (the destroy → re-acquire race).
-            OwnershipBackendError: ownership could not be published.
+            SandboxBeingDestroyedError: peer가 이 컨테이너를 내리는 중이므로 agent에게
+                넘겨서는 안 된다(destroy → 재acquire 경쟁).
+            OwnershipBackendError: ownership을 게시하지 못했다.
         """
         with self._lock:
             self._acquire_inflight[sandbox_id] = self._acquire_inflight.get(sandbox_id, 0) + 1
@@ -375,11 +367,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 self._acquire_epoch_counter += 1
                 self._acquire_epoch[sandbox_id] = self._acquire_epoch_counter
         finally:
-            # A count rather than a set: acquires for one id are serialized by
-            # the per-thread lock today, so a set would be equivalent — but that
-            # is an assumption about a caller two layers up, and if it ever
-            # stopped holding, a set would be cleared by the first finisher and
-            # silently reopen this window. Counting removes the assumption.
+            # set이 아니라 count를 쓴다. 지금은 한 id에 대한 acquire가 thread별 lock으로
+            # 직렬화되므로 set이어도 동등하지만, 그건 두 계층 위 호출자에 대한 가정이다.
+            # 그 가정이 깨지면 set은 가장 먼저 끝난 쪽이 지워버려 이 구간을 조용히 다시
+            # 열어준다. count를 쓰면 그 가정 자체가 없어진다.
             with self._lock:
                 remaining = self._acquire_inflight.get(sandbox_id, 0) - 1
                 if remaining > 0:
@@ -387,40 +378,36 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 else:
                     self._acquire_inflight.pop(sandbox_id, None)
 
-    # ── Same-process exclusion (the half the store does not provide) ───────
+    # ── 같은 프로세스 내 배제(store가 제공하지 않는 나머지 절반) ─────────────
     #
-    # A lease excludes *peers*: `claim()` succeeds against our own `own:` lease
-    # by design (that is what lets a destroy path claim what it already owns),
-    # and `take()` succeeds against it too. So between this process's reaper
-    # threads — idle checker, renewal, eviction — and its own acquire path, the
-    # store provides **no exclusion at all**. Every reaper decides outside
-    # `self._lock` (a store round trip must not be held under the lock that
-    # guards every acquire), so each one acts on a decision an acquire may
-    # already have invalidated. The two helpers below are that missing half, one
-    # per direction:
+    # lease는 *peer*를 배제한다. `claim()`은 설계상 우리 자신의 `own:` lease에 대해 성공하고
+    # (destroy 경로가 이미 소유한 것을 claim할 수 있는 이유다), `take()`도 마찬가지다. 따라서
+    # 이 프로세스의 reaper thread들(idle checker, renewal, eviction)과 자기 자신의 acquire
+    # 경로 사이에서 store는 **배제를 전혀 제공하지 않는다**. 모든 reaper는 `self._lock` 밖에서
+    # 판단하므로(store round trip을 모든 acquire를 지키는 lock 안에서 붙들고 있으면 안 된다),
+    # 각자가 이미 acquire에 의해 무효화되었을 수도 있는 판단에 따라 행동한다. 아래 두 helper가
+    # 그 빠진 절반이며, 방향별로 하나씩이다.
     #
-    #   reaping  — we are about to stop/drop it, so nothing may promote it:
-    #              reserve it, and make every promote path honour the reservation
-    #              exactly as it honours a peer's `del:`.
-    #   forgetting — a peer legitimately owns it and must win, so the promote is
-    #              the thing to detect: compare the acquire epoch we decided on.
+    #   reaping  — 곧 멈추거나 버릴 것이므로 아무도 promote하면 안 된다. 예약(reserve)하고,
+    #              모든 promote 경로가 peer의 `del:`을 존중하는 것과 똑같이 그 예약을
+    #              존중하게 한다.
+    #   forgetting — peer가 정당하게 소유했고 그쪽이 이겨야 하므로, 감지해야 할 것은 promote다.
+    #              판단 시점의 acquire epoch를 비교한다.
 
     def _reserve_local_teardown(self, sandbox_id: str, still_reapable: Callable[[], bool]) -> bool:
-        """Reserve *sandbox_id* for teardown by this process.
+        """이 프로세스가 teardown하려고 *sandbox_id*를 예약한다.
 
-        ``still_reapable`` is evaluated in the **same** critical section as the
-        reservation, so no acquire can slip between the last check and the mark.
-        That pairing is the whole point: checking first and marking second is the
-        window, not a narrower version of it.
+        ``still_reapable``은 예약과 **같은** 임계 구역에서 평가되므로, 마지막 확인과 mark 사이로
+        acquire가 끼어들 수 없다. 이 짝지음이 핵심이다. 먼저 확인하고 나중에 mark하는 것은 그
+        구간을 좁힌 게 아니라 구간 그 자체다.
 
-        Consequence, and the one rule a new caller has to know: **the predicate
-        runs with ``self._lock`` held**, which is a plain ``Lock``, so a predicate
-        that touches the lock — directly, or via a provider method that takes it —
-        deadlocks. Predicates must be cheap, non-blocking reads of the maps
-        (``sandbox_id in self._warm_pool``, a ``_last_activity`` comparison). The
-        constraint is stated rather than engineered around on purpose: making the
-        lock reentrant to tolerate it would trade a loud hang for a quiet class of
-        re-entrancy bugs everywhere else in this provider.
+        그 결과이자 새 호출자가 알아야 할 유일한 규칙: **predicate는 ``self._lock``을 쥔 채로
+        실행된다**. 이 lock은 평범한 ``Lock``이므로, lock을 건드리는 predicate는 — 직접이든
+        lock을 잡는 provider 메서드를 통해서든 — deadlock을 일으킨다. predicate는 map을 읽는
+        값싸고 블로킹하지 않는 연산이어야 한다(``sandbox_id in self._warm_pool``,
+        ``_last_activity`` 비교 등). 이 제약을 우회 설계하지 않고 명시만 한 것은 의도적이다.
+        이를 허용하려고 lock을 reentrant로 만들면, 눈에 띄는 hang 대신 이 provider 전체에
+        조용한 재진입 버그를 얻게 된다.
         """
         with self._lock:
             if sandbox_id in self._local_teardown or not still_reapable():
@@ -433,35 +420,33 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             self._local_teardown.discard(sandbox_id)
 
     def _being_torn_down_locally(self, sandbox_id: str) -> bool:
-        """Whether a reaper thread in *this* process holds *sandbox_id*.
+        """*이* 프로세스의 reaper thread가 *sandbox_id*를 붙들고 있는지 여부.
 
-        Callers must already hold ``self._lock``.
+        호출자는 이미 ``self._lock``을 쥐고 있어야 한다.
         """
         return sandbox_id in self._local_teardown
 
     def _acquire_epoch_of(self, sandbox_id: str) -> int:
-        """Snapshot the acquire generation, so a stale decision can be detected.
+        """acquire 세대를 snapshot해서 낡은 판단을 감지할 수 있게 한다.
 
-        Bumped only by ``_publish_ownership`` — i.e. exactly when an acquire path
-        (re)takes the lease on the way to handing the sandbox to an agent.
-        Re-establishing a lapsed lease from ``_refresh_ownership`` deliberately
-        does not bump it: nothing was handed out, so a reaper's decision about
-        that id is still current.
+        ``_publish_ownership``만 이 값을 올린다 — 즉 acquire 경로가 sandbox를 agent에게
+        넘기는 길에 lease를 (다시) 가져가는 바로 그 순간이다. ``_refresh_ownership``에서
+        만료된 lease를 다시 세우는 경우는 의도적으로 올리지 않는다. 넘겨준 것이 없으므로 그
+        id에 대한 reaper의 판단은 여전히 유효하다.
         """
         with self._lock:
             return self._acquire_epoch.get(sandbox_id, 0)
 
     def _claim_ownership(self, sandbox_id: str, *, for_destroy: bool = False) -> bool:
-        """Take (or refresh) ownership of *sandbox_id*.
+        """*sandbox_id*의 ownership을 가져오거나 갱신한다.
 
-        A successful claim is what makes acting on the container safe: while we
-        hold the lease a peer's claim fails. With ``for_destroy`` the lease is
-        additionally marked as a teardown, which a concurrent acquire-side
-        ``take()`` refuses — that is what closes the ownership-check → container-
-        stop window the deleted per-sandbox flock guard used to cover.
+        claim이 성공해야 컨테이너에 대한 조작이 안전해진다. 우리가 lease를 쥐고 있는 동안
+        peer의 claim은 실패한다. ``for_destroy``를 주면 lease에 teardown 표시가 추가되고,
+        동시에 진행되는 acquire 쪽 ``take()``가 이를 거부한다 — 삭제된 sandbox별 flock guard가
+        메우던 ownership 확인 → 컨테이너 stop 사이의 구간을 이렇게 닫는다.
 
-        Fails closed on a backend error: ownership unknown is treated as
-        "not ours" so we neither adopt nor destroy the container.
+        backend 에러 시 fail-closed다. ownership을 알 수 없으면 "우리 것이 아님"으로 취급해
+        컨테이너를 adopt하지도 destroy하지도 않는다.
         """
         try:
             return self._ownership.claim(sandbox_id, for_destroy=for_destroy)
@@ -473,35 +458,34 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         try:
             self._ownership.release(sandbox_id)
         except OwnershipBackendError as e:
-            # Best effort: the lease expires on its own, so a failed release
-            # delays reuse rather than corrupting ownership.
+            # best effort다. lease는 스스로 만료되므로 release 실패는 ownership을 망가뜨리는
+            # 대신 재사용을 늦출 뿐이다.
             logger.warning("Failed to release sandbox ownership for %s: %s", sandbox_id, e)
 
     def _refresh_ownership(self, sandbox_id: str) -> bool:
-        """Keep holding *sandbox_id*'s lease. False when a peer has taken it.
+        """*sandbox_id*의 lease를 계속 유지한다. peer가 가져갔으면 False.
 
-        A **lapsed** lease is re-established rather than treated as lost: nobody
-        holds it, so re-claiming is safe, and this is what keeps a Redis restart
-        (which drops every key) from evicting every live sandbox fleet-wide. A
-        lease a peer actually holds is never re-taken — that is the #4206 kill.
+        **만료된(lapsed)** lease는 잃어버린 것으로 취급하지 않고 다시 세운다. 아무도 쥐고
+        있지 않으므로 재claim이 안전하고, 이것이 (모든 키가 사라지는) Redis 재시작 때문에
+        전체 fleet의 살아 있는 sandbox가 전부 회수되는 일을 막는다. peer가 실제로 쥐고 있는
+        lease는 절대 다시 가져오지 않는다 — 그게 #4206 사고다.
         """
         try:
             outcome = self._ownership.renew(sandbox_id)
         except OwnershipBackendError as e:
-            # Unknown, not lost: keep the sandbox and retry next tick. The TTL
-            # still bounds how long a genuinely dead owner holds the lease.
+            # 잃은 게 아니라 알 수 없는 것이다. sandbox를 유지하고 다음 tick에 재시도한다.
+            # 정말로 죽은 owner가 lease를 붙들고 있는 시간은 여전히 TTL이 제한한다.
             logger.warning("Could not renew sandbox ownership for %s, will retry: %s", sandbox_id, e)
             return True
 
         if outcome is RenewOutcome.RENEWED:
             return True
         if outcome is RenewOutcome.LAPSED:
-            # Free: re-establish. This is the deliberate fail-open renewal path,
-            # so it cannot use `_claim_ownership`: that helper turns a backend
-            # error into False for adopt/reap callers, which would conflate an
-            # outage between these two round trips with a peer takeover and
-            # evict a live sandbox. Unknown means keep-and-retry here, exactly as
-            # it does when the `renew()` call itself cannot answer above.
+            # 비어 있으니 다시 세운다. 여기는 의도적으로 fail-open인 renewal 경로이므로
+            # `_claim_ownership`을 쓸 수 없다. 그 helper는 adopt/reap 호출자를 위해 backend
+            # 에러를 False로 바꾸는데, 그러면 이 두 round trip 사이의 장애를 peer의 인계와
+            # 혼동해 살아 있는 sandbox를 회수해버린다. 위에서 `renew()` 자체가 답하지 못한
+            # 경우와 똑같이, 여기서도 "알 수 없음"은 유지하고 재시도한다는 뜻이다.
             try:
                 if self._ownership.claim(sandbox_id):
                     logger.info("Re-established a lapsed ownership lease for %s", sandbox_id)
@@ -515,41 +499,36 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @contextlib.contextmanager
     def _held_teardown_lease(self, sandbox_id: str):
-        """Keep *sandbox_id*'s teardown marker alive for as long as its stop runs.
+        """컨테이너 stop이 진행되는 내내 *sandbox_id*의 teardown marker를 살려둔다.
 
-        ``claim(..., for_destroy=True)`` writes the ``del:`` marker with the
-        ordinary lease TTL, and normal ``renew()`` extends only ``own:`` while
-        deliberately reporting a teardown as ``LOST``. Active and unhealthy
-        destroy paths drop the sandbox from the maps ``_renew_owned_leases``
-        iterates; the warm path keeps its entry visible until the stop succeeds,
-        so ``_forget_lost_sandbox`` separately honours ``_local_teardown`` rather
-        than misreading our own marker as a peer takeover. Without this heartbeat,
-        a container stop that outlived the TTL let the marker lapse, a peer's
-        ``take()`` succeeded against the still-running container, and the stop
-        landed on the turn that had just been handed it — the very window the
-        ``del:`` state exists to close, reopened by its own expiry.
+        ``claim(..., for_destroy=True)``는 일반 lease TTL로 ``del:`` marker를 쓰고, 평범한
+        ``renew()``는 ``own:``만 연장하며 teardown은 의도적으로 ``LOST``로 보고한다. active와
+        unhealthy destroy 경로는 ``_renew_owned_leases``가 순회하는 map에서 sandbox를 빼지만,
+        warm 경로는 stop이 성공할 때까지 항목을 남겨두므로 ``_forget_lost_sandbox``가 우리
+        자신의 marker를 peer의 인계로 오해하지 않도록 별도로 ``_local_teardown``을 존중한다.
+        이 heartbeat가 없으면, TTL보다 오래 걸린 컨테이너 stop 도중 marker가 만료되고, 아직
+        살아 있는 컨테이너에 대해 peer의 ``take()``가 성공하며, 그 stop이 방금 컨테이너를
+        넘겨받은 turn 위로 떨어진다 — ``del:`` 상태가 닫으려던 바로 그 구간이 자기 만료 때문에
+        다시 열리는 것이다.
 
-        This is what the per-sandbox ``flock`` used to cover for free: a held lock
-        cannot expire. A lease can, so the exclusion has to be held deliberately
-        rather than assumed to outlast the work it guards. Reachable without an
-        abnormal backend — the config schema bounds only ``renewal_interval_seconds``
-        (> 0) and ``ttl_multiplier`` (>= 2), so a legal setting puts the TTL below a
-        normal container stop, and ``LocalContainerBackend._stop_container`` passes
-        no ``timeout`` to ``subprocess.run``, so a wedged daemon blocks unbounded
-        even at the default 120s.
+        sandbox별 ``flock``이 공짜로 해주던 일이 이것이다. 쥐고 있는 lock은 만료되지 않는다.
+        lease는 만료되므로, 배제가 자신이 지키는 작업보다 오래갈 것이라 가정하지 말고 의도적으로
+        붙들고 있어야 한다. 비정상 backend가 아니어도 도달 가능하다. config 스키마는
+        ``renewal_interval_seconds``(> 0)와 ``ttl_multiplier``(>= 2)만 제한하므로 합법적인
+        설정으로도 TTL이 정상적인 컨테이너 stop보다 짧아질 수 있고,
+        ``LocalContainerBackend._stop_container``는 ``subprocess.run``에 ``timeout``을 주지
+        않으므로 멈춰버린 daemon은 기본 120초에서도 무한정 블로킹한다.
 
-        The TTL stays finite on purpose: the heartbeat dies with the process, so a
-        destroyer that crashes mid-stop still releases the container one TTL later
-        instead of marking it undestroyable forever.
+        TTL을 유한하게 두는 것은 의도적이다. heartbeat는 프로세스와 함께 죽으므로, stop 도중
+        크래시한 destroyer도 컨테이너를 영원히 파괴 불가로 표시하는 대신 TTL 하나 뒤에는
+        풀어준다.
 
-        The final release is the heartbeat's own last act, not the caller's. A
-        refresh ``claim`` still in flight when the context exits (the socket
-        timeout bounds it, but it can be mid-call) would otherwise land *after* a
-        caller-side release and rewrite the ``del:`` marker on a container whose
-        stop had already completed — stranding a fresh ``take()`` (or rolling back
-        a fresh create) until the TTL. Releasing from inside the heartbeat, after
-        its loop has stopped, sequences the release strictly after the last
-        refresh, so no claim can follow it.
+        마지막 release는 호출자가 아니라 heartbeat 자신의 마지막 동작이다. context가 빠져나갈
+        때 아직 진행 중인 refresh ``claim``이 있으면(socket timeout이 제한하지만 호출 중일 수
+        있다) 호출자 쪽 release *뒤에* 도착해서, 이미 stop이 끝난 컨테이너에 ``del:`` marker를
+        다시 써버린다 — 그러면 새 ``take()``(또는 새로 만든 컨테이너의 롤백)가 TTL까지 묶인다.
+        loop가 멈춘 뒤 heartbeat 내부에서 release하면 release가 마지막 refresh보다 반드시 뒤에
+        오게 되므로 그 뒤를 따르는 claim이 있을 수 없다.
         """
         stop = threading.Event()
 
@@ -559,26 +538,25 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 while not stop.wait(interval):
                     try:
                         if not self._ownership.claim(sandbox_id, for_destroy=True):
-                            # Only reachable if the store lost our marker *and* a
-                            # peer took it (e.g. a flush mid-stop). The stop is
-                            # already in flight and cannot be recalled, so say so
-                            # loudly rather than let a peer's container die without
-                            # a trace.
+                            # store가 우리 marker를 잃고 *동시에* peer가 그것을 가져간
+                            # 경우에만 도달한다(예: stop 도중 flush). stop은 이미
+                            # 진행 중이라 되돌릴 수 없으므로, peer의 컨테이너가 흔적도
+                            # 없이 죽게 두는 대신 크게 알린다.
                             logger.error(
                                 "Lost the teardown exclusion for %s while its container stop was still in flight; a peer may have taken it",
                                 sandbox_id,
                             )
                             return
                     except Exception as e:
-                        # Broad on purpose: a refresh that raises must not kill the
-                        # heartbeat and strand the marker for a stop that can run
-                        # unbounded. Unknown, not lost — the marker may still be
-                        # live and the TTL bounds a stale one. Retry on the next tick.
+                        # 의도적으로 넓게 잡는다. refresh가 예외를 던졌다고 heartbeat가
+                        # 죽어서, 무한정 실행될 수 있는 stop을 위한 marker를 방치하면 안
+                        # 된다. 잃은 게 아니라 알 수 없는 것이다 — marker는 아직 살아 있을
+                        # 수 있고 낡은 marker는 TTL이 정리한다. 다음 tick에 재시도한다.
                         logger.warning("Could not refresh the teardown lease for %s, will retry: %s", sandbox_id, e)
             finally:
-                # Release last, from the heartbeat itself, so an in-flight refresh
-                # can never run after the marker is cleared. `release()` drops only
-                # our own lease, so this is a safe no-op if a peer took it above.
+                # release는 heartbeat 자신이 마지막에 한다. 그래야 진행 중인 refresh가
+                # marker가 지워진 뒤에 실행되는 일이 없다. `release()`는 우리 자신의 lease만
+                # 지우므로, 위에서 peer가 가져갔다면 안전한 no-op이 된다.
                 self._release_ownership(sandbox_id)
 
         beater = threading.Thread(target=beat, name="sandbox-teardown-lease", daemon=True)
@@ -589,57 +567,54 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             stop.set()
             beater.join(timeout=self._TEARDOWN_JOIN_TIMEOUT_SECONDS)
             if beater.is_alive():
-                # The budget covers a normally timing-out refresh plus the final
-                # release. The release is the heartbeat's job and is still
-                # pending; clearing the marker here would reopen the exact race
-                # this owns, so leave it — the thread will release when it
-                # unblocks, or the TTL will reap it.
+                # 이 예산은 정상적으로 timeout되는 refresh와 마지막 release를 합친 값이다.
+                # release는 heartbeat의 몫이고 아직 남아 있다. 여기서 marker를 지우면 이
+                # 컨텍스트가 담당하는 바로 그 경쟁이 다시 열리므로 그대로 둔다 — thread가
+                # 풀리면 release하거나, TTL이 정리한다.
                 logger.warning(
                     "Teardown heartbeat for %s did not exit within %.1fs; its lease release is deferred to that thread",
                     sandbox_id,
                     self._TEARDOWN_JOIN_TIMEOUT_SECONDS,
                 )
 
-    # ── Startup reconciliation ────────────────────────────────────────────
+    # ── 기동 시 reconciliation ─────────────────────────────────────────────
 
     def _adoptable_after_grace(self, sandbox_id: str, now: float) -> bool:
-        """Whether *sandbox_id* has looked unowned long enough to be a real orphan.
+        """*sandbox_id*가 진짜 orphan이라고 볼 만큼 오래 주인 없이 보였는지 여부.
 
-        An absent lease normally proves the owner died and its TTL ran out. But
-        the store can lose every key while every owner is alive and serving — a
-        Redis restart without persistence, or eviction under ``maxmemory``
-        pressure. ``_refresh_ownership`` already refuses to read that as
-        abandonment (``LAPSED`` is re-established, not surrendered). Reading the
-        same signal as "orphan, adopt" here would contradict it on the other
-        path: whoever reconciles first would adopt every live container in the
-        window before its owner's next renewal tick, that owner's renewal would
-        then report ``LOST``, and it would drop a sandbox it is actively serving
-        for the adopter to idle-destroy — #4206 through the back door.
+        lease가 없다는 것은 보통 owner가 죽고 TTL이 지났다는 증거다. 하지만 모든 owner가
+        살아서 서비스 중인데도 store가 모든 키를 잃을 수 있다 — persistence 없는 Redis 재시작,
+        또는 ``maxmemory`` 압박에 의한 eviction. ``_refresh_ownership``은 이미 그 신호를
+        포기로 읽기를 거부한다(``LAPSED``는 넘겨주는 게 아니라 다시 세운다). 여기서 같은
+        신호를 "orphan이니 adopt"로 읽으면 다른 경로와 모순된다. 먼저 reconcile한 쪽이 각
+        owner의 다음 renewal tick 전 구간에서 살아 있는 컨테이너를 전부 adopt하고, 그 owner의
+        renewal은 ``LOST``를 보고받아 자신이 실제로 서비스 중인 sandbox를 놓아버리며,
+        adopter가 그것을 idle-destroy한다 — 뒷문으로 들어온 #4206이다.
 
-        Waiting one full lease TTL rebuilds the delay the state loss erased. A
-        live owner republishes within one renewal interval, which is shorter than
-        the TTL by construction (``ttl_multiplier >= 2``), so only a container
-        whose owner is really gone stays unowned across the whole grace.
+        lease TTL 하나를 온전히 기다리면 상태 손실이 지워버린 지연이 복원된다. 살아 있는
+        owner는 renewal 간격 하나 안에 다시 게시하고 그 간격은 구조상 TTL보다 짧으므로
+        (``ttl_multiplier >= 2``), grace 전체 동안 주인 없이 남는 컨테이너는 owner가 정말로
+        사라진 것뿐이다.
         """
         if not self._ownership.supports_cross_process:
-            # No peer can hold a lease this store would show us, so an unowned
-            # container cannot be a live peer's — it is from a dead lifecycle of
-            # this process. Single-instance deployments keep instant cleanup, and
-            # a grace could not help a multi-worker one on this store anyway:
-            # peers are invisible to each other's leases with or without it.
+            # 이 store가 우리에게 보여줄 lease를 peer가 쥐고 있을 수 없으므로, 주인 없는
+            # 컨테이너는 살아 있는 peer의 것일 수 없다 — 이 프로세스의 죽은 수명 주기에서
+            # 남은 것이다. 단일 인스턴스 배포는 즉시 정리를 유지하고, 이 store에서는 grace가
+            # multi-worker 배포에도 도움이 되지 않는다. grace가 있든 없든 peer들의 lease는
+            # 서로에게 보이지 않기 때문이다.
             return True
 
         try:
             current_owner = self._ownership.owner(sandbox_id)
         except OwnershipBackendError as e:
-            # Unknown, not free: fail closed, same as _claim_ownership.
+            # 비어 있는 게 아니라 알 수 없는 것이다. _claim_ownership과 마찬가지로 fail closed.
             logger.warning("Could not read sandbox ownership for %s during reconciliation (deferring adoption): %s", sandbox_id, e)
             return False
 
         if current_owner is not None:
-            # Owned — by a peer, or already by us. Either way not an orphan, and
-            # a live owner republishing must restart the grace rather than let a
-            # stale one expire over its lease.
+            # 주인이 있다 — peer이거나 이미 우리다. 어느 쪽이든 orphan이 아니며, 살아 있는
+            # owner가 다시 게시했다면 낡은 타이머가 그 lease를 넘어 만료되게 두지 말고 grace를
+            # 다시 시작해야 한다.
             self._unowned_since.pop(sandbox_id, None)
             return False
 
@@ -647,21 +622,20 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         return now - first_seen >= compute_lease_ttl(self._ownership_config)
 
     def _reconcile_orphans(self) -> None:
-        """Reconcile orphaned containers left by previous process lifecycles.
+        """이전 프로세스 수명 주기가 남긴 orphan 컨테이너를 정리한다.
 
-        On startup (and periodically from the idle checker), enumerate running
-        containers matching our prefix and adopt **true orphans** into the warm
-        pool.  A container is only adopted when this instance can claim its
-        ownership lease — so multi-instance gateways cannot adopt and later
-        idle-destroy a peer's live sandbox (#4206).
+        기동 시(그리고 idle checker를 통해 주기적으로) 우리 prefix에 맞는 실행 중 컨테이너를
+        열거하고 **진짜 orphan**만 warm pool로 adopt한다. 이 인스턴스가 ownership lease를
+        claim할 수 있을 때만 adopt하므로, multi-instance gateway가 peer의 살아 있는 sandbox를
+        adopt한 뒤 idle-destroy하는 일이 생기지 않는다(#4206).
 
-        Adopted orphans get a fresh warm-pool timestamp; the idle checker then
-        destroys them if nobody re-acquires within ``idle_timeout``.  That still
-        cleans containers left by a crashed process once its lease expires.
+        adopt된 orphan은 새 warm-pool timestamp를 받고, ``idle_timeout`` 안에 아무도 다시
+        acquire하지 않으면 idle checker가 파괴한다. 크래시한 프로세스가 남긴 컨테이너도 그
+        lease가 만료되면 여전히 이렇게 정리된다.
 
-        An unowned container is not adopted on sight — it must stay unowned for a
-        recovery grace first, so a store that lost its state cannot be mistaken
-        for a fleet of dead owners (see ``_adoptable_after_grace``).
+        주인 없는 컨테이너를 보자마자 adopt하지는 않는다. 먼저 recovery grace 동안 계속 주인
+        없이 남아 있어야 하며, 그래야 상태를 잃은 store를 죽은 owner 무리로 오인하지 않는다
+        (``_adoptable_after_grace`` 참고).
         """
         try:
             running = self._backend.list_running()
@@ -669,9 +643,9 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             logger.warning(f"Failed to enumerate running containers during startup reconciliation: {e}")
             return
 
-        # Forget grace timers for containers that no longer exist, so a
-        # long-lived instance does not accumulate an entry per destroyed
-        # container. Runs before the empty-list return so it also drains.
+        # 더 이상 존재하지 않는 컨테이너의 grace 타이머를 버려서, 오래 사는 인스턴스가 파괴된
+        # 컨테이너마다 항목을 쌓지 않게 한다. 빈 목록 반환보다 앞에서 실행해 그 경우에도
+        # 비워지게 한다.
         running_ids = {info.sandbox_id for info in running}
         self._unowned_since = {sid: seen for sid, seen in self._unowned_since.items() if sid in running_ids}
 
@@ -690,32 +664,29 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 logger.debug("Deferring container %s during reconciliation: owned, or not yet past the recovery grace", info.sandbox_id)
                 continue
 
-            # Claim second: a successful claim proves the container is not a
-            # peer's and locks peers out. It says nothing about *us* — it
-            # succeeds against our own lease by design — so it is not a substitute
-            # for the local teardown check below. The grace above is likewise a
-            # precondition, not a substitute; only the claim is atomic.
+            # 두 번째로 claim한다. claim이 성공하면 그 컨테이너가 peer의 것이 아님이
+            # 증명되고 peer가 잠긴다. 하지만 *우리*에 대해서는 아무것도 말해주지 않는다 —
+            # 설계상 우리 자신의 lease에 대해서는 성공한다 — 따라서 아래의 local teardown
+            # 확인을 대체하지 못한다. 위의 grace도 마찬가지로 전제 조건일 뿐 대체재가
+            # 아니다. atomic한 것은 claim뿐이다.
             if not self._claim_ownership(info.sandbox_id):
                 skipped_live += 1
                 logger.debug("Skipping container %s during reconciliation: owned by another instance", info.sandbox_id)
                 continue
 
-            # Single lock acquisition per container: atomic check-and-insert.
-            # Avoids a TOCTOU window between the "already tracked?" check and the
-            # warm-pool insert.
+            # 컨테이너당 lock 획득 한 번으로 atomic한 check-and-insert를 한다.
+            # "이미 tracking 중인가?" 확인과 warm-pool 삽입 사이의 TOCTOU 구간을 없앤다.
             with self._lock:
                 if info.sandbox_id in self._sandboxes or info.sandbox_id in self._warm_pool:
                     continue
                 if self._being_torn_down_locally(info.sandbox_id):
-                    # Adoption is a promote, so it needs the same reservation
-                    # check as the other three. A container being torn down here
-                    # is untracked and still running, which is exactly the shape
-                    # this loop adopts — and neither the claim nor the grace
-                    # excludes it. On `memory` the grace is skipped outright
-                    # (`supports_cross_process = False`), so nothing else stands
-                    # in the way there at all; adopting would park a container
-                    # into the warm pool moments before its stop lands, leaving a
-                    # dead entry for the next reclaim to hand out.
+                    # adoption도 promote이므로 나머지 세 경로와 같은 예약 확인이 필요하다.
+                    # 여기서 teardown 중인 컨테이너는 tracking되지 않은 채 아직 실행 중인데,
+                    # 이 루프가 adopt하는 모습이 정확히 그것이다 — 그리고 claim도 grace도
+                    # 그것을 배제하지 못한다. `memory`에서는 grace가 아예 건너뛰어지므로
+                    # (`supports_cross_process = False`) 막아줄 것이 전혀 없다. adopt하면
+                    # stop이 도착하기 직전에 컨테이너를 warm pool에 넣게 되고, 다음 reclaim이
+                    # 죽은 항목을 넘겨주게 된다.
                     deferred += 1
                     logger.debug("Deferring container %s during reconciliation: this instance is tearing it down", info.sandbox_id)
                     continue
@@ -733,7 +704,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             len(running),
         )
 
-    # ── Deterministic ID ─────────────────────────────────────────────────
+    # ── 결정적 ID ─────────────────────────────────────────────────────────
 
     @staticmethod
     def _effective_acquire_user_id(user_id: str | None) -> str:
@@ -745,14 +716,14 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _deterministic_sandbox_id(thread_id: str, user_id: str) -> str:
-        """Generate a deterministic sandbox ID from user/thread scope.
+        """user/thread 범위에서 결정적인 sandbox ID를 생성한다.
 
-        Includes user_id so a previously-created default-bucket sandbox cannot be
-        reused for an auth/channel run that should mount a user-scoped bucket.
+        user_id를 포함하므로, 이전에 만들어진 기본 bucket sandbox가 user 범위 bucket을
+        mount해야 하는 auth/channel 실행에 재사용되지 않는다.
 
-        During a mixed-version rollout, older 8-character containers are not
-        reused under the new 16-character identity. They remain eligible for
-        normal orphan cleanup while the first new-version acquire cold-starts.
+        버전이 섞인 롤아웃 중에는 기존 8자 컨테이너가 새 16자 identity로 재사용되지 않는다.
+        첫 신버전 acquire가 cold-start하는 동안 기존 컨테이너는 일반 orphan 정리 대상으로
+        남는다.
         """
         return hashlib.sha256(f"{user_id}:{thread_id}".encode()).hexdigest()[:16]
 
@@ -761,7 +732,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         sandbox_id: str,
         requested_key: tuple[str, str],
     ) -> None:
-        """Fail closed if an active truncated ID belongs to another identity."""
+        """활성 상태의 잘린 ID가 다른 identity의 것이면 fail closed 한다."""
         if sandbox_id not in self._sandboxes and sandbox_id not in self._sandbox_infos:
             return
 
@@ -778,18 +749,18 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         sandbox_id: str,
         requested_key: tuple[str, str],
     ) -> None:
-        """Fail closed if a warm ID changed tenants during an acquire."""
+        """warm ID가 acquire 도중 테넌트를 바꿨으면 fail closed 한다."""
         if sandbox_id not in self._warm_pool:
             return
-        # Startup-adopted entries have unknown identity until their first reclaim.
+        # 기동 시 adopt된 항목은 첫 reclaim 전까지 identity를 알 수 없다.
         stored_key = self._warm_pool_identity.get(sandbox_id)
         if stored_key is not None and stored_key != requested_key:
             raise SandboxIdentityCollisionError(sandbox_id, stored_key, requested_key)
 
-    # ── Mount helpers ────────────────────────────────────────────────────
+    # ── Mount 관련 helper ─────────────────────────────────────────────────
 
     def _get_extra_mounts(self, thread_id: str | None, *, user_id: str | None = None) -> list[tuple[str, str, bool]]:
-        """Collect all extra mounts for a sandbox (thread-specific + skills)."""
+        """sandbox에 붙일 추가 mount를 모두 모은다(thread 전용 + skills)."""
         mounts: list[tuple[str, str, bool]] = []
 
         if thread_id:
@@ -815,12 +786,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _dedupe_mounts_by_container_path(mounts: list[tuple[str, str, bool]]) -> list[tuple[str, str, bool]]:
-        """Keep the first mount for each container path.
+        """컨테이너 경로마다 첫 번째 mount만 남긴다.
 
-        Duplicate container paths are rejected by the provisioner and can also
-        fail local Docker creation. The earlier mount wins because mount helpers
-        are appended in priority order: thread data, skill roots, integration
-        skill roots, then integration runtimes/credentials.
+        컨테이너 경로가 중복되면 provisioner가 거부하고, 로컬 Docker 생성도 실패할 수 있다.
+        mount helper가 우선순위 순서(thread 데이터, skill 루트, integration skill 루트,
+        그다음 integration runtime/credential)로 추가되므로 먼저 온 mount가 이긴다.
         """
         seen: set[str] = set()
         deduped: list[tuple[str, str, bool]] = []
@@ -838,11 +808,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _get_thread_mounts(thread_id: str, *, user_id: str | None = None) -> list[tuple[str, str, bool]]:
-        """Get volume mounts for a thread's data directories.
+        """thread의 데이터 디렉터리에 대한 volume mount를 만든다.
 
-        Creates directories if they don't exist (lazy initialization).
-        Mount sources use host_base_dir so that when running inside Docker with a
-        mounted Docker socket (DooD), the host Docker daemon can resolve the paths.
+        디렉터리가 없으면 생성한다(lazy 초기화). mount source는 host_base_dir을 쓰므로,
+        Docker socket을 mount한 Docker 안에서 실행할 때(DooD) host Docker daemon이 경로를
+        해석할 수 있다.
         """
         paths = get_paths()
         effective_user_id = AioSandboxProvider._effective_acquire_user_id(user_id)
@@ -852,24 +822,22 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             (paths.host_sandbox_work_dir(thread_id, user_id=effective_user_id), f"{VIRTUAL_PATH_PREFIX}/workspace", False),
             (paths.host_sandbox_uploads_dir(thread_id, user_id=effective_user_id), f"{VIRTUAL_PATH_PREFIX}/uploads", False),
             (paths.host_sandbox_outputs_dir(thread_id, user_id=effective_user_id), f"{VIRTUAL_PATH_PREFIX}/outputs", False),
-            # ACP workspace: read-only inside the sandbox (lead agent reads results;
-            # the ACP subprocess writes from the host side, not from within the container).
+            # ACP workspace: sandbox 안에서는 읽기 전용이다(lead agent가 결과를 읽고, ACP
+            # subprocess는 컨테이너 안이 아니라 host 쪽에서 쓴다).
             (paths.host_acp_workspace_dir(thread_id, user_id=effective_user_id), "/mnt/acp-workspace", True),
         ]
 
     @staticmethod
     def _get_skills_mounts(*, user_id: str | None = None) -> list[tuple[str, str, bool]]:
-        """Get skills directory mount configurations for three-way skills layout.
+        """3분할 skills 레이아웃에 대한 skills 디렉터리 mount 설정을 만든다.
 
-        Mirrors ``LocalSandboxProvider._build_thread_path_mappings`` for AIO
-        sandboxes: public, per-user custom, and legacy (pre-migration
-        global-custom) skills are mounted to separate container subdirectories so
-        that ``Skill.get_container_path()`` category-aware paths resolve
-        correctly inside the sandbox.
+        AIO sandbox용으로 ``LocalSandboxProvider._build_thread_path_mappings``를 그대로
+        반영한다. public, 사용자별 custom, legacy(마이그레이션 이전의 global-custom) skill을
+        각각 다른 컨테이너 하위 디렉터리에 mount해서, ``Skill.get_container_path()``의
+        카테고리 인식 경로가 sandbox 안에서 올바르게 해석되게 한다.
 
-        Mount sources use ``DEER_FLOW_HOST_BASE_DIR`` when running inside
-        Docker (DooD) so the host Docker daemon can resolve the projection
-        paths.
+        Docker 안에서 실행할 때(DooD)는 mount source가 ``DEER_FLOW_HOST_BASE_DIR``를 쓰므로
+        host Docker daemon이 projection 경로를 해석할 수 있다.
         """
         mounts: list[tuple[str, str, bool]] = []
         try:
@@ -880,7 +848,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             paths = get_paths()
             host_base_dir = str(paths.host_base_dir)
 
-            # 1. Public skills: global, read-only — static, shared by all threads
+            # 1. public skills: 전역, 읽기 전용 — 정적이며 모든 thread가 공유한다
             mounts.append(
                 (
                     join_host_path(host_base_dir, "skills_view", "public"),
@@ -889,7 +857,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 )
             )
 
-            # 2. Per-user custom skills: read-only, per-thread/per-user
+            # 2. 사용자별 custom skills: 읽기 전용, thread/user 단위
             host_user_custom = join_host_path(
                 host_base_dir,
                 "users",
@@ -905,9 +873,8 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 )
             )
 
-            # 3. Legacy visibility is encoded by projection contents. Keep the
-            # mount stable even when the directory is empty so a later state
-            # change is visible without recreating the sandbox.
+            # 3. legacy 가시성은 projection 내용으로 표현된다. 디렉터리가 비어 있어도 mount를
+            # 그대로 유지해서, 나중에 상태가 바뀌어도 sandbox를 다시 만들지 않고 반영되게 한다.
             mounts.append(
                 (
                     join_host_path(host_base_dir, "users", effective_user_id, "skills_view", "legacy"),
@@ -922,12 +889,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _ensure_skills_projection(user_id: str):
-        """Best-effort: a projection failure must not fail sandbox acquire.
+        """best-effort다. projection 실패가 sandbox acquire를 실패시켜서는 안 된다.
 
-        Called directly (for its side effect) from ``_acquire_internal`` /
-        ``_acquire_internal_async`` outside any try/except, as well as from
-        within ``_get_skills_mounts``'s own guarded block — swallowing here
-        keeps both call sites safe without duplicating the guard.
+        ``_acquire_internal`` / ``_acquire_internal_async``에서 try/except 없이 (side effect
+        목적으로) 직접 호출되고, ``_get_skills_mounts``의 자체 보호 블록 안에서도 호출된다 —
+        여기서 예외를 삼키면 guard를 중복하지 않고도 두 호출 지점 모두 안전해진다.
         """
         from deerflow.skills.projection import ensure_skill_projections
         from deerflow.skills.storage import get_or_new_user_skill_storage
@@ -941,11 +907,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _get_user_skill_mounts(*, user_id: str | None = None) -> list[tuple[str, str, bool]]:
-        """Mount enabled managed integration skills into AIO sandboxes.
+        """활성화된 managed integration skill을 AIO sandbox에 mount한다.
 
-        Per-user custom skills are already mounted by ``_get_skills_mounts``.
-        Integration packages are shared, but their enabled state is per-user, so
-        this helper mounts the user's projection instead of the raw shared root.
+        사용자별 custom skill은 이미 ``_get_skills_mounts``가 mount한다. integration 패키지는
+        공유되지만 활성화 상태는 사용자별이므로, 이 helper는 공유 루트 원본 대신 사용자의
+        projection을 mount한다.
         """
         try:
             config = get_app_config()
@@ -972,11 +938,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _lark_integration_active(user_id: str | None = None) -> bool:
-        """Whether the managed Lark skill pack is installed for this user.
+        """이 사용자에게 managed Lark skill pack이 설치되어 있는지 여부.
 
-        Drives whether a sandbox requests the lark-cli runtime (init container /
-        Gateway-download mount). Independent of whether a local ``sandbox-cli``
-        dir exists, so remote/K8s can opt in without a Gateway-side download.
+        sandbox가 lark-cli runtime(init container / Gateway 다운로드 mount)을 요청할지를
+        결정한다. 로컬 ``sandbox-cli`` 디렉터리 존재 여부와 무관하므로, 원격/K8s는 Gateway 쪽
+        다운로드 없이도 사용할 수 있다.
         """
         try:
             effective_user_id = AioSandboxProvider._effective_acquire_user_id(user_id)
@@ -987,12 +953,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _lark_broker_active(user_id: str | None = None) -> bool:
-        """Whether this user's sandbox should use the lark-cli broker (Pattern B).
+        """이 사용자의 sandbox가 lark-cli broker(Pattern B)를 써야 하는지 여부.
 
-        True only when the Lark pack is installed AND the remote provisioner
-        reports a configured broker image. When true, the provisioner keeps the
-        credentials in a sidecar and the sandbox gets only a shim, so the
-        Gateway-side credential-mount overlay must not run either.
+        Lark pack이 설치되어 있고 **동시에** 원격 provisioner가 설정된 broker 이미지를 보고할
+        때만 True다. True이면 provisioner가 credential을 sidecar에 두고 sandbox에는 shim만
+        주므로, Gateway 쪽 credential mount overlay도 실행하면 안 된다.
         """
         try:
             if not AioSandboxProvider._lark_integration_active(user_id):
@@ -1006,27 +971,23 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     @staticmethod
     def _get_lark_cli_runtime_mounts(*, user_id: str | None = None) -> list[tuple[str, str, bool]]:
-        """Mount the per-user lark-cli config/data dirs used by Settings auth.
+        """Settings 인증이 쓰는 사용자별 lark-cli config/data 디렉터리를 mount한다.
 
-        Settings endpoints run ``lark-cli`` on the Gateway with
-        ``LARKSUITE_CLI_CONFIG_DIR`` / ``DATA_DIR`` pointing at
-        ``users/{user}/integrations/lark-cli``. Agent conversations run
-        ``lark-cli`` inside the sandbox, so those same directories must be
-        mounted into the container or the CLI sees a separate unauthenticated
-        profile.
+        Settings 엔드포인트는 Gateway에서 ``LARKSUITE_CLI_CONFIG_DIR`` / ``DATA_DIR``를
+        ``users/{user}/integrations/lark-cli``로 가리킨 채 ``lark-cli``를 실행한다. agent 대화는
+        sandbox 안에서 ``lark-cli``를 실행하므로 같은 디렉터리를 컨테이너에 mount하지 않으면
+        CLI가 인증되지 않은 별도 프로필을 보게 된다.
 
-        The ``config`` dir holds the long-lived Lark ``appSecret`` (written by
-        ``lark-cli config init`` on the Gateway, never in-sandbox), so it is
-        mounted **read-only**: sandbox processes only need to read it, and a
-        read-only bind stops a compromised agent from tampering with or
-        replacing the app credentials. Newer ``lark-cli`` versions coordinate
-        API calls through ``config/locks``, so that empty subdirectory is
-        over-mounted writable without exposing the rest of ``config`` to
-        writes. The ``data`` dir holds refreshable OAuth tokens that
-        ``lark-cli auth`` updates in-sandbox, so it stays writable.
-        This is defense-in-depth only — both dirs remain readable to arbitrary
-        sandbox processes until the auth-proxy follow-up (issue #4338) lands.
-        See the sandbox trust-boundary note in ``backend/AGENTS.md``.
+        ``config`` 디렉터리는 수명이 긴 Lark ``appSecret``을 담고 있으므로(Gateway의
+        ``lark-cli config init``이 쓰며 sandbox 안에서는 절대 쓰지 않는다) **읽기 전용**으로
+        mount한다. sandbox 프로세스는 읽기만 하면 되고, 읽기 전용 bind는 침해된 agent가 app
+        credential을 변조하거나 교체하지 못하게 막는다. 최신 ``lark-cli``는 ``config/locks``를
+        통해 API 호출을 조율하므로, 그 빈 하위 디렉터리만 쓰기 가능하게 덧mount해서 나머지
+        ``config``는 쓰기에 노출하지 않는다. ``data`` 디렉터리는 ``lark-cli auth``가 sandbox
+        안에서 갱신하는 OAuth 토큰을 담으므로 쓰기 가능한 상태를 유지한다.
+        이것은 방어의 한 겹일 뿐이다 — auth-proxy 후속 작업(issue #4338)이 반영되기 전까지 두
+        디렉터리 모두 임의의 sandbox 프로세스가 읽을 수 있다. ``backend/AGENTS.md``의 sandbox
+        신뢰 경계 설명을 참고한다.
         """
         try:
             paths = get_paths()
@@ -1052,24 +1013,23 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             logger.warning(f"Could not setup Lark CLI runtime mounts: {e}")
             return []
 
-    # ── Idle timeout management ──────────────────────────────────────────
+    # ── idle timeout 관리 ─────────────────────────────────────────────────
 
     def _cleanup_idle_resources(self, idle_timeout: float) -> None:
-        """Clean AIO resources idle longer than ``idle_timeout`` seconds."""
-        # Pick up containers whose peer leases expired since startup (crash path).
+        """``idle_timeout``초보다 오래 유휴 상태인 AIO 리소스를 정리한다."""
+        # 기동 이후 peer의 lease가 만료된 컨테이너를 회수한다(크래시 경로).
         self._reconcile_orphans()
         self._cleanup_idle_sandboxes(idle_timeout)
 
-    # ── Ownership lease renewal ──────────────────────────────────────────
+    # ── ownership lease 갱신 ───────────────────────────────────────────────
 
     def _start_lease_renewal(self) -> None:
-        """Start the daemon thread that keeps this instance's leases alive.
+        """이 인스턴스의 lease를 살려두는 daemon thread를 시작한다.
 
-        Deliberately not folded into the idle checker: that thread only starts
-        when ``idle_timeout > 0``, so renewal riding on it silently stopped for
-        ``idle_timeout: 0`` deployments — a supported config ("keep warm VMs
-        until shutdown") — letting every lease lapse and reopening #4206 one TTL
-        later. Liveness and reaping must not share a switch.
+        의도적으로 idle checker에 합치지 않았다. 그 thread는 ``idle_timeout > 0``일 때만
+        시작하므로, renewal을 거기에 얹으면 ``idle_timeout: 0`` 배포(지원되는 설정이다.
+        "shutdown까지 warm VM 유지")에서 조용히 멈춰 모든 lease가 만료되고 TTL 하나 뒤에
+        #4206이 다시 열린다. liveness와 reaping은 같은 스위치를 공유하면 안 된다.
         """
         if self._renewal_thread is not None and self._renewal_thread.is_alive():
             return
@@ -1102,64 +1062,57 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 logger.exception("Error in sandbox ownership renewal loop")
 
     def _renew_owned_leases(self) -> None:
-        """Renew every container this instance believes it owns.
+        """이 인스턴스가 소유했다고 믿는 모든 컨테이너의 lease를 갱신한다.
 
-        Covers warm entries as well as active ones: a warm container is still
-        ours (we hold it for fast reclaim), so letting its lease lapse would let
-        a peer adopt a container we are about to hand back to its thread.
+        active 항목뿐 아니라 warm 항목도 포함한다. warm 컨테이너도 여전히 우리 것이므로(빠른
+        reclaim을 위해 붙들고 있다), lease를 만료시키면 곧 그 thread에 돌려줄 컨테이너를 peer가
+        adopt해버린다.
 
-        Only a lease a **peer** now holds means the container is no longer ours;
-        a lapsed one is re-established (see ``_refresh_ownership``). Conflating
-        the two would evict every live sandbox on this instance the first time
-        the store lost its state.
+        **peer**가 지금 쥐고 있는 lease만이 컨테이너가 더 이상 우리 것이 아님을 뜻한다. 만료된
+        lease는 다시 세운다(``_refresh_ownership`` 참고). 둘을 혼동하면 store가 상태를 잃는
+        순간 이 인스턴스의 살아 있는 sandbox가 전부 회수된다.
         """
         with self._lock:
             owned_ids = list(self._sandboxes.keys()) + list(self._warm_pool.keys())
 
         for sandbox_id in owned_ids:
-            # Snapshot before the round trip: by the time `renew()` answers LOST,
-            # an acquire in this process may already have taken the lease back
-            # and promoted the id, and the answer is about the lease we held then.
+            # round trip 전에 snapshot한다. `renew()`가 LOST를 답할 즈음이면 이 프로세스의
+            # acquire가 이미 lease를 되찾고 그 id를 promote했을 수 있으며, 그 답은 그때 우리가
+            # 쥐고 있던 lease에 대한 것이다.
             epoch = self._acquire_epoch_of(sandbox_id)
             if not self._refresh_ownership(sandbox_id):
                 logger.warning("Lost sandbox ownership lease for %s; dropping it from this instance", sandbox_id)
                 self._forget_lost_sandbox(sandbox_id, expected_epoch=epoch)
 
     def _forget_lost_sandbox(self, sandbox_id: str, *, expected_epoch: int | None = None) -> None:
-        """Drop a sandbox whose lease we no longer hold, without touching the container.
+        """lease를 더 이상 쥐고 있지 않은 sandbox를 컨테이너는 건드리지 않고 버린다.
 
-        The container now belongs to whichever instance holds the lease, so
-        stopping it here would be the very cross-instance kill this store exists
-        to prevent. Only our host-side handle goes away.
+        컨테이너는 이제 lease를 쥔 인스턴스의 것이므로, 여기서 멈추면 이 store가 막으려는 바로
+        그 인스턴스 간 kill이 된다. 사라지는 것은 우리 host 쪽 handle뿐이다.
 
-        ``expected_epoch`` guards callers whose "we lost it" decision came from a
-        store round trip made outside the lock. An acquire **mid-flight** counts
-        too: its ``take()`` can already have made the takeover durable while the
-        epoch is still unwritten, so the epoch alone would let a stale decision
-        through (see ``_publish_ownership``). An acquire that re-took the lease
-        in that window has already handed the sandbox to a turn — and, on the
-        reuse path, handed out the *same* tracked client, so no object-identity
-        check would notice. Dropping it then closes a client mid-turn and leaves
-        the agent holding an id whose tool calls fail until the next turn.
+        ``expected_epoch``는 "잃었다"는 판단이 lock 밖의 store round trip에서 나온 호출자를
+        보호한다. **진행 중인** acquire도 여기 해당한다. 그 ``take()``는 epoch가 아직 기록되지
+        않은 상태에서 이미 인계를 durable하게 만들 수 있으므로, epoch만으로는 낡은 판단이
+        통과한다(``_publish_ownership`` 참고). 그 구간에서 lease를 되찾은 acquire는 이미
+        sandbox를 turn에 넘겼고, reuse 경로에서는 *같은* tracking 중인 client를 넘겨줬으므로
+        객체 identity 비교로는 알아챌 수 없다. 그때 버리면 turn 도중 client가 닫히고, agent는
+        다음 turn까지 tool call이 실패하는 id를 들고 있게 된다.
         """
         with self._lock:
-            # A warm teardown deliberately keeps its entry visible until the
-            # backend stop succeeds. Its own `del:` marker makes `renew()` report
-            # LOST, but that is not a peer takeover and must not pop the retained
-            # entry — especially when the stop fails and the container remains
-            # live for retry/reclaim. The teardown path removes it on success.
+            # warm teardown은 backend stop이 성공할 때까지 의도적으로 항목을 남겨둔다. 자신의
+            # `del:` marker 때문에 `renew()`가 LOST를 보고하지만 그건 peer의 인계가 아니므로
+            # 남겨둔 항목을 없애면 안 된다 — 특히 stop이 실패해서 컨테이너가 재시도/reclaim을
+            # 위해 살아 있는 경우에 그렇다. 성공 시에는 teardown 경로가 제거한다.
             if sandbox_id in self._local_teardown:
                 logger.debug("Not dropping sandbox %s: this instance is tearing it down", sandbox_id)
                 return
-            # The in-flight check is deliberately *not* conditional on
-            # `expected_epoch`. Today's epoch-less callers (the two
-            # `SandboxBeingDestroyedError` handlers) cannot collide with a
-            # publish for the same id — `_publish_ownership` has already cleared
-            # the mark by the time they run, and acquires for one id are
-            # serialized by the per-thread lock — so this changes no current
-            # behaviour. It is here because "no epoch supplied" reading as "no
-            # guard at all" is how the next caller of a dangerous primitive gets
-            # written; an id being acquired right now must never be dropped.
+            # in-flight 확인은 의도적으로 `expected_epoch` 유무와 *무관하게* 동작한다. 지금
+            # epoch를 넘기지 않는 호출자(두 개의 `SandboxBeingDestroyedError` 핸들러)는 같은
+            # id에 대한 publish와 충돌할 수 없다 — 그들이 실행될 때면 `_publish_ownership`이
+            # 이미 mark를 지웠고, 한 id에 대한 acquire는 thread별 lock으로 직렬화된다 —
+            # 따라서 현재 동작은 달라지지 않는다. 그럼에도 여기 있는 이유는, "epoch를 주지
+            # 않음"이 "guard가 전혀 없음"으로 읽히는 것이 위험한 primitive의 다음 호출자가
+            # 잘못 작성되는 방식이기 때문이다. 지금 acquire 중인 id는 절대 버리면 안 된다.
             if sandbox_id in self._acquire_inflight:
                 logger.info("Not dropping sandbox %s: an acquire is publishing ownership for it", sandbox_id)
                 return
@@ -1178,8 +1131,8 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 if mapped_id == sandbox_id:
                     del self._thread_sandboxes[key]
 
-        # Close the host-side HTTP client we are dropping (#2872); the container
-        # itself stays up for its new owner.
+        # 버리는 host 쪽 HTTP client를 닫는다(#2872). 컨테이너 자체는 새 owner를 위해 계속
+        # 살아 있다.
         if sandbox is not None:
             try:
                 sandbox.close()
@@ -1191,30 +1144,28 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         active_to_destroy = []
 
         with self._lock:
-            # Active sandboxes: tracked via _last_activity
+            # active sandbox는 _last_activity로 추적한다
             for sandbox_id, last_activity in self._last_activity.items():
                 idle_duration = current_time - last_activity
                 if idle_duration > idle_timeout:
                     active_to_destroy.append(sandbox_id)
                     logger.info(f"Sandbox {sandbox_id} idle for {idle_duration:.1f}s, marking for destroy")
 
-        # Destroy active sandboxes (re-verify still idle before acting).
+        # active sandbox를 파괴한다(행동 전에 여전히 유휴인지 다시 확인).
         #
-        # The re-verify has to happen in the same critical section as the
-        # teardown reservation, which is why it is handed to `_destroy_tracked`
-        # as a predicate rather than run here. Checking here and destroying
-        # afterwards left a window — widened by this PR from a few instructions
-        # to a store round trip, since `destroy()` now claims ownership before it
-        # untracks — in which a turn re-acquires the sandbox and then has its
-        # container stopped underneath it.
+        # 재확인은 teardown 예약과 같은 임계 구역에서 일어나야 하므로, 여기서 실행하지 않고
+        # predicate로 `_destroy_tracked`에 넘긴다. 여기서 확인하고 나중에 파괴하면 turn이
+        # sandbox를 다시 acquire한 뒤 그 밑에서 컨테이너가 멈춰버리는 구간이 남는데, 이 PR에서
+        # `destroy()`가 untrack 전에 ownership을 claim하게 되면서 그 구간이 명령어 몇 개에서
+        # store round trip 하나로 넓어졌다.
         def still_idle(sandbox_id: str) -> bool:
             last_activity = self._last_activity.get(sandbox_id)
             if last_activity is None:
-                # Already released or destroyed by another path — skip.
+                # 다른 경로가 이미 release하거나 파괴했다 — 건너뛴다.
                 logger.info(f"Sandbox {sandbox_id} already gone before idle destroy, skipping")
                 return False
             if (time.time() - last_activity) < idle_timeout:
-                # Re-acquired (activity updated) since the snapshot — skip.
+                # snapshot 이후 다시 acquire되었다(활동 시각 갱신) — 건너뛴다.
                 logger.info(f"Sandbox {sandbox_id} was re-acquired before idle destroy, skipping")
                 return False
             return True
@@ -1229,7 +1180,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         self._reap_expired_warm(idle_timeout)
 
     def _reap_expired_warm(self, idle_timeout: float | None = None) -> None:
-        """Destroy warm entries older than ``idle_timeout``, never a peer's live container."""
+        """``idle_timeout``보다 오래된 warm 항목을 파괴한다. peer의 살아 있는 컨테이너는 절대 건드리지 않는다."""
         timeout = float(self._config.get("idle_timeout", DEFAULT_IDLE_TIMEOUT) if idle_timeout is None else idle_timeout)
         if timeout <= 0:
             return
@@ -1241,42 +1192,40 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 if now - timestamp > timeout:
                     expired.append((sandbox_id, entry))
 
-        # Only drop an entry from the warm pool once we know it is really going
-        # away. Popping first would lose the container on a refused or
-        # unanswerable claim: still running, no longer tracked by anyone. The
-        # deferred pop is why the reservation is needed — the entry stays visible
-        # to `_reclaim_warm_pool_sandbox` for the whole stop.
+        # 정말로 사라진다는 것을 확인한 뒤에만 warm pool에서 항목을 제거한다. 먼저 제거하면
+        # claim이 거부되거나 답을 못 받았을 때 컨테이너를 잃는다. 여전히 실행 중인데 아무도
+        # tracking하지 않게 되는 것이다. 제거를 미루기 때문에 예약이 필요하다 — stop이 진행되는
+        # 내내 항목이 `_reclaim_warm_pool_sandbox`에 계속 보인다.
         for sandbox_id, entry in expired:
             self._destroy_warm_entry(sandbox_id, entry, reason="idle_timeout", still_reapable=lambda sid=sandbox_id: sid in self._warm_pool)
 
     def _evict_oldest_warm(self) -> str | None:
-        """Evict the oldest warm entry this instance still owns."""
+        """이 인스턴스가 아직 소유한 가장 오래된 warm 항목을 evict한다."""
         with self._lock:
             if not self._warm_pool:
                 return None
-            # Snapshot oldest-first under the lock; ownership is resolved outside
-            # it, since a claim can be a network round trip and the provider lock
-            # guards every acquire path.
+            # lock 안에서 오래된 순으로 snapshot한다. ownership 확인은 lock 밖에서 한다.
+            # claim은 network round trip일 수 있고 provider lock은 모든 acquire 경로를
+            # 지키기 때문이다.
             candidates = [(sandbox_id, entry) for sandbox_id, (entry, _) in sorted(self._warm_pool.items(), key=lambda item: item[1][1])]
 
         for sandbox_id, entry in candidates:
-            # "Still in the warm pool?" is the reapable check, and it has to run
-            # in the same critical section as the reservation — checking it here
-            # and reserving afterwards is exactly the window a reclaim slips
-            # through. `_destroy_warm_entry` does both under one lock hold.
+            # "아직 warm pool에 있는가?"가 reapable 확인이며, 예약과 같은 임계 구역에서
+            # 실행되어야 한다 — 여기서 확인하고 나중에 예약하는 것이 바로 reclaim이 끼어드는
+            # 구간이다. `_destroy_warm_entry`가 lock 한 번으로 둘 다 처리한다.
             if not self._destroy_warm_entry(sandbox_id, entry, reason="replica_enforcement", still_reapable=lambda sid=sandbox_id: sid in self._warm_pool):
                 continue
             return sandbox_id
 
         return None
 
-    # ── Signal handling ──────────────────────────────────────────────────
+    # ── Signal 처리 ───────────────────────────────────────────────────────
 
     def _register_signal_handlers(self) -> None:
-        """Register signal handlers for graceful shutdown.
+        """graceful shutdown을 위한 signal handler를 등록한다.
 
-        Handles SIGTERM, SIGINT, and SIGHUP (terminal close) to ensure
-        sandbox containers are cleaned up even when the user closes the terminal.
+        SIGTERM, SIGINT, SIGHUP(터미널 종료)을 처리해서 사용자가 터미널을 닫아도 sandbox
+        컨테이너가 정리되게 한다.
         """
         self._original_sigterm = signal.getsignal(signal.SIGTERM)
         self._original_sigint = signal.getsignal(signal.SIGINT)
@@ -1304,10 +1253,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         except ValueError:
             logger.debug("Could not register signal handlers (not main thread)")
 
-    # ── Thread locking (in-process) ──────────────────────────────────────
+    # ── Thread locking (프로세스 내) ───────────────────────────────────────
 
     def _get_thread_lock(self, thread_id: str, user_id: str) -> threading.Lock:
-        """Get or create an in-process lock for a specific user/thread scope."""
+        """특정 user/thread 범위의 in-process lock을 가져오거나 생성한다."""
         key = self._thread_key(thread_id, user_id)
         with self._lock:
             if key not in self._thread_locks:
@@ -1315,11 +1264,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             return self._thread_locks[key]
 
     def _sandbox_id_for_thread(self, thread_id: str | None, user_id: str | None) -> str:
-        """Return deterministic IDs for thread sandboxes and random IDs otherwise."""
+        """thread sandbox에는 결정적 ID를, 그 외에는 랜덤 ID를 반환한다."""
         return self._deterministic_sandbox_id(thread_id, self._effective_acquire_user_id(user_id)) if thread_id else str(uuid.uuid4())[:8]
 
     def _reuse_in_process_sandbox(self, thread_id: str | None, *, user_id: str | None = None, post_lock: bool = False) -> str | None:
-        """Reuse an active in-process sandbox for a thread if one is still tracked."""
+        """thread용으로 아직 tracking 중인 활성 in-process sandbox가 있으면 재사용한다."""
         if thread_id is None:
             return None
 
@@ -1331,8 +1280,8 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
             existing_id = self._thread_sandboxes[key]
             if self._being_torn_down_locally(existing_id):
-                # A reaper thread in this process is stopping this container.
-                # Same answer as a peer's `del:` lease: cold-start instead.
+                # 이 프로세스의 reaper thread가 이 컨테이너를 멈추는 중이다.
+                # peer의 `del:` lease와 같은 답을 낸다. 대신 cold-start 한다.
                 logger.info("Cached sandbox %s is being destroyed by this instance; not reusing it", existing_id)
                 return None
             if existing_id in self._sandboxes:
@@ -1361,36 +1310,34 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             logger.info(f"Reusing in-process sandbox {existing_id} for user/thread {effective_user_id}/{thread_id}{suffix}")
             self._last_activity[existing_id] = time.time()
 
-        # Fail closed: an OwnershipBackendError propagates rather than handing out
-        # a sandbox we could not publish ownership for.
+        # fail closed다. ownership을 게시하지 못한 sandbox를 넘겨주는 대신
+        # OwnershipBackendError를 전파한다.
         try:
             self._publish_ownership(existing_id)
         except SandboxBeingDestroyedError:
-            # A peer is stopping this container. Drop it and let the caller
-            # discover-or-create a fresh one instead of handing over a sandbox
-            # that is about to disappear.
+            # peer가 이 컨테이너를 멈추는 중이다. 곧 사라질 sandbox를 넘겨주는 대신 이것을
+            # 버리고 호출자가 discover-or-create로 새 것을 얻게 한다.
             logger.info("Cached sandbox %s is being destroyed by another instance; not reusing it", existing_id)
             self._forget_lost_sandbox(existing_id)
             return None
 
         with self._lock:
             if self._being_torn_down_locally(existing_id):
-                # The first reservation check ran before the backend health
-                # check and ownership round trip. A local reaper can win while
-                # either is in flight, and it deliberately keeps the entry in
-                # `_sandboxes` until its destroy claim succeeds. Membership
-                # alone therefore cannot prove this id is still safe to return.
+                # 첫 예약 확인은 backend health check와 ownership round trip 이전에
+                # 실행됐다. 둘 중 하나가 진행되는 동안 로컬 reaper가 이길 수 있고, 그
+                # reaper는 destroy claim이 성공할 때까지 의도적으로 항목을 `_sandboxes`에
+                # 남겨둔다. 따라서 map에 들어 있다는 사실만으로는 이 id를 돌려줘도 안전하다는
+                # 증명이 되지 않는다.
                 logger.info("Cached sandbox %s was reserved for teardown while publishing ownership; not reusing it", existing_id)
                 return None
             if existing_id not in self._sandboxes:
-                # Dropped while we were publishing. The intent mark closes the
-                # window *inside* `_publish_ownership`, but not the gap before
-                # it: until the mark is set a renewal's `LOST` is both current
-                # and correct — the peer really did hold the lease — so the
-                # forget legitimately runs and closes this client. Returning the
-                # id anyway would hand back a sandbox whose `get()` is `None`.
-                # Fall through instead; the caller re-discovers and builds a
-                # fresh client, and the lease we just took is already ours.
+                # 게시하는 동안 버려졌다. intent mark는 `_publish_ownership` *내부*의 구간을
+                # 닫지만 그 이전의 틈은 닫지 못한다. mark가 설정되기 전까지 renewal의
+                # `LOST`는 최신이면서 정확하다 — peer가 정말로 lease를 쥐고 있었다 — 따라서
+                # forget이 정당하게 실행되어 이 client를 닫는다. 그래도 id를 반환하면
+                # `get()`이 `None`인 sandbox를 돌려주는 셈이 된다. 대신 그냥 흘려보낸다.
+                # 호출자가 다시 discover해서 새 client를 만들고, 방금 가져온 lease는 이미
+                # 우리 것이다.
                 logger.info("Cached sandbox %s was dropped while publishing ownership; falling through to discovery", existing_id)
                 return None
         return existing_id
@@ -1403,7 +1350,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         user_id: str | None = None,
         post_lock: bool = False,
     ) -> str | None:
-        """Promote a warm-pool sandbox back to active tracking if available."""
+        """가능하면 warm-pool sandbox를 다시 active tracking으로 승격한다."""
         if thread_id is None:
             return None
 
@@ -1414,9 +1361,9 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 return None
             self._assert_warm_identity_available_locked(sandbox_id, key)
             if self._being_torn_down_locally(sandbox_id):
-                # The entry deliberately stays in `_warm_pool` for the whole stop
-                # (so a refused claim does not lose the container), so pool
-                # membership alone does not mean it is reclaimable.
+                # 항목은 stop이 진행되는 내내 의도적으로 `_warm_pool`에 남는다(claim이
+                # 거부돼도 컨테이너를 잃지 않기 위해서다). 따라서 pool에 있다는 것만으로는
+                # reclaim 가능하다는 뜻이 아니다.
                 logger.info("Warm-pool sandbox %s is being destroyed by this instance; not reclaiming it", sandbox_id)
                 return None
 
@@ -1431,10 +1378,9 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             )
             return None
 
-        # Publish ownership before the warm → active transition: a raise here must
-        # not leave the sandbox tracked as active but unowned (a peer would see an
-        # orphan and reap it mid-turn). On failure the entry stays warm and this
-        # instance keeps its existing lease.
+        # warm → active 전이 전에 ownership을 게시한다. 여기서 예외가 나도 sandbox가 active로
+        # tracking되면서 주인이 없는 상태로 남아서는 안 된다(peer가 orphan으로 보고 turn 도중
+        # 회수해버린다). 실패하면 항목은 warm으로 남고 이 인스턴스는 기존 lease를 유지한다.
         try:
             self._publish_ownership(sandbox_id)
         except SandboxBeingDestroyedError:
@@ -1444,13 +1390,12 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
         with self._lock:
             if self._being_torn_down_locally(sandbox_id):
-                # Re-checked, because the first check was before the round trip.
-                # A reaper can reserve *after* our `take()` — the warm entry is
-                # still there, since its pop is deferred until the stop returns —
-                # then claim `del:` (which succeeds: the lease is ours, we just
-                # took it) and stop the container. Whichever pop lands first
-                # decides, and if ours does we install a client for a container
-                # that is already stopped.
+                # 첫 확인이 round trip 이전이었으므로 다시 확인한다. reaper는 우리의
+                # `take()` *뒤에* 예약할 수 있고 — warm 항목은 stop이 끝날 때까지 제거가
+                # 미뤄지므로 아직 남아 있다 — 그런 다음 `del:`을 claim해서(성공한다. lease는
+                # 방금 우리가 가져온 우리 것이다) 컨테이너를 멈춘다. 어느 쪽 제거가 먼저
+                # 도착하느냐가 결정하며, 우리 쪽이 먼저면 이미 멈춘 컨테이너에 client를
+                # 설치하게 된다.
                 logger.info("Warm-pool sandbox %s was claimed for teardown while publishing ownership; not reclaiming it", sandbox_id)
                 return None
             self._assert_warm_identity_available_locked(sandbox_id, key)
@@ -1471,7 +1416,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         return sandbox_id
 
     def _recheck_cached_sandbox(self, thread_id: str, sandbox_id: str, *, user_id: str) -> str | None:
-        """Re-check in-memory caches after acquiring the cross-process file lock."""
+        """프로세스 간 file lock을 획득한 뒤 in-memory 캐시를 다시 확인한다."""
         return self._reuse_in_process_sandbox(thread_id, user_id=user_id, post_lock=True) or self._reclaim_warm_pool_sandbox(
             thread_id,
             sandbox_id,
@@ -1480,51 +1425,45 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         )
 
     def _register_discovered_sandbox(self, thread_id: str, info: SandboxInfo, *, user_id: str) -> str:
-        """Track a sandbox discovered through the backend.
+        """backend를 통해 발견한 sandbox를 tracking에 등록한다.
 
         Raises:
-            SandboxBeingDestroyedError: discovery found the container still
-                running, but a peer is stopping it. Deliberately propagated
-                rather than swallowed: falling through to create would collide
-                with the not-yet-removed container name, and handing this one to
-                an agent is exactly the mid-turn death (#4206) the store exists to
-                prevent. The window is a peer's in-flight container stop, so the
-                thread's next turn discovers nothing and cold-starts cleanly.
+            SandboxBeingDestroyedError: discovery가 아직 실행 중인 컨테이너를 찾았지만
+                peer가 그것을 멈추는 중이다. 삼키지 않고 의도적으로 전파한다. create로
+                흘려보내면 아직 제거되지 않은 컨테이너 이름과 충돌하고, 이것을 agent에게
+                넘기는 것은 이 store가 막으려는 turn 도중 사망(#4206) 그 자체다. 이 구간은
+                peer의 진행 중인 컨테이너 stop이므로, thread의 다음 turn은 아무것도 발견하지
+                못하고 깔끔하게 cold-start 한다.
         """
         key = self._thread_key(thread_id, user_id)
         with self._lock:
             if self._being_torn_down_locally(info.sandbox_id):
-                # Discovery is the fall-through once the caches miss, so it is
-                # also the path a reaper's own untracking opens up. `take()` would
-                # only refuse this once the reaper's `del:` claim has landed;
-                # until then it succeeds against our own lease.
+                # 캐시가 빗나가면 discovery로 흘러오므로, 여기는 reaper 자신의 untrack이
+                # 열어주는 경로이기도 하다. `take()`는 reaper의 `del:` claim이 도착한
+                # 뒤에야 이것을 거부한다. 그 전까지는 우리 자신의 lease에 대해 성공한다.
                 raise SandboxBeingDestroyedError(info.sandbox_id)
             self._assert_active_identity_available_locked(info.sandbox_id, key)
             self._assert_warm_identity_available_locked(info.sandbox_id, key)
 
         sandbox = AioSandbox(id=info.sandbox_id, base_url=info.sandbox_url)
-        # Ownership first, so a failure cannot leave a tracked-but-unowned sandbox.
-        # There is no container to roll back (we did not create it), but the
-        # host-side HTTP client constructed above is ours and must not leak —
-        # same close-on-failure as `_register_created_sandbox`.
+        # ownership을 먼저 잡아서, 실패해도 tracking되지만 주인 없는 sandbox가 남지 않게 한다.
+        # 롤백할 컨테이너는 없지만(우리가 만든 게 아니다) 위에서 만든 host 쪽 HTTP client는
+        # 우리 것이라 누수되면 안 된다 — `_register_created_sandbox`와 같은 실패 시 close다.
         try:
             self._publish_ownership(info.sandbox_id)
             with self._lock:
                 if self._being_torn_down_locally(info.sandbox_id):
-                    # The pre-publish reservation check is only an early-out: a
-                    # local reaper can reserve the id during the store round
-                    # trip. Do not install a client for a container that reaper
-                    # has already committed to stopping.
+                    # 게시 전 예약 확인은 조기 탈출용일 뿐이다. store round trip 도중
+                    # 로컬 reaper가 이 id를 예약할 수 있다. 그 reaper가 이미 멈추기로 한
+                    # 컨테이너에 client를 설치하면 안 된다.
                     raise SandboxBeingDestroyedError(info.sandbox_id)
                 self._assert_active_identity_available_locked(info.sandbox_id, key)
                 self._assert_warm_identity_available_locked(info.sandbox_id, key)
-                # Active and warm are exclusive states, and only this insert can
-                # violate that: a warm entry for the same id is stale the moment
-                # the id becomes active. Leaving it there gives the container two
-                # reapers — `_reap_expired_warm` judges it by the warm timestamp
-                # and never looks at `_last_activity`, so it stops a container an
-                # agent is actively using while `_sandboxes` still hands out its
-                # client.
+                # active와 warm은 배타적인 상태이고, 그것을 깰 수 있는 것은 이 insert뿐이다.
+                # 같은 id의 warm 항목은 그 id가 active가 되는 순간 낡은 것이 된다. 그대로
+                # 두면 컨테이너에 reaper가 둘 생긴다 — `_reap_expired_warm`은 warm timestamp로
+                # 판단하고 `_last_activity`는 전혀 보지 않으므로, `_sandboxes`가 여전히
+                # client를 넘겨주는 동안 agent가 쓰고 있는 컨테이너를 멈춘다.
                 self._warm_pool.pop(info.sandbox_id, None)
                 self._warm_pool_identity.pop(info.sandbox_id, None)
                 self._sandboxes[info.sandbox_id] = sandbox
@@ -1547,7 +1486,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         return info.sandbox_id
 
     def _register_created_sandbox(self, thread_id: str | None, sandbox_id: str, info: SandboxInfo, *, user_id: str | None = None) -> str:
-        """Track a newly-created sandbox in the active maps."""
+        """새로 만든 sandbox를 active map에 등록한다."""
         sandbox = AioSandbox(id=sandbox_id, base_url=info.sandbox_url)
         key = (
             self._thread_key(
@@ -1557,13 +1496,13 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             if thread_id
             else None
         )
-        # Ownership first. Unlike the discover path there IS something to roll
-        # back: we just started this container, and an unowned running container
-        # is exactly what a peer's reconciliation adopts. Leaking it would hand a
-        # peer a container this instance is about to use.
-        # SandboxBeingDestroyedError is possible even here: a peer that died
-        # mid-stop leaves a teardown marker until its TTL lapses. Roll back on
-        # both, or the container we just started is leaked.
+        # ownership을 먼저 잡는다. discover 경로와 달리 여기에는 롤백할 것이 있다. 방금 이
+        # 컨테이너를 시작했고, 주인 없이 실행 중인 컨테이너야말로 peer의 reconciliation이
+        # adopt하는 대상이다. 그대로 흘리면 이 인스턴스가 곧 쓸 컨테이너를 peer에게 넘기는
+        # 셈이 된다.
+        # 여기서도 SandboxBeingDestroyedError가 날 수 있다. stop 도중 죽은 peer가 TTL이
+        # 만료될 때까지 teardown marker를 남기기 때문이다. 두 경우 모두 롤백하지 않으면 방금
+        # 시작한 컨테이너가 누수된다.
         try:
             if key is not None:
                 with self._lock:
@@ -1575,7 +1514,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 if key is not None:
                     self._assert_active_identity_available_locked(sandbox_id, key)
                     self._assert_warm_identity_available_locked(sandbox_id, key)
-                # Same exclusivity rule as the discover path.
+                # discover 경로와 같은 배타성 규칙.
                 self._warm_pool.pop(sandbox_id, None)
                 self._warm_pool_identity.pop(sandbox_id, None)
                 self._sandboxes[sandbox_id] = sandbox
@@ -1611,7 +1550,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         return sandbox_id
 
     def _check_tracked_sandbox_alive(self, sandbox_id: str, info: SandboxInfo) -> bool | None:
-        """Return whether a tracked sandbox appears alive, or None if unknown."""
+        """tracking 중인 sandbox가 살아 있어 보이는지 반환한다. 알 수 없으면 None."""
         try:
             return self._backend.is_alive(info)
         except Exception as e:
@@ -1624,12 +1563,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         *,
         expected_info: SandboxInfo | None = None,
     ) -> tuple[Sandbox | None, SandboxInfo | None, bool]:
-        """Remove a sandbox from in-process tracking maps.
+        """in-process tracking map에서 sandbox를 제거한다.
 
-        When expected_info is provided, removal only happens if the currently
-        tracked active or warm-pool entry is the exact info object that was
-        checked. This prevents a stale health-check result from deleting a
-        freshly recreated sandbox with the same deterministic id.
+        expected_info를 주면, 현재 tracking 중인 active 또는 warm-pool 항목이 확인 당시의 바로
+        그 info 객체일 때만 제거한다. 낡은 health check 결과 때문에 같은 결정적 id로 새로 만든
+        sandbox가 지워지는 것을 막는다.
         """
         thread_keys_to_remove: list[tuple[str, str]] = []
 
@@ -1657,11 +1595,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         return sandbox, info, True
 
     def _drop_unhealthy_sandbox(self, sandbox_id: str, reason: str, *, expected_info: SandboxInfo | None = None) -> None:
-        """Remove and destroy a sandbox after a definitive failed health check."""
-        # Reserved for the whole path, not just the stop: this one untracks
-        # first, so between the untrack and the `del:` claim an acquire misses
-        # the caches and falls through to discovery, where `take()` still
-        # succeeds against our own lease.
+        """health check가 확실히 실패한 뒤 sandbox를 제거하고 파괴한다."""
+        # stop만이 아니라 경로 전체를 예약한다. 여기는 untrack을 먼저 하므로, untrack과
+        # `del:` claim 사이에 acquire가 캐시를 놓치고 discovery로 흘러가는데 거기서는
+        # `take()`가 여전히 우리 자신의 lease에 대해 성공한다.
         if not self._reserve_local_teardown(sandbox_id, lambda: True):
             logger.info(f"Skipped dropping sandbox {sandbox_id}: already being torn down by this instance")
             return
@@ -1683,17 +1620,16 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 logger.warning(f"Error closing unhealthy sandbox {sandbox_id}: {e}")
 
         if info is not None:
-            # Gate this like every other reap path. The container failed a
-            # definitive health check, but "definitively dead to us" is not proof
-            # it is ours: a peer may have replaced the container behind this id,
-            # in which case stopping it is the cross-instance kill again.
+            # 다른 모든 reap 경로와 똑같이 게이트를 건다. 컨테이너는 확실한 health check에
+            # 실패했지만, "우리에게 확실히 죽었다"가 그것이 우리 것이라는 증명은 아니다.
+            # peer가 이 id 뒤의 컨테이너를 교체했을 수 있고, 그렇다면 멈추는 것은 또다시
+            # 인스턴스 간 kill이다.
             if self._claim_ownership(sandbox_id, for_destroy=True):
                 try:
-                    # Held like the other two stop paths: this one untracks before
-                    # claiming, so `_renew_owned_leases` cannot see the id either
-                    # and nothing else would refresh the marker. The heartbeat
-                    # releases the marker on exit (success or failure), so there is
-                    # no caller-side release to race a late refresh.
+                    # 다른 두 stop 경로처럼 marker를 붙들고 있는다. 여기는 claim 전에
+                    # untrack하므로 `_renew_owned_leases`도 이 id를 볼 수 없고, marker를
+                    # 갱신할 다른 무엇도 없다. heartbeat가 종료 시(성공이든 실패든) marker를
+                    # 해제하므로, 늦은 refresh와 경쟁할 호출자 쪽 release가 없다.
                     with self._held_teardown_lease(sandbox_id):
                         self._backend.destroy(info)
                 except Exception as e:
@@ -1704,37 +1640,33 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         logger.warning(f"Dropped unhealthy sandbox {sandbox_id}: {reason}")
 
     def _active_count_locked(self) -> int:
-        """Return active AIO sandbox count while ``_lock`` is held."""
+        """``_lock``을 쥔 상태에서 활성 AIO sandbox 개수를 반환한다."""
         return len(self._sandboxes)
 
     def _destroy_warm_entry(self, sandbox_id: str, entry: SandboxInfo, *, reason: str, still_reapable: Callable[[], bool]) -> bool:
-        """Destroy a warm-pool sandbox using AIO-specific backend logging.
+        """AIO 전용 backend 로깅을 사용해 warm-pool sandbox를 파괴한다.
 
-        Claiming for destroy is the exclusion against **peers**: the lease is
-        marked as a teardown, so a concurrent acquire on another instance is
-        refused and the container cannot be re-acquired between this decision and
-        the stop. That pairing is what replaced the per-sandbox flock guard. A
-        claim that fails — peer-owned or backend unavailable — fails closed and
-        we do not destroy.
+        destroy용 claim은 **peer**에 대한 배제다. lease에 teardown 표시가 붙어서 다른
+        인스턴스의 동시 acquire가 거부되고, 이 판단과 stop 사이에 컨테이너가 다시 acquire될
+        수 없다. 이 짝지음이 sandbox별 flock guard를 대체했다. claim이 실패하면 — peer 소유든
+        backend 장애든 — fail closed로 파괴하지 않는다.
 
-        It is *not* an exclusion against this process: `claim()` succeeds against
-        our own `own:` lease, so a same-process reclaim that ran before it wins
-        the container and this stop lands on a turn already using it. The
-        reservation is that half, and it is taken before the claim — after it,
-        the entry stays visible in `_warm_pool` for the whole stop, so a reclaim
-        would otherwise still find it.
+        하지만 이 프로세스에 대한 배제는 *아니다*. `claim()`은 우리 자신의 `own:` lease에
+        대해 성공하므로, 그 전에 실행된 같은 프로세스의 reclaim이 컨테이너를 가져갔다면 이
+        stop은 이미 그것을 쓰고 있는 turn 위로 떨어진다. 예약이 그 나머지 절반이고, claim보다
+        먼저 잡는다. claim 이후에는 stop이 진행되는 내내 항목이 `_warm_pool`에 그대로 보이므로
+        예약이 없으면 reclaim이 여전히 그것을 찾아낸다.
 
-        ``still_reapable`` is required rather than defaulting to unconditional:
-        the safe default is the one that makes a new call site think about it,
-        and this signature deliberately diverges from ``WarmPoolLifecycleMixin``'s
-        hook for that reason. Safe because this provider overrides both mixin
-        callers (``_evict_oldest_warm`` / ``_reap_expired_warm``); if those
-        overrides were ever dropped, the mixin's call would fail loudly here
-        rather than silently reopen the window.
+        ``still_reapable``에 무조건 참인 기본값을 주지 않고 필수로 만든 이유는, 새 호출 지점이
+        이 문제를 생각하게 만드는 쪽이 안전한 기본값이기 때문이다. 이 시그니처가
+        ``WarmPoolLifecycleMixin``의 hook과 의도적으로 다른 것도 그래서다. 이 provider가 mixin
+        호출자 두 곳(``_evict_oldest_warm`` / ``_reap_expired_warm``)을 모두 override하므로
+        안전하며, 그 override가 사라지면 mixin의 호출이 조용히 구간을 다시 여는 대신 여기서
+        요란하게 실패한다.
 
         Returns:
-            ``True`` when the container was stopped and the caller should drop
-            its warm-pool entry; ``False`` when it is still running.
+            컨테이너를 멈췄고 호출자가 warm-pool 항목을 제거해야 하면 ``True``,
+            아직 실행 중이면 ``False``.
         """
         if not self._reserve_local_teardown(sandbox_id, still_reapable):
             logger.info("Refusing to destroy warm-pool sandbox %s for %s: reclaimed by this instance", sandbox_id, reason)
@@ -1746,10 +1678,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 return False
 
             try:
-                # The marker must outlast the stop, not the TTL it was written with,
-                # and is released by the heartbeat on exit. On a failed stop that
-                # release matters just as much — the container is probably still up,
-                # so a marker left behind would block its thread from re-acquiring it.
+                # marker는 자신이 쓰인 TTL이 아니라 stop보다 오래 살아야 하며, 종료 시
+                # heartbeat가 해제한다. stop이 실패한 경우에도 그 해제는 똑같이 중요하다 —
+                # 컨테이너는 아마 아직 살아 있으므로, 남은 marker가 그 thread의 재acquire를
+                # 막게 된다.
                 with self._held_teardown_lease(sandbox_id):
                     self._backend.destroy(entry)
             except Exception as e:
@@ -1761,13 +1693,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                     logger.error(f"Failed to destroy warm-pool sandbox {sandbox_id} for {reason}: {e}")
                 return False
 
-            # Remove the entry here, inside the reservation, rather than leaving
-            # it to the caller. Releasing the reservation when the stop returns
-            # and popping afterwards leaves a gap in which the container is
-            # already stopped, the entry is still in `_warm_pool`, and nothing
-            # marks it — so a reclaim picks it up and hands out a dead container.
-            # The pop stays deferred relative to the *stop* (a refused or failed
-            # stop keeps the entry), just no longer relative to the reservation.
+            # 항목 제거를 호출자에게 맡기지 않고 예약 안에서 여기서 처리한다. stop이 끝날 때
+            # 예약을 풀고 그 뒤에 제거하면, 컨테이너는 이미 멈췄는데 항목은 아직 `_warm_pool`에
+            # 있고 아무 표시도 없는 틈이 생긴다 — 그러면 reclaim이 그것을 집어 죽은 컨테이너를
+            # 넘겨준다. 제거는 여전히 *stop*에 대해서는 미뤄지지만(거부되거나 실패한 stop은
+            # 항목을 남긴다), 예약에 대해서는 더 이상 미뤄지지 않는다.
             with self._lock:
                 current = self._warm_pool.get(sandbox_id)
                 if current is not None and current[0] is entry:
@@ -1784,22 +1714,21 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             logger.info(f"Destroyed warm-pool sandbox {sandbox_id} for {reason}")
         return True
 
-    # ── Core: acquire / get / release / shutdown ─────────────────────────
+    # ── 핵심: acquire / get / release / shutdown ──────────────────────────
 
     def acquire(self, thread_id: str | None = None, *, user_id: str | None = None) -> str:
-        """Acquire a sandbox environment and return its ID.
+        """sandbox 환경을 확보하고 그 ID를 반환한다.
 
-        For the same thread_id, this method will return the same sandbox_id
-        across multiple turns, multiple processes, and (with shared storage)
-        multiple pods.
+        같은 thread_id에 대해서는 여러 turn, 여러 프로세스, 그리고 (공유 storage가 있다면)
+        여러 pod에 걸쳐 같은 sandbox_id를 반환한다.
 
-        Thread-safe with both in-process and cross-process locking.
+        프로세스 내 lock과 프로세스 간 lock 모두를 사용해 thread-safe하다.
 
         Args:
-            thread_id: Optional thread ID for thread-specific configurations.
+            thread_id: thread 전용 설정을 위한 선택적 thread ID.
 
         Returns:
-            The ID of the acquired sandbox environment.
+            확보한 sandbox 환경의 ID.
         """
         effective_user_id = self._effective_acquire_user_id(user_id)
         if thread_id:
@@ -1810,11 +1739,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             return self._acquire_internal(thread_id, user_id=effective_user_id)
 
     async def acquire_async(self, thread_id: str | None = None, *, user_id: str | None = None) -> str:
-        """Acquire a sandbox environment without blocking the event loop.
+        """event loop를 블로킹하지 않고 sandbox 환경을 확보한다.
 
-        Mirrors ``acquire()`` while keeping blocking backend operations off the
-        event loop and using async-native readiness polling for newly created
-        sandboxes.
+        ``acquire()``와 동작이 같되, 블로킹하는 backend 연산을 event loop 밖으로 빼고 새로
+        만든 sandbox에는 async 네이티브 readiness polling을 쓴다.
         """
         effective_user_id = self._effective_acquire_user_id(user_id)
         if thread_id:
@@ -1828,69 +1756,69 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         return await self._acquire_internal_async(thread_id, user_id=effective_user_id)
 
     def _acquire_internal(self, thread_id: str | None, *, user_id: str) -> str:
-        """Internal sandbox acquisition with two-layer consistency.
+        """2계층 일관성을 갖춘 내부 sandbox 확보 로직.
 
-        Layer 1: In-process cache (fastest, covers same-process repeated access)
-        Layer 2: Backend discovery (covers containers started by other processes;
-                 sandbox_id is deterministic from thread_id so no shared state file
-                 is needed — any process can derive the same container name)
+        Layer 1: 프로세스 내 캐시(가장 빠르며 같은 프로세스의 반복 접근을 담당)
+        Layer 2: backend discovery(다른 프로세스가 시작한 컨테이너를 담당. sandbox_id가
+                 thread_id에서 결정적으로 나오므로 공유 상태 파일이 필요 없다 — 어떤
+                 프로세스든 같은 컨테이너 이름을 유도할 수 있다)
         """
         self._ensure_skills_projection(user_id)
         cached_id = self._reuse_in_process_sandbox(thread_id, user_id=user_id)
         if cached_id is not None:
             return cached_id
 
-        # Deterministic ID for thread-specific, random for anonymous
+        # thread 전용이면 결정적 ID, 익명이면 랜덤 ID
         sandbox_id = self._sandbox_id_for_thread(thread_id, user_id)
         if thread_id:
             key = self._thread_key(thread_id, user_id)
             with self._lock:
                 self._assert_active_identity_available_locked(sandbox_id, key)
 
-        # ── Layer 1.5: Warm pool (container still running, no cold-start) ──
+        # ── Layer 1.5: warm pool(컨테이너가 아직 실행 중이라 cold-start 없음) ──
         reclaimed_id = self._reclaim_warm_pool_sandbox(thread_id, sandbox_id, user_id=user_id)
         if reclaimed_id is not None:
             return reclaimed_id
 
-        # ── Layer 2: Backend discovery + create (protected by cross-process lock) ──
-        # Use a file lock so that two processes racing to create the same sandbox
-        # for the same thread_id serialize here: the second process will discover
-        # the container started by the first instead of hitting a name-conflict.
+        # ── Layer 2: backend discovery + create(프로세스 간 lock으로 보호) ──
+        # file lock을 써서 같은 thread_id의 sandbox를 만들려고 경쟁하는 두 프로세스를 여기서
+        # 직렬화한다. 두 번째 프로세스는 이름 충돌을 만나는 대신 첫 번째가 시작한 컨테이너를
+        # discover한다.
         if thread_id:
             return self._discover_or_create_with_lock(thread_id, sandbox_id, user_id=user_id)
 
         return self._create_sandbox(thread_id, sandbox_id, user_id=user_id)
 
     async def _acquire_internal_async(self, thread_id: str | None, *, user_id: str) -> str:
-        """Async counterpart to ``_acquire_internal``."""
+        """``_acquire_internal``의 async 버전."""
         await asyncio.to_thread(self._ensure_skills_projection, user_id)
         cached_id = await asyncio.to_thread(self._reuse_in_process_sandbox, thread_id, user_id=user_id)
         if cached_id is not None:
             return cached_id
 
-        # Deterministic ID for thread-specific, random for anonymous
+        # thread 전용이면 결정적 ID, 익명이면 랜덤 ID
         sandbox_id = self._sandbox_id_for_thread(thread_id, user_id)
         if thread_id:
             key = self._thread_key(thread_id, user_id)
             with self._lock:
                 self._assert_active_identity_available_locked(sandbox_id, key)
 
-        # ── Layer 1.5: Warm pool (container still running, no cold-start) ──
+        # ── Layer 1.5: warm pool(컨테이너가 아직 실행 중이라 cold-start 없음) ──
         reclaimed_id = await asyncio.to_thread(self._reclaim_warm_pool_sandbox, thread_id, sandbox_id, user_id=user_id)
         if reclaimed_id is not None:
             return reclaimed_id
 
-        # ── Layer 2: Backend discovery + create (protected by cross-process lock) ──
+        # ── Layer 2: backend discovery + create(프로세스 간 lock으로 보호) ──
         if thread_id:
             return await self._discover_or_create_with_lock_async(thread_id, sandbox_id, user_id=user_id)
 
         return await self._create_sandbox_async(thread_id, sandbox_id, user_id=user_id)
 
     def _discover_or_create_with_lock(self, thread_id: str, sandbox_id: str, *, user_id: str | None = None) -> str:
-        """Discover an existing sandbox or create a new one under a cross-process file lock.
+        """프로세스 간 file lock 아래에서 기존 sandbox를 discover하거나 새로 만든다.
 
-        The file lock serializes concurrent sandbox creation for the same thread_id
-        across multiple processes, preventing container-name conflicts.
+        file lock은 여러 프로세스에 걸쳐 같은 thread_id의 동시 sandbox 생성을 직렬화해서
+        컨테이너 이름 충돌을 막는다.
         """
         paths = get_paths()
         effective_user_id = self._effective_acquire_user_id(user_id)
@@ -1902,13 +1830,13 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             try:
                 _lock_file_exclusive(lock_file)
                 locked = True
-                # Re-check in-process caches under the file lock in case another
-                # thread in this process won the race while we were waiting.
+                # 기다리는 동안 이 프로세스의 다른 thread가 경쟁에서 이겼을 수 있으므로
+                # file lock 아래에서 프로세스 내 캐시를 다시 확인한다.
                 cached_id = self._recheck_cached_sandbox(thread_id, sandbox_id, user_id=effective_user_id)
                 if cached_id is not None:
                     return cached_id
 
-                # Backend discovery: another process may have created the container.
+                # backend discovery: 다른 프로세스가 컨테이너를 만들었을 수 있다.
                 discovered = self._backend.discover(sandbox_id)
                 if discovered is not None:
                     return self._register_discovered_sandbox(thread_id, discovered, user_id=effective_user_id)
@@ -1919,7 +1847,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                     _unlock_file(lock_file)
 
     async def _discover_or_create_with_lock_async(self, thread_id: str, sandbox_id: str, *, user_id: str | None = None) -> str:
-        """Async counterpart to ``_discover_or_create_with_lock``."""
+        """``_discover_or_create_with_lock``의 async 버전."""
         paths = get_paths()
         effective_user_id = self._effective_acquire_user_id(user_id)
         await asyncio.to_thread(paths.ensure_thread_dirs, thread_id, user_id=effective_user_id)
@@ -1930,19 +1858,19 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         try:
             await asyncio.to_thread(_lock_file_exclusive, lock_file)
             locked = True
-            # Re-check in-process caches under the file lock in case another
-            # thread in this process won the race while we were waiting.
+            # 기다리는 동안 이 프로세스의 다른 thread가 경쟁에서 이겼을 수 있으므로
+            # file lock 아래에서 프로세스 내 캐시를 다시 확인한다.
             cached_id = await asyncio.to_thread(self._recheck_cached_sandbox, thread_id, sandbox_id, user_id=effective_user_id)
             if cached_id is not None:
                 return cached_id
 
-            # Backend discovery is sync because local discovery may inspect
-            # Docker and perform a health check; keep it off the event loop.
+            # 로컬 discovery는 Docker를 조회하고 health check를 수행할 수 있어서 backend
+            # discovery는 sync다. event loop 밖에서 실행한다.
             discovered = await asyncio.to_thread(self._backend.discover, sandbox_id)
             if discovered is not None:
-                # Registration publishes ownership, which is blocking store IO
-                # (filesystem or network depending on the backend) — same reason
-                # every other step in this coroutine is offloaded.
+                # 등록 과정에서 ownership을 게시하는데 이는 블로킹 store IO다(backend에 따라
+                # 파일시스템 또는 네트워크) — 이 coroutine의 다른 모든 단계를 offload하는 것과
+                # 같은 이유다.
                 return await asyncio.to_thread(self._register_discovered_sandbox, thread_id, discovered, user_id=effective_user_id)
 
             return await self._create_sandbox_async(thread_id, sandbox_id, user_id=effective_user_id)
@@ -1952,35 +1880,30 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             await asyncio.to_thread(lock_file.close)
 
     def _destroy_unready_sandbox(self, sandbox_id: str, info: SandboxInfo) -> None:
-        """Tear down a freshly-created container whose readiness check failed.
+        """readiness check에 실패한 갓 만든 컨테이너를 정리한다.
 
-        The container was started by the backend but never reached ready, so it
-        never entered ``_register_created_sandbox`` and the ownership store has
-        no lease for it yet. For the full readiness timeout (60s) it runs
-        unowned, which is exactly the window a peer gateway's startup
-        reconciliation is built to adopt across (#4206). Without a claim, a peer
-        that adopts the not-yet-ready Pod and then has this instance's stop land
-        on it is a cross-instance kill that interrupts an active turn (#4248).
+        backend가 컨테이너를 시작했지만 ready에 도달하지 못했으므로
+        ``_register_created_sandbox``에 들어간 적이 없고 ownership store에도 lease가 없다.
+        readiness timeout 전체(60초) 동안 주인 없이 실행되는데, 그 구간이 바로 peer gateway의
+        기동 reconciliation이 adopt하려고 만들어진 구간이다(#4206). claim이 없으면, 아직 ready가
+        아닌 Pod을 adopt한 peer 위로 이 인스턴스의 stop이 떨어져 활성 turn을 끊는 인스턴스 간
+        kill이 된다(#4248).
 
-        Claim the teardown lease first so this reap path is gated by the same
-        ownership guard as every other destroy (``_destroy_warm_entry``,
-        ``_drop_unhealthy_reserved``); fail closed (leave the container for the
-        peer to reap via its own reconciliation) if a peer already owns it or
-        the ownership store cannot answer.
+        teardown lease를 먼저 claim해서 이 reap 경로도 다른 모든 destroy
+        (``_destroy_warm_entry``, ``_drop_unhealthy_reserved``)와 같은 ownership guard를 거치게
+        한다. peer가 이미 소유했거나 ownership store가 답하지 못하면 fail closed 한다(컨테이너는
+        peer가 자기 reconciliation으로 회수하도록 남겨둔다).
 
-        The claim alone is only the cross-**instance** half: it succeeds against
-        our own lease by design, so it says nothing about this process. The
-        same-process half is the local teardown reservation, taken first and
-        held across the whole path — between the readiness timeout and the
-        claim, ``_reconcile_orphans`` (idle checker, every 60s) can see this
-        container running, untracked, and past its recovery grace, and park it
-        in ``_warm_pool``; the subsequent claim would still succeed and the
-        stop would land on an entry this instance has just adopted, leaving a
-        dead warm entry for the next reclaim to hand out. The predicate checks
-        the id is absent from both the active and warm maps; the reservation
-        makes that check and the teardown mark one critical section, so no
-        adopt/acquire can slip between them (same pairing as
-        ``_destroy_warm_entry``).
+        claim만으로는 인스턴스 **간** 절반만 해결된다. 설계상 우리 자신의 lease에 대해서는
+        성공하므로 이 프로세스에 대해서는 아무 말도 해주지 않는다. 같은 프로세스 쪽 절반이
+        local teardown 예약이며, 가장 먼저 잡아 경로 전체에 걸쳐 유지한다 — readiness timeout과
+        claim 사이에 ``_reconcile_orphans``(idle checker, 60초마다)가 이 컨테이너를 실행 중이고
+        tracking되지 않으며 recovery grace를 지난 상태로 보고 ``_warm_pool``에 넣을 수 있다.
+        그러면 이어지는 claim은 여전히 성공하고 stop은 이 인스턴스가 방금 adopt한 항목 위로
+        떨어져, 다음 reclaim이 넘겨줄 죽은 warm 항목만 남는다. predicate는 그 id가 active와 warm
+        map 어디에도 없는지 확인하며, 예약이 그 확인과 teardown mark를 하나의 임계 구역으로
+        묶어서 그 사이로 adopt/acquire가 끼어들 수 없게 한다(``_destroy_warm_entry``와 같은
+        짝지음).
         """
         if not self._reserve_local_teardown(
             sandbox_id,
@@ -2007,25 +1930,25 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             self._finish_local_teardown(sandbox_id)
 
     def _create_sandbox(self, thread_id: str | None, sandbox_id: str, *, user_id: str | None = None) -> str:
-        """Create a new sandbox via the backend.
+        """backend를 통해 새 sandbox를 만든다.
 
         Args:
-            thread_id: Optional thread ID.
-            sandbox_id: The sandbox ID to use.
+            thread_id: 선택적 thread ID.
+            sandbox_id: 사용할 sandbox ID.
 
         Returns:
-            The sandbox_id.
+            sandbox_id.
 
         Raises:
-            RuntimeError: If sandbox creation or readiness check fails.
+            RuntimeError: sandbox 생성이나 readiness check가 실패한 경우.
         """
         effective_user_id = self._effective_acquire_user_id(user_id)
         extra_mounts = self._get_extra_mounts(thread_id, user_id=effective_user_id)
         provision_lark_cli_runtime = self._lark_integration_active(effective_user_id)
         provision_lark_cli_broker = self._lark_broker_active(effective_user_id)
 
-        # Enforce replicas: only warm-pool containers count toward eviction budget.
-        # Active sandboxes are in use by live threads and must not be forcibly stopped.
+        # replicas를 강제한다. eviction 예산에 포함되는 것은 warm-pool 컨테이너뿐이다.
+        # active sandbox는 살아 있는 thread가 쓰고 있으므로 강제로 멈추면 안 된다.
         replicas, total = self._replica_count()
         if total >= replicas:
             evicted = self._evict_oldest_warm()
@@ -2040,26 +1963,25 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             provision_lark_cli_broker=provision_lark_cli_broker,
         )
 
-        # Wait for sandbox to be ready
+        # sandbox가 ready가 될 때까지 기다린다
         if not wait_for_sandbox_ready(info.sandbox_url, timeout=60):
-            # The container is running but unowned: ownership is published by
-            # ``_register_created_sandbox`` after this gate. Claim the teardown
-            # lease before stopping it so a peer cannot adopt the not-yet-ready
-            # Pod in the meantime (#4248).
+            # 컨테이너는 실행 중이지만 주인이 없다. ownership은 이 게이트 이후
+            # ``_register_created_sandbox``가 게시한다. 그 사이에 peer가 아직 ready가 아닌
+            # Pod을 adopt하지 못하도록, 멈추기 전에 teardown lease를 claim한다(#4248).
             self._destroy_unready_sandbox(sandbox_id, info)
             raise RuntimeError(f"Sandbox {sandbox_id} failed to become ready within timeout at {info.sandbox_url}")
 
         return self._register_created_sandbox(thread_id, sandbox_id, info, user_id=effective_user_id)
 
     async def _create_sandbox_async(self, thread_id: str | None, sandbox_id: str, *, user_id: str | None = None) -> str:
-        """Async counterpart to ``_create_sandbox``."""
+        """``_create_sandbox``의 async 버전."""
         effective_user_id = self._effective_acquire_user_id(user_id)
         extra_mounts = await asyncio.to_thread(self._get_extra_mounts, thread_id, user_id=effective_user_id)
         provision_lark_cli_runtime = await asyncio.to_thread(self._lark_integration_active, effective_user_id)
         provision_lark_cli_broker = await asyncio.to_thread(self._lark_broker_active, effective_user_id)
 
-        # Enforce replicas: only warm-pool containers count toward eviction budget.
-        # Active sandboxes are in use by live threads and must not be forcibly stopped.
+        # replicas를 강제한다. eviction 예산에 포함되는 것은 warm-pool 컨테이너뿐이다.
+        # active sandbox는 살아 있는 thread가 쓰고 있으므로 강제로 멈추면 안 된다.
         replicas, total = self._replica_count()
         if total >= replicas:
             evicted = await asyncio.to_thread(self._evict_oldest_warm)
@@ -2075,34 +1997,32 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             provision_lark_cli_broker=provision_lark_cli_broker,
         )
 
-        # Wait for sandbox to be ready without blocking the event loop.
+        # event loop를 블로킹하지 않고 sandbox가 ready가 될 때까지 기다린다.
         if not await wait_for_sandbox_ready_async(info.sandbox_url, timeout=60):
-            # The container is running but unowned: ownership is published by
-            # ``_register_created_sandbox`` after this gate. Claim the teardown
-            # lease before stopping it so a peer cannot adopt the not-yet-ready
-            # Pod in the meantime (#4248).
+            # 컨테이너는 실행 중이지만 주인이 없다. ownership은 이 게이트 이후
+            # ``_register_created_sandbox``가 게시한다. 그 사이에 peer가 아직 ready가 아닌
+            # Pod을 adopt하지 못하도록, 멈추기 전에 teardown lease를 claim한다(#4248).
             await asyncio.to_thread(self._destroy_unready_sandbox, sandbox_id, info)
             raise RuntimeError(f"Sandbox {sandbox_id} failed to become ready within timeout at {info.sandbox_url}")
 
-        # Registration publishes ownership (blocking store IO), so it is offloaded
-        # like every other blocking step on this path.
+        # 등록 과정에서 ownership을 게시하므로(블로킹 store IO) 이 경로의 다른 모든 블로킹
+        # 단계와 마찬가지로 offload한다.
         return await asyncio.to_thread(self._register_created_sandbox, thread_id, sandbox_id, info, user_id=effective_user_id)
 
     def get(self, sandbox_id: str) -> Sandbox | None:
-        """Get a sandbox by ID. Updates last activity timestamp.
+        """ID로 sandbox를 가져온다. 마지막 활동 timestamp를 갱신한다.
 
-        Stays a pure in-memory lookup: async tool paths call this directly on the
-        event loop (``ensure_sandbox_initialized_async``), so it must not touch
-        the ownership store — that is blocking filesystem or network IO depending
-        on the backend. Ownership is published off the event loop on
-        acquire/reclaim and refreshed by the renewal thread (see
-        ``_renew_owned_leases``).
+        순수한 in-memory 조회로 유지한다. async tool 경로가 event loop 위에서 이것을 직접
+        호출하므로(``ensure_sandbox_initialized_async``) ownership store를 건드리면 안 된다 —
+        backend에 따라 블로킹 파일시스템 IO 또는 네트워크 IO이기 때문이다. ownership은
+        acquire/reclaim 시 event loop 밖에서 게시되고 renewal thread가 갱신한다
+        (``_renew_owned_leases`` 참고).
 
         Args:
-            sandbox_id: The ID of the sandbox.
+            sandbox_id: sandbox의 ID.
 
         Returns:
-            The sandbox instance if found, None otherwise.
+            찾으면 sandbox 인스턴스, 없으면 None.
         """
         with self._lock:
             sandbox = self._sandboxes.get(sandbox_id)
@@ -2111,19 +2031,18 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         return sandbox
 
     def release(self, sandbox_id: str) -> None:
-        """Release a sandbox from active use into the warm pool.
+        """활성 사용 상태의 sandbox를 warm pool로 release한다.
 
-        The container is kept running so it can be reclaimed quickly by the same
-        thread on its next turn without a cold-start.  The container will only be
-        stopped when the replicas limit forces eviction or during shutdown.
+        같은 thread가 다음 turn에 cold-start 없이 빠르게 회수할 수 있도록 컨테이너는 계속
+        실행 상태로 둔다. 컨테이너는 replicas 한도 때문에 eviction이 강제되거나 shutdown일
+        때만 멈춘다.
 
-        The host-side HTTP client owned by the cached ``AioSandbox`` instance is
-        closed before the instance is dropped (#2872). The warm-pool entry only
-        stores ``SandboxInfo``, so a fresh ``AioSandbox`` (and a fresh client)
-        is constructed if the container is later reclaimed.
+        캐시된 ``AioSandbox`` 인스턴스가 소유한 host 쪽 HTTP client는 인스턴스를 버리기 전에
+        닫는다(#2872). warm-pool 항목은 ``SandboxInfo``만 저장하므로, 나중에 컨테이너를
+        회수하면 새 ``AioSandbox``(와 새 client)를 만든다.
 
         Args:
-            sandbox_id: The ID of the sandbox to release.
+            sandbox_id: release할 sandbox의 ID.
         """
         info = None
         sandbox = None
@@ -2137,29 +2056,28 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 del self._thread_sandboxes[key]
             active_identity = self._active_sandbox_identity.pop(sandbox_id, None)
             self._last_activity.pop(sandbox_id, None)
-            # Park in warm pool — container keeps running
+            # warm pool에 넣어둔다 — 컨테이너는 계속 실행된다
             if info and sandbox_id not in self._warm_pool:
                 self._warm_pool[sandbox_id] = (info, time.time())
                 self._warm_pool_identity[sandbox_id] = thread_keys_to_remove[0] if thread_keys_to_remove else active_identity
 
         if sandbox is not None:
-            # Defense-in-depth: close() already swallows its own errors; this
-            # guard only protects against a future close() that misbehaves, so
-            # host-side client cleanup can never block parking in the warm pool.
+            # 방어의 한 겹이다. close()는 이미 자기 에러를 삼키므로, 이 guard는 앞으로
+            # close()가 잘못 동작할 경우에 대비할 뿐이다. host 쪽 client 정리가 warm pool
+            # 적재를 막는 일은 절대 없어야 한다.
             try:
                 sandbox.close()
             except Exception as e:
                 logger.warning(f"Error closing sandbox {sandbox_id} during release: {e}")
 
-        # Keep the lease while warm so a peer cannot adopt+destroy before we
-        # reclaim, re-establishing it if it lapsed during a long turn. Never
-        # raises: the turn is already over, so a store problem must not surface
-        # through after_agent, and the renewal thread (which covers warm entries)
-        # is the actual guarantee — this only narrows the window.
+        # 우리가 회수하기 전에 peer가 adopt하고 파괴하지 못하도록 warm 상태에서도 lease를
+        # 유지하고, 긴 turn 동안 만료됐다면 다시 세운다. 절대 예외를 던지지 않는다. turn은 이미
+        # 끝났으므로 store 문제가 after_agent를 통해 드러나면 안 되고, 실제 보장은 (warm 항목도
+        # 담당하는) renewal thread다 — 여기서는 구간을 좁힐 뿐이다.
         if info is not None:
-            # Same staleness as the renewal thread: the refresh is a store round
-            # trip, and the thread's next turn can reclaim this warm entry while
-            # it is in flight. Only drop it if nothing re-acquired it since.
+            # renewal thread와 같은 낡음 문제가 있다. refresh는 store round trip이고, 그
+            # 사이에 thread의 다음 turn이 이 warm 항목을 회수할 수 있다. 그 사이 아무도 다시
+            # acquire하지 않은 경우에만 버린다.
             epoch = self._acquire_epoch_of(sandbox_id)
             if not self._refresh_ownership(sandbox_id):
                 logger.warning("Sandbox %s is owned by another instance; releasing it from this warm pool", sandbox_id)
@@ -2168,27 +2086,25 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         logger.info(f"Released sandbox {sandbox_id} to warm pool (container still running)")
 
     def destroy(self, sandbox_id: str) -> None:
-        """Destroy a sandbox: stop the container and free all resources.
+        """sandbox를 파괴한다. 컨테이너를 멈추고 모든 리소스를 해제한다.
 
-        Unlike release(), this actually stops the container.  Use this for
-        explicit cleanup, capacity-driven eviction, or shutdown.
+        release()와 달리 실제로 컨테이너를 멈춘다. 명시적 정리, 용량에 따른 eviction,
+        shutdown에 사용한다.
 
-        The host-side HTTP client owned by the cached ``AioSandbox`` instance is
-        closed alongside backend/container destruction so no client/socket
-        resources leak (#2872).
+        캐시된 ``AioSandbox`` 인스턴스가 소유한 host 쪽 HTTP client도 backend/컨테이너 파괴와
+        함께 닫아서 client/socket 리소스가 누수되지 않게 한다(#2872).
 
         Args:
-            sandbox_id: The ID of the sandbox to destroy.
+            sandbox_id: 파괴할 sandbox의 ID.
         """
         self._destroy_tracked(sandbox_id, still_reapable=lambda: True)
 
     def _destroy_tracked(self, sandbox_id: str, *, still_reapable: Callable[[], bool]) -> None:
-        """``destroy()`` with a caller-supplied "is this still reapable" gate.
+        """호출자가 준 "아직 회수해도 되는가" 게이트를 붙인 ``destroy()``.
 
-        Callers that decided to destroy *earlier* (the idle checker) pass their
-        own predicate so the decision is re-validated in the same critical
-        section that reserves the teardown. ``destroy()`` itself passes a
-        constant: an explicit destroy is a decision made now.
+        *더 앞서* 파괴를 결정한 호출자(idle checker)는 자기 predicate를 넘겨서, teardown을
+        예약하는 바로 그 임계 구역에서 판단이 재검증되게 한다. ``destroy()`` 자신은 상수를
+        넘긴다. 명시적 destroy는 지금 내린 판단이기 때문이다.
         """
         if not self._reserve_local_teardown(sandbox_id, still_reapable):
             logger.info("Skipping destroy of sandbox %s: re-acquired by this instance or already being torn down", sandbox_id)
@@ -2200,9 +2116,9 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             self._finish_local_teardown(sandbox_id)
 
     def _destroy_reserved(self, sandbox_id: str) -> None:
-        # Claim before untracking. The reverse order loses the container on a
-        # refused claim: still running, and no longer in any of our maps, so
-        # nothing here would ever reap or reclaim it.
+        # untrack보다 claim을 먼저 한다. 순서가 반대면 claim이 거부됐을 때 컨테이너를 잃는다.
+        # 여전히 실행 중인데 우리 map 어디에도 없으므로, 여기서는 아무도 회수하거나 reclaim하지
+        # 못한다.
         if not self._claim_ownership(sandbox_id, for_destroy=True):
             logger.warning("Refusing to destroy sandbox %s: owned by another instance", sandbox_id)
             return
@@ -2210,32 +2126,30 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         sandbox, info, _ = self._remove_tracked_sandbox(sandbox_id)
 
         if sandbox is not None:
-            # Defense-in-depth: close() already swallows its own errors; this
-            # guard only protects against a future close() that misbehaves, so
-            # host-side client cleanup can never block container destruction.
+            # 방어의 한 겹이다. close()는 이미 자기 에러를 삼키므로, 이 guard는 앞으로
+            # close()가 잘못 동작할 경우에 대비할 뿐이다. host 쪽 client 정리가 컨테이너
+            # 파괴를 막는 일은 절대 없어야 한다.
             try:
                 sandbox.close()
             except Exception as e:
                 logger.warning(f"Error closing sandbox {sandbox_id} during destroy: {e}")
 
         if info:
-            # The marker must outlast the stop, not the TTL it was written with,
-            # and the heartbeat releases it on exit — on both outcomes. On a
-            # failed stop the container is probably still up, so a marker left
-            # behind would refuse its own thread's `take()` until the TTL lapses;
-            # the error still propagates out of the `with` (`shutdown()` logs per
-            # sandbox off it), it is just no longer this method's job to release.
+            # marker는 자신이 쓰인 TTL이 아니라 stop보다 오래 살아야 하며, 두 결과 모두에서
+            # heartbeat가 종료 시 해제한다. stop이 실패하면 컨테이너는 아마 아직 살아 있으므로,
+            # 남은 marker가 TTL이 만료될 때까지 자기 thread의 `take()`를 거부하게 된다. 에러는
+            # 여전히 `with` 밖으로 전파되며(`shutdown()`이 sandbox별로 로깅한다), 단지 해제가
+            # 더 이상 이 메서드의 일이 아닐 뿐이다.
             with self._held_teardown_lease(sandbox_id):
                 self._backend.destroy(info)
             logger.info(f"Destroyed sandbox {sandbox_id}")
         else:
-            # No container to stop, so no teardown lease was held: clear the
-            # marker the claim above wrote, so an untracked id cannot leave a
-            # lease stuck in `del:`.
+            # 멈출 컨테이너가 없어 teardown lease도 잡지 않았다. 위의 claim이 쓴 marker를
+            # 지워서, tracking되지 않는 id 때문에 lease가 `del:` 상태로 남지 않게 한다.
             self._release_ownership(sandbox_id)
 
     def shutdown(self) -> None:
-        """Shutdown all sandboxes. Thread-safe and idempotent."""
+        """모든 sandbox를 종료한다. thread-safe하고 멱등하다."""
         with self._lock:
             if self._shutdown_called:
                 return
@@ -2246,9 +2160,8 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             self._warm_pool_identity.clear()
 
         self._stop_idle_checker()
-        # Stop renewing before destroying: the destroy paths claim ownership
-        # themselves, and a renewal racing them only re-publishes leases we are
-        # about to drop.
+        # 파괴 전에 renewal을 멈춘다. destroy 경로가 스스로 ownership을 claim하며, 그와
+        # 경쟁하는 renewal은 곧 버릴 lease를 다시 게시할 뿐이다.
         self._stop_lease_renewal()
 
         logger.info(f"Shutting down {len(sandbox_ids)} active + {len(warm_items)} warm-pool sandbox(es)")
@@ -2260,11 +2173,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 logger.error(f"Failed to destroy sandbox {sandbox_id} during shutdown: {e}")
 
         for sandbox_id, (info, _) in warm_items:
-            # Route through _destroy_warm_entry so the ownership claim and the
-            # container stop stay together, as on the idle path. Unconditional
-            # here: the entries were removed from `_warm_pool` under the lock
-            # above, so the pool-membership predicate the other callers use would
-            # refuse every one of them.
+            # idle 경로와 마찬가지로 ownership claim과 컨테이너 stop이 함께 가도록
+            # _destroy_warm_entry를 거친다. 여기서는 무조건 실행한다. 위의 lock 안에서 항목을
+            # 이미 `_warm_pool`에서 제거했으므로, 다른 호출자가 쓰는 pool 소속 predicate는
+            # 전부 거부할 것이기 때문이다.
             self._destroy_warm_entry(sandbox_id, info, reason="shutdown", still_reapable=lambda: True)
 
         try:

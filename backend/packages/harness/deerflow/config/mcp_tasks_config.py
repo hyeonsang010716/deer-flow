@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class McpTasksConfig(BaseModel):
-    """Startup configuration for the protocol-neutral MCP task poller."""
+    """프로토콜 중립 MCP task poller의 기동 설정."""
 
     enabled: bool = Field(default=False)
     poll_interval_seconds: int = Field(default=5, ge=1, le=300)

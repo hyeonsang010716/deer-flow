@@ -1,4 +1,4 @@
-"""Configuration for conversation summarization."""
+"""대화 summarization 설정."""
 
 from typing import Literal
 
@@ -9,18 +9,18 @@ DEFAULT_SKILL_FILE_READ_TOOL_NAMES: tuple[str, ...] = ("read_file", "read", "vie
 
 
 class ContextSize(BaseModel):
-    """Context size specification for trigger or keep parameters."""
+    """trigger 또는 keep 파라미터에 쓰는 context 크기 명세."""
 
     type: ContextSizeType = Field(description="Type of context size specification")
     value: int | float = Field(description="Value for the context size specification")
 
     def to_tuple(self) -> tuple[ContextSizeType, int | float]:
-        """Convert to tuple format expected by SummarizationMiddleware."""
+        """SummarizationMiddleware가 기대하는 tuple 형식으로 변환한다."""
         return (self.type, self.value)
 
 
 class SummarizationConfig(BaseModel):
-    """Configuration for automatic conversation summarization."""
+    """대화 자동 summarization 설정."""
 
     enabled: bool = Field(
         default=False,
@@ -61,22 +61,22 @@ class SummarizationConfig(BaseModel):
     )
 
 
-# Global configuration instance
+# 전역 설정 인스턴스
 _summarization_config: SummarizationConfig = SummarizationConfig()
 
 
 def get_summarization_config() -> SummarizationConfig:
-    """Get the current summarization configuration."""
+    """현재 summarization 설정을 반환한다."""
     return _summarization_config
 
 
 def set_summarization_config(config: SummarizationConfig) -> None:
-    """Set the summarization configuration."""
+    """summarization 설정을 지정한다."""
     global _summarization_config
     _summarization_config = config
 
 
 def load_summarization_config_from_dict(config_dict: dict) -> None:
-    """Load summarization configuration from a dictionary."""
+    """dict에서 summarization 설정을 읽어 들인다."""
     global _summarization_config
     _summarization_config = SummarizationConfig(**config_dict)

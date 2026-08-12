@@ -1,9 +1,8 @@
-"""Middleware that enforces a per-result budget on tool outputs.
+"""도구 출력에 결과 단위 예산을 강제하는 middleware.
 
-Oversized tool results are persisted to disk and replaced with a compact
-typed synopsis containing a file reference.  When disk persistence is
-unavailable the middleware falls back to head+tail truncation so the
-model context is never blown by a single large tool return.
+크기가 큰 도구 결과는 디스크에 저장하고, 파일 참조를 담은 간결한 typed synopsis로
+대체한다. 디스크 저장이 불가능하면 head+tail 잘라내기로 fallback해서 큰 도구 반환값
+하나가 모델 context를 날려버리지 않게 한다.
 """
 
 from __future__ import annotations
@@ -33,10 +32,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Virtual outputs root inside the sandbox. Host-mounted sandboxes map this to
-# the thread outputs dir on the host; for non-mounted (remote) sandboxes the
-# same path is written directly into the sandbox filesystem so the model's
-# ``read_file`` tool can read it back (issue #3416).
+# sandbox 내부의 virtual outputs 루트. host mount 방식 sandbox는 이를 host의 thread
+# outputs 디렉터리로 매핑한다. mount하지 않는(원격) sandbox에서는 같은 경로를 sandbox
+# 파일시스템에 직접 쓴다. 그래야 모델의 ``read_file`` 도구가 다시 읽을 수 있다(issue #3416).
 _VIRTUAL_OUTPUTS_BASE = "/mnt/user-data/outputs"
 
 
@@ -45,15 +43,15 @@ def _default_config() -> ToolOutputConfig:
 
 
 # ---------------------------------------------------------------------------
-# Text helpers
+# 텍스트 헬퍼
 # ---------------------------------------------------------------------------
 
 
 def _message_text(content: Any) -> str | None:
-    """Extract a plain-text representation from a ToolMessage content field.
+    """ToolMessage content 필드에서 평문 표현을 뽑아낸다.
 
-    Returns ``None`` for non-string / multimodal content so the caller
-    can skip budget enforcement (images, structured blocks, etc.).
+    문자열이 아니거나 multimodal인 콘텐츠(이미지, 구조화 블록 등)는 ``None``을 반환해
+    호출자가 예산 적용을 건너뛰게 한다.
     """
     if isinstance(content, str):
         return content
@@ -73,14 +71,13 @@ def _message_text(content: Any) -> str | None:
 
 
 def _snap_to_line_boundary(text: str, pos: int) -> int:
-    """Return *pos* or the nearest preceding newline+1, whichever is closer.
+    """*pos* 또는 그보다 앞의 가장 가까운 개행+1 중 더 가까운 쪽을 반환한다.
 
-    Used so that previews and truncations end on a complete line when
-    possible.  If no newline exists in the second half of ``text[:pos]``
-    the original *pos* is returned unchanged.
+    preview와 잘라내기가 가능하면 완결된 줄에서 끝나도록 하기 위한 것이다.
+    ``text[:pos]``의 뒷절반에 개행이 없으면 원래 *pos*를 그대로 반환한다.
 
-    Only valid for an *end* offset: moving backwards shortens the slice that
-    ends here.  Use :func:`_snap_start_to_line_boundary` for a start offset.
+    *끝* offset에만 유효하다. 뒤로 옮기면 여기서 끝나는 slice가 짧아지기 때문이다.
+    시작 offset에는 :func:`_snap_start_to_line_boundary`를 쓴다.
     """
     if pos <= 0 or pos >= len(text):
         return pos
@@ -92,12 +89,11 @@ def _snap_to_line_boundary(text: str, pos: int) -> int:
 
 
 def _snap_start_to_line_boundary(text: str, pos: int) -> int:
-    """Return *pos* or the nearest following newline+1, whichever is closer.
+    """*pos* 또는 그 뒤의 가장 가까운 개행+1 중 더 가까운 쪽을 반환한다.
 
-    The start-offset mirror of :func:`_snap_to_line_boundary`. Snapping a start
-    backwards would *lengthen* the slice beginning there, so the tail of a
-    budgeted preview must snap forward instead. If no newline exists in the
-    first half of ``text[pos:]`` the original *pos* is returned unchanged.
+    :func:`_snap_to_line_boundary`의 시작 offset 버전이다. 시작을 뒤로 당기면 거기서
+    시작하는 slice가 *길어지므로*, 예산이 적용된 preview의 꼬리는 앞으로 당겨야 한다.
+    ``text[pos:]``의 앞절반에 개행이 없으면 원래 *pos*를 그대로 반환한다.
     """
     if pos <= 0 or pos >= len(text):
         return pos
@@ -109,7 +105,7 @@ def _snap_start_to_line_boundary(text: str, pos: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Disk persistence
+# 디스크 저장
 # ---------------------------------------------------------------------------
 
 _EXT_MAP: dict[str, str] = {
@@ -120,17 +116,16 @@ _EXT_MAP: dict[str, str] = {
 
 
 def _sanitize_tool_name(name: str) -> str:
-    """Strip path separators and traversal components from a tool name."""
+    """도구 이름에서 경로 구분자와 traversal 요소를 제거한다."""
     base = os.path.basename(name)
     safe = base.replace("..", "").replace("/", "_").replace("\\", "_")
     return safe or "unknown"
 
 
 def _build_externalized_filename(*, tool_name: str, tool_call_id: str) -> str:
-    """Build the on-disk filename for an externalized tool output.
+    """외부화된 도구 출력의 디스크 파일명을 만든다.
 
-    Shared by the host-disk and sandbox externalization paths so both
-    produce the identical naming scheme.
+    host 디스크 경로와 sandbox 외부화 경로가 공유해서 동일한 명명 규칙을 갖게 한다.
     """
     safe_name = _sanitize_tool_name(tool_name)
     ext = _EXT_MAP.get(tool_name, "txt")
@@ -146,7 +141,7 @@ def _externalize(
     outputs_path: str,
     storage_subdir: str,
 ) -> str | None:
-    """Write *content* to disk and return the virtual path, or ``None`` on failure."""
+    """*content*를 디스크에 쓰고 virtual path를 반환한다. 실패하면 ``None``."""
     if os.path.isabs(storage_subdir) or ".." in storage_subdir:
         return None
     storage_dir = os.path.join(outputs_path, storage_subdir)
@@ -178,13 +173,12 @@ def _externalize_to_sandbox(
     storage_subdir: str,
     sandbox: Sandbox,
 ) -> str | None:
-    """Write *content* into the sandbox filesystem and return the virtual path.
+    """*content*를 sandbox 파일시스템에 쓰고 virtual path를 반환한다.
 
-    Used when the sandbox does not use thread-data mounts (e.g. a remote AIO
-    sandbox): the host-side :func:`_externalize` virtual path would not exist
-    inside the sandbox, so the model's ``read_file`` tool could not read it
-    back (issue #3416). Returns the same virtual-path contract on success, or
-    ``None`` to signal the caller to fall back to inline truncation.
+    sandbox가 thread-data mount를 쓰지 않을 때(예: 원격 AIO sandbox) 사용한다. host 쪽
+    :func:`_externalize`의 virtual path는 sandbox 안에 존재하지 않아 모델의 ``read_file``
+    도구가 다시 읽을 수 없기 때문이다(issue #3416). 성공하면 동일한 virtual-path 계약을
+    반환하고, ``None``이면 호출자가 inline 잘라내기로 fallback하라는 신호다.
     """
     if os.path.isabs(storage_subdir) or ".." in storage_subdir:
         return None
@@ -192,15 +186,14 @@ def _externalize_to_sandbox(
     virtual_dir = f"{_VIRTUAL_OUTPUTS_BASE}/{storage_subdir}"
     virtual_path = f"{virtual_dir}/{filename}"
     try:
-        # AIO sandbox write_file does NOT create parent directories, so create
-        # them explicitly before writing. execute_command returns its stdout
-        # verbatim (including an "Error: ..." string on failure) rather than
-        # raising, so we cannot rely on exception propagation here.
+        # AIO sandbox의 write_file은 상위 디렉터리를 만들지 않으므로 쓰기 전에 명시적으로
+        # 생성한다. execute_command는 예외를 던지지 않고 stdout을 그대로 반환하므로
+        # (실패 시 "Error: ..." 문자열 포함) 여기서 예외 전파에 의존할 수 없다.
         sandbox.execute_command(f"mkdir -p {shlex.quote(virtual_dir)}")
         sandbox.write_file(virtual_path, content)
-        # Validate the file landed: execute_command may have silently failed
-        # to create the directory, and write_file backends differ. Refuse to
-        # hand the model an unreadable read_file path.
+        # 파일이 실제로 생겼는지 검증한다. execute_command가 조용히 디렉터리 생성에
+        # 실패했을 수 있고 write_file backend마다 동작이 다르다. 읽을 수 없는 read_file
+        # 경로를 모델에게 넘기지 않는다.
         check = sandbox.execute_command(f"test -s {shlex.quote(virtual_path)} && echo OK || echo MISSING")
         if not isinstance(check, str) or check.strip() != "OK":
             logger.warning(
@@ -220,7 +213,7 @@ def _externalize_to_sandbox(
 
 
 # ---------------------------------------------------------------------------
-# Preview / fallback builders
+# Preview / fallback 빌더
 # ---------------------------------------------------------------------------
 
 
@@ -232,7 +225,7 @@ def _build_preview(
     head_chars: int,
     tail_chars: int,
 ) -> str:
-    """Build a typed synopsis preview with a file reference for externalized output."""
+    """외부화된 출력에 대해 파일 참조를 포함한 typed synopsis preview를 만든다."""
     return render_tool_output_preview(
         content,
         tool_name=tool_name,
@@ -250,9 +243,9 @@ def _build_fallback(
     head_chars: int,
     tail_chars: int,
 ) -> str:
-    """Build a head+tail truncation when disk persistence is unavailable.
+    """디스크 저장이 불가능할 때 head+tail 잘라내기 결과를 만든다.
 
-    The returned string is guaranteed to be no longer than *max_chars*.
+    반환 문자열은 *max_chars*를 넘지 않음이 보장된다.
     """
     total = len(content)
     if max_chars <= 0 or total <= max_chars:
@@ -284,12 +277,12 @@ def _build_fallback(
 
 
 # ---------------------------------------------------------------------------
-# Core budget logic
+# 핵심 예산 로직
 # ---------------------------------------------------------------------------
 
 
 def _resolve_outputs_path(request: ToolCallRequest) -> str | None:
-    """Best-effort extraction of the thread outputs path."""
+    """thread outputs 경로를 best-effort로 추출한다."""
     runtime = getattr(request, "runtime", None)
     if runtime is None:
         return None
@@ -304,14 +297,13 @@ def _resolve_outputs_path(request: ToolCallRequest) -> str | None:
 
 
 def _resolve_sandbox(request: ToolCallRequest) -> Sandbox | None:
-    """Resolve the active sandbox for the current tool call, or ``None``.
+    """현재 도구 호출에 해당하는 활성 sandbox를 찾는다. 없으면 ``None``.
 
-    Reads the sandbox_id that ``SandboxMiddleware`` (and the sandbox tools
-    themselves) write into ``runtime.state["sandbox"]``. We intentionally do
-    NOT call ``provider.acquire`` here: acquiring a sandbox can trigger
-    blocking remote I/O, and this resolver runs on every tool call. Tools
-    that do not use a sandbox (``web_search``, MCP, ...) will return ``None``
-    here, which is fine -- the caller falls back to inline truncation.
+    ``SandboxMiddleware``(및 sandbox 도구들)가 ``runtime.state["sandbox"]``에 써 둔
+    sandbox_id를 읽는다. 여기서 ``provider.acquire``는 의도적으로 호출하지 않는다.
+    sandbox 획득은 블로킹 원격 I/O를 유발할 수 있는데 이 resolver는 모든 도구 호출마다
+    돌기 때문이다. sandbox를 쓰지 않는 도구(``web_search``, MCP 등)는 여기서 ``None``을
+    받는데 문제없다. 호출자가 inline 잘라내기로 fallback한다.
     """
     runtime = getattr(request, "runtime", None)
     state = getattr(runtime, "state", None)
@@ -339,7 +331,7 @@ def _budget_content(
     config: ToolOutputConfig,
     sandbox: Sandbox | None = None,
 ) -> str | None:
-    """Apply budget to *content*. Returns ``None`` if no change needed."""
+    """*content*에 예산을 적용한다. 변경이 필요 없으면 ``None``을 반환한다."""
     threshold = config.tool_overrides.get(tool_name, config.externalize_min_chars)
     if threshold <= 0 and config.fallback_max_chars <= 0:
         return None
@@ -348,11 +340,10 @@ def _budget_content(
 
     if threshold > 0 and len(content) > threshold:
         virtual_path: str | None = None
-        # Decide persistence target based on what's available, without touching
-        # the sandbox provider unless a sandbox was actually resolved for this
-        # call. This keeps the legacy host-disk path provider-free, so callers
-        # without a configured sandbox (and CI environments without a
-        # config.yaml) continue to externalize to the host as before.
+        # 이 호출에 대해 실제로 sandbox가 잡혔을 때만 sandbox provider를 건드리고,
+        # 그 외에는 사용 가능한 것에 따라 저장 대상을 정한다. 이렇게 하면 기존 host-disk
+        # 경로가 provider와 무관하게 유지되어, sandbox를 설정하지 않은 호출자나
+        # config.yaml이 없는 CI 환경도 예전처럼 host에 외부화한다.
         if sandbox is not None:
             provider = None
             try:
@@ -360,10 +351,9 @@ def _budget_content(
             except Exception:
                 logger.exception("Failed to get sandbox provider for tool-output externalization; falling back to inline truncation")
             if provider is not None and getattr(provider, "uses_thread_data_mounts", False):
-                # Host-mounted sandbox: host outputs path is bind-mounted into
-                # the sandbox at the same virtual path, so writing host-side is
-                # equivalent. Preserve the original behavior to avoid extra
-                # sandbox round-trips.
+                # host mount 방식 sandbox: host outputs 경로가 같은 virtual path로
+                # sandbox에 bind-mount되므로 host 쪽에 쓰는 것과 동등하다. 추가 sandbox
+                # 왕복을 피하기 위해 원래 동작을 유지한다.
                 if outputs_path:
                     virtual_path = _externalize(
                         content,
@@ -381,8 +371,8 @@ def _budget_content(
                     sandbox=sandbox,
                 )
         elif outputs_path:
-            # No sandbox in this call (legacy / non-sandbox tools): write to
-            # host outputs path directly, no provider needed.
+            # 이 호출에 sandbox가 없다(legacy 또는 sandbox를 쓰지 않는 도구).
+            # provider 없이 host outputs 경로에 바로 쓴다.
             virtual_path = _externalize(
                 content,
                 tool_name=tool_name,
@@ -424,7 +414,7 @@ def _budget_content(
 
 
 # ---------------------------------------------------------------------------
-# Result patchers
+# 결과 패처
 # ---------------------------------------------------------------------------
 
 
@@ -434,7 +424,7 @@ def _patch_tool_message(
     outputs_path: str | None,
     sandbox: Sandbox | None = None,
 ) -> ToolMessage:
-    """Apply budget to a single ToolMessage. Returns the original if unchanged."""
+    """ToolMessage 하나에 예산을 적용한다. 변경이 없으면 원본을 그대로 반환한다."""
     tool_name = msg.name or "unknown"
     if tool_name in config.exempt_tools:
         return msg
@@ -463,11 +453,11 @@ def _patch_tool_message(
 
 
 def _effective_trigger(tool_name: str, config: ToolOutputConfig) -> int:
-    """Smallest content length that could trigger budgeting for *tool_name*.
+    """*tool_name*에 대해 예산 적용을 유발할 수 있는 최소 콘텐츠 길이.
 
-    Mirrors the trigger conditions in :func:`_budget_content` (per-tool
-    externalize threshold OR global fallback), so the pre-scan never produces
-    a false negative. Returns ``-1`` when nothing could ever trigger.
+    :func:`_budget_content`의 발동 조건(도구별 externalize 임계값 또는 전역 fallback)을
+    그대로 반영해 사전 스캔이 false negative를 내지 않게 한다. 어떤 경우에도 발동하지
+    않으면 ``-1``을 반환한다.
     """
     candidates: list[int] = []
     externalize = config.tool_overrides.get(tool_name, config.externalize_min_chars)
@@ -479,7 +469,7 @@ def _effective_trigger(tool_name: str, config: ToolOutputConfig) -> int:
 
 
 def _tool_message_over_budget(msg: ToolMessage, config: ToolOutputConfig) -> bool:
-    """Cheap, per-tool-aware check: is this ToolMessage non-exempt and over its trigger?"""
+    """도구별 기준을 반영한 저비용 검사. 이 ToolMessage가 예외 대상이 아니면서 발동 기준을 넘는가."""
     if (msg.name or "") in config.exempt_tools:
         return False
     trigger = _effective_trigger(msg.name or "", config)
@@ -490,7 +480,7 @@ def _tool_message_over_budget(msg: ToolMessage, config: ToolOutputConfig) -> boo
 
 
 def _needs_budget(result: ToolMessage | Command, config: ToolOutputConfig) -> bool:
-    """Fast check whether *result* could need budgeting (avoids thread offload for small outputs)."""
+    """*result*에 예산 적용이 필요할 수 있는지 빠르게 확인한다(작은 출력은 thread offload를 피한다)."""
     if isinstance(result, ToolMessage):
         return _tool_message_over_budget(result, config)
     update = getattr(result, "update", None)
@@ -507,7 +497,7 @@ def _patch_result(
     outputs_path: str | None,
     sandbox: Sandbox | None = None,
 ) -> ToolMessage | Command:
-    """Apply budget to a tool call result (ToolMessage or Command)."""
+    """도구 호출 결과(ToolMessage 또는 Command)에 예산을 적용한다."""
     if isinstance(result, ToolMessage):
         return _patch_tool_message(result, config, outputs_path, sandbox)
 
@@ -537,17 +527,15 @@ def _patch_result(
 
 
 def _patch_model_messages(messages: list[Any], config: ToolOutputConfig) -> list[Any] | None:
-    """Apply budget to historical ToolMessages in a model request. Returns ``None`` if unchanged.
+    """모델 요청에 담긴 과거 ToolMessage에 예산을 적용한다. 변경이 없으면 ``None``을 반환한다.
 
-    A cheap pre-scan bails out before allocating a new list when no historical
-    ToolMessage exceeds the budget — the common case once every result has
-    already been budgeted at tool-call time, so a long history is not rebuilt
-    on every model call.
+    예산을 넘는 과거 ToolMessage가 없으면 저비용 사전 스캔이 새 리스트를 할당하기 전에
+    빠져나온다. 모든 결과가 이미 도구 호출 시점에 예산 처리된 일반적인 경우가 이에 해당해,
+    긴 히스토리를 모델 호출마다 다시 만들지 않는다.
 
-    Historical messages do not get a ``sandbox`` argument: any oversized tool
-    message in history was already budgeted (and possibly externalized) at
-    tool-call time, so the only thing left for the history path to do is
-    inline fallback truncation, which needs no sandbox.
+    과거 메시지에는 ``sandbox`` 인자를 넘기지 않는다. 히스토리의 큰 도구 메시지는 이미
+    도구 호출 시점에 예산 처리(필요하면 외부화)되었으므로, 히스토리 경로에 남은 일은
+    sandbox가 필요 없는 inline fallback 잘라내기뿐이다.
     """
     if not any(isinstance(msg, ToolMessage) and _tool_message_over_budget(msg, config) for msg in messages):
         return None
@@ -566,12 +554,12 @@ def _patch_model_messages(messages: list[Any], config: ToolOutputConfig) -> list
 
 
 # ---------------------------------------------------------------------------
-# Middleware class
+# Middleware 클래스
 # ---------------------------------------------------------------------------
 
 
 class ToolOutputBudgetMiddleware(AgentMiddleware[AgentState]):
-    """Enforce per-result budget on tool outputs via externalization or truncation."""
+    """외부화 또는 잘라내기로 도구 출력에 결과 단위 예산을 강제한다."""
 
     def __init__(self, config: ToolOutputConfig | None = None) -> None:
         super().__init__()
@@ -584,7 +572,7 @@ class ToolOutputBudgetMiddleware(AgentMiddleware[AgentState]):
             return cls(config=tool_output)
         return cls()
 
-    # -- tool call hooks ---------------------------------------------------
+    # -- 도구 호출 hook ---------------------------------------------------
 
     @override
     def wrap_tool_call(
@@ -613,14 +601,13 @@ class ToolOutputBudgetMiddleware(AgentMiddleware[AgentState]):
         if not _needs_budget(result, self._config):
             return result
         outputs_path = _resolve_outputs_path(request)
-        # _resolve_sandbox only touches runtime.state and the provider's
-        # in-memory sandbox registry, so it is safe to call on the event
-        # loop. The actual sandbox I/O (mkdir/write/test) happens inside
-        # _patch_result, which is offloaded to a worker thread below.
+        # _resolve_sandbox는 runtime.state와 provider의 in-memory sandbox registry만
+        # 건드리므로 event loop에서 호출해도 안전하다. 실제 sandbox I/O(mkdir/write/test)는
+        # 아래에서 worker thread로 offload되는 _patch_result 안에서 일어난다.
         sandbox = _resolve_sandbox(request)
         return await asyncio.to_thread(_patch_result, result, self._config, outputs_path, sandbox)
 
-    # -- model call hooks (historical message truncation) ------------------
+    # -- 모델 호출 hook(과거 메시지 잘라내기) ------------------
 
     @override
     def wrap_model_call(

@@ -2,7 +2,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelConfig(BaseModel):
-    """Config section for a model"""
+    """모델 하나에 대한 설정 섹션."""
 
     name: str = Field(..., description="Unique name for the model")
     display_name: str | None = Field(..., default_factory=lambda: None, description="Display name for the model")

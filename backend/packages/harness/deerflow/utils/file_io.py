@@ -1,4 +1,4 @@
-"""Dedicated async offload helper for filesystem work."""
+"""파일시스템 작업을 전용 pool로 async offload하는 헬퍼."""
 
 from __future__ import annotations
 
@@ -38,12 +38,12 @@ atexit.register(_shutdown_file_io_executor)
 
 
 async def run_file_io[**P, T](func: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
-    """Run blocking filesystem-oriented work on the dedicated file IO pool.
+    """blocking 파일시스템 작업을 전용 file IO pool에서 실행한다.
 
-    ``asyncio.to_thread`` copies ``ContextVar`` values automatically; raw
-    ``loop.run_in_executor`` does not. Copy the current context explicitly so
-    user-scoped helpers such as ``get_effective_user_id()`` keep working inside
-    the worker thread.
+    ``asyncio.to_thread``는 ``ContextVar`` 값을 자동으로 복사하지만 raw
+    ``loop.run_in_executor``는 그렇지 않다. worker thread 안에서도
+    ``get_effective_user_id()`` 같은 user 단위 헬퍼가 계속 동작하도록 현재 context를
+    명시적으로 복사한다.
     """
     loop = asyncio.get_running_loop()
     ctx = contextvars.copy_context()

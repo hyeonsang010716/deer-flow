@@ -1,14 +1,11 @@
-"""Run event storage configuration.
+"""run event 저장 설정.
 
-Controls where run events (messages + execution traces) are persisted.
+run event(메시지 + 실행 trace)를 어디에 보존할지 결정한다.
 
-Backends:
-- memory: In-memory storage, data lost on restart. Suitable for
-  development and testing.
-- db: SQL database via SQLAlchemy ORM. Provides full query capability.
-  Suitable for production deployments.
-- jsonl: Append-only JSONL files. Lightweight alternative for
-  single-node deployments that need persistence without a database.
+Backend:
+- memory: 메모리 저장. 재시작하면 사라진다. 개발과 테스트용.
+- db: SQLAlchemy ORM 기반 SQL 데이터베이스. 완전한 조회가 가능하며 운영 배포용.
+- jsonl: append-only JSONL 파일. 데이터베이스 없이 보존이 필요한 단일 노드 배포용 경량 대안.
 """
 
 from __future__ import annotations

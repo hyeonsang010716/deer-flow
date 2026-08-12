@@ -1,17 +1,17 @@
-"""Langfuse trace-attribute metadata builders.
+"""Langfuse trace 속성 metadata builder.
 
-The Langfuse v4 ``langchain.CallbackHandler`` lifts a fixed set of reserved
-keys from ``RunnableConfig.metadata`` onto the root trace:
+Langfuse v4의 ``langchain.CallbackHandler``는 ``RunnableConfig.metadata``에서 정해진 예약 key
+집합을 root trace로 끌어올린다:
 
-- ``langfuse_session_id`` → groups traces (LangGraph thread → Langfuse Session)
-- ``langfuse_user_id``    → trace user_id (powers the Users page)
-- ``langfuse_trace_name`` → human-readable trace name
-- ``langfuse_tags``       → trace tags
+- ``langfuse_session_id`` → trace를 묶는다(LangGraph thread → Langfuse Session)
+- ``langfuse_user_id``    → trace user_id(Users 페이지의 기반)
+- ``langfuse_trace_name`` → 사람이 읽을 수 있는 trace 이름
+- ``langfuse_tags``       → trace tag
 
-See ``langfuse/langchain/CallbackHandler.py::_parse_langfuse_trace_attributes``
-and https://langfuse.com/docs/observability/features/sessions for the
-contract. Builders here exist so the gateway/run worker can inject the
-right metadata without leaking Langfuse internals into the call sites.
+계약은 ``langfuse/langchain/CallbackHandler.py::_parse_langfuse_trace_attributes``와
+https://langfuse.com/docs/observability/features/sessions 를 참고한다. 여기의 builder는
+gateway/run worker가 호출 지점에 Langfuse 내부 사정을 흘리지 않고 올바른 metadata를 주입할 수
+있게 하려고 존재한다.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from typing import Any
 from deerflow.config import get_enabled_tracing_providers
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, get_current_trace_id, normalize_trace_id
 
-# Lazy-imported below to avoid a circular import: ``deerflow.runtime`` eagerly
-# imports the run worker, which in turn needs ``deerflow.tracing``.
+# 순환 import를 피하려고 아래에서 lazy import한다. ``deerflow.runtime``이 run worker를 즉시
+# import하고, 그 worker가 다시 ``deerflow.tracing``을 필요로 하기 때문이다.
 _DEFAULT_TRACE_NAME = "lead-agent"
 
 
@@ -35,22 +35,21 @@ def build_langfuse_trace_metadata(
     environment: str | None = None,
     deerflow_trace_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return Langfuse trace-attribute metadata for ``RunnableConfig.metadata``.
+    """``RunnableConfig.metadata``에 넣을 Langfuse trace 속성 metadata를 반환한다.
 
-    Returns ``{}`` when Langfuse is not in the enabled tracing providers so
-    callers can unconditionally merge the result without affecting LangSmith
-    or other tracers.
+    Langfuse가 활성 tracing provider에 없으면 ``{}``를 반환하므로, 호출자는 LangSmith나 다른
+    tracer에 영향을 주지 않고 결과를 무조건 병합할 수 있다.
 
     Args:
-        thread_id: LangGraph thread id; mapped to ``langfuse_session_id``.
-        user_id: Effective user id; falls back to ``DEFAULT_USER_ID`` when
-            ``None`` so the Langfuse Users page works in no-auth mode.
-        assistant_id: Optional agent identifier; defaults to ``"lead-agent"``.
-        model_name: Model name; emitted as ``model:<name>`` in ``langfuse_tags``.
-        environment: Deployment env (e.g. ``"production"``); emitted as
-            ``env:<value>`` in ``langfuse_tags``.
-        deerflow_trace_id: Optional DeerFlow request trace id; falls back to
-            the current request trace context when omitted.
+        thread_id: LangGraph thread id. ``langfuse_session_id``로 매핑된다.
+        user_id: 유효 user id. ``None``이면 ``DEFAULT_USER_ID``로 대체되어, 인증 없는 모드에서도
+            Langfuse Users 페이지가 동작한다.
+        assistant_id: agent 식별자(선택). 기본값은 ``"lead-agent"``.
+        model_name: model 이름. ``langfuse_tags``에 ``model:<name>``으로 들어간다.
+        environment: 배포 env(예: ``"production"``). ``langfuse_tags``에 ``env:<value>``로
+            들어간다.
+        deerflow_trace_id: DeerFlow request trace id(선택). 생략하면 현재 request trace
+            context 값을 쓴다.
     """
     if "langfuse" not in get_enabled_tracing_providers():
         return {}
@@ -87,15 +86,14 @@ def inject_langfuse_metadata(
     environment: str | None = None,
     deerflow_trace_id: str | None = None,
 ) -> None:
-    """Merge Langfuse trace-attribute metadata into ``config["metadata"]``.
+    """Langfuse trace 속성 metadata를 ``config["metadata"]``에 병합한다.
 
-    Shared by the gateway worker (``runtime/runs/worker.py``) and the
-    embedded client (``client.py``) so the two paths cannot drift apart.
+    gateway worker(``runtime/runs/worker.py``)와 embedded client(``client.py``)가 공유하므로
+    두 경로가 서로 어긋날 수 없다.
 
-    Caller-supplied metadata wins via ``setdefault`` — an upstream value
-    for e.g. ``langfuse_session_id`` set by the frontend stays untouched.
-    The ``config`` dict is mutated in place; the call is a no-op when
-    Langfuse is not in the enabled tracing providers.
+    ``setdefault``를 쓰므로 호출자가 준 metadata가 이긴다. 예를 들어 frontend가 설정한
+    ``langfuse_session_id`` 값은 그대로 유지된다. ``config`` dict는 제자리에서 변경된다.
+    Langfuse가 활성 tracing provider에 없으면 아무 일도 하지 않는다.
     """
     langfuse_metadata = build_langfuse_trace_metadata(
         thread_id=thread_id,

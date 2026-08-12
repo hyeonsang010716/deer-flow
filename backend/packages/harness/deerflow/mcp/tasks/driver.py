@@ -6,7 +6,7 @@ from deerflow.mcp.tasks.models import TaskReference, TaskSnapshot, TaskSubmissio
 
 
 class McpTaskDriver(Protocol):
-    """Transport/protocol adapter used by the protocol-neutral task runtime."""
+    """protocol 중립 task runtime이 쓰는 transport/protocol adapter."""
 
     async def submit(self, request: TaskSubmitRequest) -> TaskSubmission: ...
 
@@ -16,7 +16,7 @@ class McpTaskDriver(Protocol):
 
 
 class McpTaskDriverRegistry:
-    """Process-local driver catalog wired at Gateway startup."""
+    """Gateway 시작 시 구성되는 프로세스 로컬 driver 카탈로그."""
 
     def __init__(self) -> None:
         self._drivers: dict[str, McpTaskDriver] = {}

@@ -1,4 +1,4 @@
-"""Run naming helpers for LangChain/LangSmith tracing."""
+"""LangChain/LangSmith tracing용 run 이름 헬퍼."""
 
 from __future__ import annotations
 

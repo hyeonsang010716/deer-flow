@@ -1,17 +1,15 @@
-"""Memory manager contract + pluggable backend factory.
+"""Memory manager 계약 + 교체 가능한 backend factory.
 
-This module is the shared, backend-agnostic core of the memory package. It
-defines the :class:`MemoryManager` interface (9 methods) that every backend
-implements, plus a singleton :func:`get_memory_manager` factory that resolves
-the active backend from ``MemoryConfig.manager_class``.
+memory 패키지의 backend 중립 코어다. 모든 backend가 구현하는
+:class:`MemoryManager` 인터페이스(9개 메서드)와, ``MemoryConfig.manager_class``로
+활성 backend를 결정하는 싱글턴 factory :func:`get_memory_manager`를 정의한다.
 
-Swap backend = drop a ``backends/<name>/`` folder exposing ``MANAGER_CLASS``
-and set ``manager_class: <name>``. Nothing else in deer-flow changes.
+backend 교체는 ``MANAGER_CLASS``를 노출하는 ``backends/<name>/`` 폴더를 넣고
+``manager_class: <name>``으로 설정하면 끝이다. deer-flow의 다른 코드는 바뀌지 않는다.
 
-Scope note: this phase is *pluggable only*, not black-box. Agent-side
-conventions (``enabled`` gating at call sites, ``<memory>`` wrapping in
-``_get_memory_context``) stay where they are; they are backend-agnostic and
-do not impede pluggability.
+범위 참고: 이 단계는 *교체 가능*까지이며 black-box는 아니다. 에이전트 쪽 규약
+(호출 지점의 ``enabled`` 게이팅, ``_get_memory_context``의 ``<memory>`` 래핑)은
+그대로 둔다. backend 중립적이라 교체 가능성을 해치지 않는다.
 """
 
 from __future__ import annotations
@@ -31,25 +29,26 @@ from deerflow.config.memory_config import get_memory_config
 
 logger = logging.getLogger(__name__)
 
-# Backend packages live in <this dir>/backends/<name>/.
+# backend 패키지는 <이 디렉터리>/backends/<name>/ 아래에 둔다.
 _BACKENDS_DIR = Path(__file__).parent / "backends"
-# Sentinel attribute each backend's __init__ exposes (a MemoryManager subclass).
+# 각 backend의 __init__이 노출하는 sentinel 속성(MemoryManager 하위 클래스).
 _MANAGER_CLASS_ATTR = "MANAGER_CLASS"
 
-# Singleton instance + backend-registry cache (reset together by reset_memory_manager).
-# _manager_lock guards get_memory_manager()'s double-checked init (multi-threaded).
+# 싱글턴 인스턴스 + backend 레지스트리 캐시(reset_memory_manager가 함께 비운다).
+# _manager_lock은 멀티스레드 환경에서 get_memory_manager()의 double-checked 초기화를 보호한다.
 _memory_manager: MemoryManager | None = None
 _backends_cache: dict[str, type[MemoryManager]] | None = None
 _manager_lock = threading.Lock()
 
 
 class MemoryCallbacks:
-    """Observability hooks for memory backends. Default implementations are
-    no-ops; override the ones you need. The pre-LLM-call hook
-    ``on_memory_llm_call`` mutates ``invoke_config`` before the LLM call so a
-    tracer (e.g. langfuse) emits a span at the LLM boundary. (More hooks --
-    post-extract / search / inject / error -- can be added when callers need
-    them.)"""
+    """memory backend용 observability hook 모음.
+
+    기본 구현은 모두 no-op이며 필요한 것만 override한다. LLM 호출 직전 hook인
+    ``on_memory_llm_call``은 ``invoke_config``를 변형해 tracer(예: langfuse)가
+    LLM 경계에서 span을 남기게 한다. (post-extract / search / inject / error 등
+    추가 hook은 호출자가 필요로 할 때 넣는다.)
+    """
 
     def on_memory_llm_call(
         self,
@@ -60,108 +59,102 @@ class MemoryCallbacks:
         trace_id: str | None,
         model_name: str | None,
     ) -> None:
-        """Pre-LLM-call: mutate ``invoke_config`` (e.g. merge trace metadata)
-        before the backend invokes the model. Default: no-op."""
+        """LLM 호출 직전에 ``invoke_config``를 변형한다(예: trace metadata 병합).
+
+        기본 구현은 no-op이다.
+        """
 
 
 class MemoryManagerError(RuntimeError):
-    """Backend-neutral base error exposed at the MemoryManager boundary."""
+    """MemoryManager 경계에서 노출하는 backend 중립 기본 에러."""
 
 
 class MemoryConflictError(MemoryManagerError):
-    """The requested write lost an optimistic-concurrency race."""
+    """optimistic-concurrency 경쟁에서 밀려난 쓰기다."""
 
 
 class MemoryCorruptionError(MemoryManagerError):
-    """Persisted memory cannot be read safely."""
+    """저장된 memory를 안전하게 읽을 수 없다."""
 
 
 class MemoryManager(BaseModel):
-    """Backend-neutral memory manager contract.
+    """backend 중립 memory manager 계약.
 
-    A pydantic ``BaseModel`` (not a bare ``ABC``) so the contract gains field
-    validation + serialization for free and shares the pydantic v2 type system
-    with backend configs (e.g. ``DeerMemConfig``). Subclasses still MUST
-    implement the ``@abstractmethod``s -- pydantic's ``ModelMetaclass`` derives
-    from ``ABCMeta``, so unimplemented abstractmethods raise ``TypeError`` at
-    instantiation (memory is persistent state; a backend missing ``add`` /
-    ``get_context`` is a severe bug, caught at construction). Backend-private
-    dependencies (storage / llm / queue / ...) are NOT fields -- they are
-    ``PrivateAttr`` set in ``model_post_init`` (or ``from_config``), kept out of
-    validation / serialization.
+    순수 ``ABC``가 아니라 pydantic ``BaseModel``이다. 필드 검증과 직렬화를 공짜로
+    얻고 backend config(예: ``DeerMemConfig``)와 pydantic v2 타입 시스템을 공유하기
+    위해서다. 하위 클래스는 여전히 ``@abstractmethod``를 구현해야 한다. pydantic의
+    ``ModelMetaclass``가 ``ABCMeta``를 상속하므로 미구현 abstractmethod는 인스턴스
+    생성 시점에 ``TypeError``를 낸다(memory는 영속 상태라 ``add`` / ``get_context``가
+    빠진 backend는 심각한 버그이며 생성 시점에 잡아야 한다). backend 전용 의존성
+    (storage / llm / queue 등)은 필드가 아니라 ``model_post_init``(또는
+    ``from_config``)에서 설정하는 ``PrivateAttr``이며 검증·직렬화 대상에서 제외된다.
 
-    Memories are bucketed per ``(agent_name, user_id)``; ``thread_id`` aligns
-    with the deer-flow conversation thread. The contract is deliberately
-    neutral so a third-party memory system can be adapted without deer-flow
-    code changes:
+    memory는 ``(agent_name, user_id)`` 단위로 버킷을 나누고, ``thread_id``는 deer-flow
+    대화 thread와 일치한다. 서드파티 memory 시스템을 deer-flow 코드 수정 없이 붙일 수
+    있도록 계약을 의도적으로 중립적으로 유지한다.
 
-    - :meth:`get_context` returns plain injection text; the *format* is the
-      implementation's own choice and is NOT part of the contract (DeerMem
-      does load + ``format_memory_for_injection``; another backend may do
-      its own search + formatting).
-    - :meth:`add` / :meth:`add_nowait` take raw conversation messages; any
-      filtering / correction-/reinforcement-detection is the implementation's
-      private concern (not on the contract).
-    - No facts-model assumption: a backend need not store "facts" at all.
+    - :meth:`get_context`는 주입용 평문 텍스트를 반환한다. *포맷*은 구현체가 정하며
+      계약의 일부가 아니다(DeerMem은 로드 후 ``format_memory_for_injection``을 쓰지만,
+      다른 backend는 자체 search + 포매팅을 해도 된다).
+    - :meth:`add` / :meth:`add_nowait`는 원본 대화 메시지를 받는다. 필터링이나
+      correction/reinforcement 탐지는 구현체의 내부 사정이며 계약에 없다.
+    - facts 모델을 가정하지 않는다. backend가 "fact"를 저장하지 않아도 된다.
 
-    Methods are tiered: tier-1 (``add`` / ``get_context``) are ``@abstractmethod``;
-    tier-2 management ops and tier-3 optional hooks carry defaults (``raise
-    NotImplementedError`` or a no-op) so a backend implements only what it
-    supports. ``delete_memory`` / ``export_memory`` are dead contract (zero
-    callers; ``/memory/export`` routes via ``get_memory``) kept available via the
-    default raise.
+    메서드는 계층으로 나뉜다. tier-1(``add`` / ``get_context``)은 ``@abstractmethod``이고,
+    tier-2 관리 연산과 tier-3 선택 hook은 기본 구현(``NotImplementedError`` 발생 또는
+    no-op)을 갖는다. 덕분에 backend는 지원하는 것만 구현하면 된다. ``delete_memory`` /
+    ``export_memory``는 호출자가 없는 죽은 계약이지만(``/memory/export``는 ``get_memory``로
+    간다) 기본 raise 형태로 남겨 둔다.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Backend-private config (factory passes it through). Backends that need to
-    # parse it (DeerMem -> DeerMemConfig) do so in model_post_init / from_config.
-    # None is coerced to {} so zero-config ``Backend(backend_config=None)`` stays
-    # valid (BaseModel would otherwise reject None for a dict field).
+    # backend 전용 config(factory가 그대로 넘긴다). 파싱이 필요한 backend
+    # (DeerMem -> DeerMemConfig)는 model_post_init / from_config에서 처리한다.
+    # None은 {}로 강제 변환해 zero-config ``Backend(backend_config=None)``도 유효하게
+    # 둔다(그렇지 않으면 BaseModel이 dict 필드의 None을 거부한다).
     backend_config: dict[str, Any] = Field(default_factory=dict)
-    # Operation mode mirrors host ``MemoryConfig.mode`` ("middleware" | "tool");
-    # the factory passes ``cfg.mode``. The invariant validator requires
-    # tool-mode backends to support search.
+    # 동작 모드는 host의 ``MemoryConfig.mode``("middleware" | "tool")를 그대로 반영한다.
+    # factory가 ``cfg.mode``를 넘긴다. invariant validator는 tool 모드 backend에
+    # search 지원을 요구한다.
     mode: Literal["middleware", "tool"] = "middleware"
-    # Observability callbacks (optional; a ``MemoryCallbacks`` instance). The
-    # factory injects ``LangfuseMemoryCallbacks`` so memory-LLM calls surface in
-    # langfuse; None = no callbacks (direct construction / standalone). Backends
-    # pass this to their LLM path and call ``on_memory_llm_call`` before invoke.
+    # observability callbacks(선택, ``MemoryCallbacks`` 인스턴스). factory가
+    # ``LangfuseMemoryCallbacks``를 주입해 memory-LLM 호출이 langfuse에 드러나게 한다.
+    # None이면 callbacks 없음(직접 생성 / standalone). backend는 이를 LLM 경로로 넘기고
+    # invoke 전에 ``on_memory_llm_call``을 호출한다.
     callbacks: MemoryCallbacks | None = None
 
     @field_validator("backend_config", mode="before")
     @classmethod
     def _coerce_backend_config(cls, value: Any) -> dict[str, Any]:
-        """Accept None (zero-config) as an empty dict; leave dicts untouched."""
+        """None(zero-config)은 빈 dict로 받고, dict는 그대로 둔다."""
         return value or {}
 
-    # Search capability flag (ClassVar, not a field): set True iff the backend
-    # overrides search(). The invariant validator checks the flag MATCHES whether
-    # search() is actually overridden (type(self).search is not MemoryManager.search),
-    # so the two can't drift -- required for mode="tool" (the agent calls
-    # memory_search in tool mode, so a non-search backend is a misconfiguration
-    # that fails fast at instantiation rather than silently returning empty
-    # results). Default False: a new backend must explicitly opt in to tool mode.
+    # search 지원 플래그(필드가 아니라 ClassVar). backend가 search()를 override할 때만
+    # True로 둔다. invariant validator가 이 플래그와 실제 override 여부
+    # (type(self).search is not MemoryManager.search)의 일치를 검사하므로 둘이 어긋날 수
+    # 없다. mode="tool"에 필수다. tool 모드에서 에이전트가 memory_search를 호출하므로
+    # search 없는 backend는 설정 오류이며, 빈 결과를 조용히 반환하는 대신 생성 시점에
+    # 즉시 실패해야 한다. 기본값 False라 새 backend는 tool 모드를 명시적으로 opt-in한다.
     supports_search: ClassVar[bool] = False
-    # Backends that rely on conversation-level extraction instead of fact CRUD
-    # can retain MemoryMiddleware writes while tool mode supplies query-aware
-    # search. Most backends keep tool mode fully model-directed.
+    # fact CRUD 대신 대화 단위 추출에 의존하는 backend는 tool 모드가 query 기반 search를
+    # 제공하는 동안에도 MemoryMiddleware 쓰기를 유지할 수 있다. 대부분의 backend는 tool
+    # 모드를 전적으로 모델 주도로 둔다.
     requires_passive_writes_in_tool_mode: ClassVar[bool] = False
 
     @model_validator(mode="after")
     def _check_invariants(self) -> MemoryManager:
-        """Cross-field invariants every backend must satisfy at instantiation.
+        """모든 backend가 인스턴스 생성 시 만족해야 하는 필드 간 invariant.
 
-        Fires on the factory path AND when a backend is constructed directly
-        (bypassing the factory), since it lives on the base model. DeerMem-private
-        invariants (e.g. storage_path is a directory) stay on ``DeerMemConfig``.
+        base model에 있으므로 factory 경로는 물론 factory를 거치지 않은 직접 생성에도
+        적용된다. DeerMem 전용 invariant(예: storage_path가 디렉터리인지)는
+        ``DeerMemConfig``에 남긴다.
 
-        ``supports_search`` (ClassVar flag) must match whether ``search()`` is
-        actually overridden, so the declarative flag can't drift from the
-        implementation -- a backend that overrides ``search()`` but forgets
-        ``supports_search = True`` (or sets the flag without overriding) is a bug
-        caught at instantiation, not a misleading tool-mode rejection or a runtime
-        ``NotImplementedError`` on the first ``memory_search`` call.
+        ``supports_search``(ClassVar 플래그)는 ``search()``의 실제 override 여부와
+        일치해야 한다. 선언과 구현이 어긋나는 것을 막기 위해서다. ``search()``를
+        override하고 ``supports_search = True``를 빠뜨렸거나(반대로 override 없이
+        플래그만 세웠거나) 하는 것은 버그이며, 오해를 부르는 tool 모드 거부나 첫
+        ``memory_search`` 호출 시의 런타임 ``NotImplementedError`` 대신 생성 시점에 잡는다.
         """
         search_overridden = type(self).search is not MemoryManager.search
         if type(self).supports_search != search_overridden:
@@ -178,10 +171,9 @@ class MemoryManager(BaseModel):
         return self
 
     # ── Tier 1: @abstractmethod ─────────────────────────────────────────
-    # Every backend MUST implement these (write + read-inject are the backend's
-    # fundamental duties). Missing one is a severe bug (memory is persistent
-    # state) -- @abstractmethod catches it at instantiation. noop implements
-    # them as no-op / "".
+    # 모든 backend가 반드시 구현한다(쓰기 + 읽기-주입은 backend의 기본 책무다).
+    # 누락은 심각한 버그이며(memory는 영속 상태다) @abstractmethod가 생성 시점에 잡는다.
+    # noop backend는 이들을 no-op / "" 로 구현한다.
     @abstractmethod
     def add(
         self,
@@ -192,15 +184,15 @@ class MemoryManager(BaseModel):
         user_id: str | None = None,
         trace_id: str | None = None,
     ) -> None:
-        """Queue a conversation for memory update (debounced, asynchronous).
+        """대화를 memory 갱신 큐에 넣는다(debounce, 비동기).
 
         Args:
-            thread_id: Conversation thread id.
-            messages: Raw conversation messages; the implementation filters
-                to user inputs + final assistant responses itself.
-            agent_name: Per-agent bucket; ``None`` = global memory.
-            user_id: Per-user bucket.
-            trace_id: Request trace id captured for memory-LLM tracing.
+            thread_id: 대화 thread id.
+            messages: 원본 대화 메시지. 사용자 입력과 최종 assistant 응답만 남기는
+                필터링은 구현체가 직접 한다.
+            agent_name: agent별 버킷. ``None``이면 전역 memory다.
+            user_id: user별 버킷.
+            trace_id: memory-LLM tracing용으로 캡처한 request trace id.
         """
 
     @abstractmethod
@@ -211,23 +203,21 @@ class MemoryManager(BaseModel):
         agent_name: str | None = None,
         thread_id: str | None = None,
     ) -> str:
-        """Return injection-ready memory text for the given bucket.
+        """해당 버킷의 주입 가능한 memory 텍스트를 반환한다.
 
-        Implementations load their memory and format it however they choose;
-        the returned string is injected verbatim by call sites. Format
-        parameters are the backend's own private config (received via
-        ``backend_config`` at construction), NOT a host config on this method.
+        구현체가 알아서 memory를 로드하고 포매팅하며, 반환된 문자열은 호출 지점에서
+        그대로 주입된다. 포맷 파라미터는 생성 시 ``backend_config``로 받은 backend
+        전용 config이지 이 메서드의 host config가 아니다.
         """
 
-    # ── Tier 2: management ops with defaults ────────────────────────────
-    # A backend that does not support an operation inherits the default (raise
-    # ``NotImplementedError``) instead of having to write the raise. ``add_nowait``
-    # defaults to delegating to ``add`` (a backend without a debounce queue has no
-    # "immediate" vs "queued" distinction); ``shutdown_flush`` defaults to True (a
-    # backend without a buffer has nothing to drain) so the host can call it
-    # unconditionally. ``delete_memory`` / ``export_memory`` are dead contract
-    # (zero callers; /memory/export routes via get_memory) -- the default raise
-    # keeps them available without forcing backends to implement.
+    # ── Tier 2: 기본 구현이 있는 관리 연산 ────────────────────────────
+    # 지원하지 않는 연산은 직접 raise를 쓰지 않고 기본 구현(``NotImplementedError``)을
+    # 그대로 물려받는다. ``add_nowait``는 기본적으로 ``add``에 위임한다(debounce 큐가
+    # 없는 backend에는 "즉시"와 "대기"의 구분이 없다). ``shutdown_flush``는 기본 True라
+    # (버퍼가 없는 backend는 비울 것이 없다) host가 조건 없이 호출할 수 있다.
+    # ``delete_memory`` / ``export_memory``는 호출자가 없는 죽은 계약이지만
+    # (/memory/export는 get_memory로 간다) 기본 raise 덕분에 backend 구현을 강제하지 않고
+    # 남겨 둘 수 있다.
     def add_nowait(
         self,
         thread_id: str,
@@ -236,12 +226,11 @@ class MemoryManager(BaseModel):
         agent_name: str | None = None,
         user_id: str | None = None,
     ) -> None:
-        """Queue a conversation for *immediate* memory update (emergency flush).
+        """대화를 *즉시* memory 갱신 큐에 넣는다(비상 flush).
 
-        Used right before summarization removes messages from state, so the
-        content is captured instead of lost. Default: delegate to :meth:`add`
-        (backends without a debounce queue override to enqueue with nowait
-        priority).
+        summarization이 state에서 메시지를 제거하기 직전에 호출해 내용이 유실되지 않게
+        한다. 기본 구현은 :meth:`add`에 위임한다(debounce 큐가 있는 backend는 nowait
+        우선순위로 enqueue하도록 override한다).
         """
         self.add(thread_id, messages, agent_name=agent_name, user_id=user_id)
 
@@ -254,12 +243,13 @@ class MemoryManager(BaseModel):
         agent_name: str | None = None,
         category: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Search the bucket's memory for facts matching ``query``; return up to
-        ``top_k`` ranked by relevance. ``category`` (optional) filters BEFORE the
-        ``top_k`` slice so a category-scoped search is not starved by other
-        categories' higher-ranked facts. Default: unsupported (raise); backends
-        with retrieval override AND set ``supports_search = True`` (required for
-        ``mode='tool'``)."""
+        """버킷의 memory에서 ``query``에 맞는 fact를 찾아 관련도순으로 최대 ``top_k``개 반환한다.
+
+        선택 인자 ``category``는 ``top_k`` 절단 *이전에* 필터링하므로, 다른 카테고리의
+        상위 fact에 밀려 category 범위 검색이 빈손이 되지 않는다. 기본 구현은 미지원(raise)이며,
+        retrieval을 갖춘 backend는 override와 함께 ``supports_search = True``를 설정한다
+        (``mode='tool'``에 필수).
+        """
         raise NotImplementedError(f"search not supported by {type(self).__name__}")
 
     def get_memory(
@@ -268,7 +258,7 @@ class MemoryManager(BaseModel):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> dict[str, Any]:
-        """Return the full memory document for the bucket. Default: unsupported."""
+        """버킷의 전체 memory 문서를 반환한다. 기본 구현은 미지원이다."""
         raise NotImplementedError(f"get_memory not supported by {type(self).__name__}")
 
     def delete_memory(
@@ -277,8 +267,7 @@ class MemoryManager(BaseModel):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> None:
-        """Delete the entire memory document for the bucket. Default: unsupported
-        (dead contract -- zero callers)."""
+        """버킷의 memory 문서 전체를 삭제한다. 기본 구현은 미지원이다(호출자가 없는 죽은 계약)."""
         raise NotImplementedError(f"delete_memory not supported by {type(self).__name__}")
 
     def clear_memory(
@@ -287,12 +276,11 @@ class MemoryManager(BaseModel):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> dict[str, Any]:
-        """Clear the bucket's memory; return the cleared (now-empty) document.
+        """버킷의 memory를 비우고, 비워진(이제 빈) 문서를 반환한다.
 
-        ``agent_name=None`` means all memory owned by the user. An explicit
-        agent name clears only that agent's memory and must preserve shared
-        user-level summaries. Default: unsupported (raise
-        ``NotImplementedError``); backends that support clearing override.
+        ``agent_name=None``이면 해당 user가 소유한 모든 memory를 뜻한다. agent 이름을
+        명시하면 그 agent의 memory만 비우고 공유되는 user 단위 summary는 보존해야 한다.
+        기본 구현은 미지원(``NotImplementedError``)이며, 지원하는 backend가 override한다.
         """
         raise NotImplementedError(f"clear_memory not supported by {type(self).__name__}")
 
@@ -303,8 +291,7 @@ class MemoryManager(BaseModel):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> dict[str, Any]:
-        """Import a memory document into the bucket; return the merged result.
-        Default: unsupported."""
+        """memory 문서를 버킷으로 import하고 병합 결과를 반환한다. 기본 구현은 미지원이다."""
         raise NotImplementedError(f"import_memory not supported by {type(self).__name__}")
 
     def export_memory(
@@ -313,55 +300,55 @@ class MemoryManager(BaseModel):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> dict[str, Any]:
-        """Export the memory document for the bucket. Default: unsupported (dead
-        contract -- zero callers; /memory/export routes via get_memory)."""
+        """버킷의 memory 문서를 export한다.
+
+        기본 구현은 미지원이다(호출자가 없는 죽은 계약이며 /memory/export는 get_memory로 간다).
+        """
         raise NotImplementedError(f"export_memory not supported by {type(self).__name__}")
 
     def shutdown_flush(self, timeout: float) -> bool:
-        """Best-effort bounded drain of pending updates on graceful shutdown.
+        """graceful shutdown 시 대기 중인 갱신을 시간 제한 안에서 best-effort로 비운다.
 
-        Runs on the Gateway shutdown path (after IM channels and the scheduler
-        stop, so no new IM/scheduler updates arrive during the drain) to flush
-        updates still sitting in the backend's debounce buffer. Without it, any
-        update enqueued since the last timer fire is lost on restart / rolling
-        deploy / SIGTERM, because the buffer is pure in-memory and the debounce
-        worker is a daemon thread killed on process exit.
+        Gateway shutdown 경로에서(IM channel과 scheduler가 멈춘 뒤라 drain 도중 새
+        IM/scheduler 갱신이 들어오지 않는다) backend의 debounce 버퍼에 남은 갱신을 flush한다.
+        이게 없으면 마지막 timer 발화 이후 쌓인 갱신은 재시작 / rolling deploy / SIGTERM 때
+        유실된다. 버퍼가 순수 in-memory이고 debounce worker가 프로세스 종료 시 죽는 daemon
+        thread이기 때문이다.
 
-        Implementations must honour a *hard* ``timeout``: the drain makes a
-        synchronous LLM call that cannot be interrupted, so the caller (the
-        Gateway lifespan) needs a real upper bound that lines up with the K8s
-        ``terminationGracePeriodSeconds`` (the drain must finish inside the pod
-        grace window, or K8s SIGKILLs it mid-drain and the loss the drain is
-        fixing is silently re-introduced).
+        구현체는 ``timeout``을 *엄격하게* 지켜야 한다. drain은 중단할 수 없는 동기 LLM 호출을
+        하므로 호출자(Gateway lifespan)에게는 K8s ``terminationGracePeriodSeconds``와 맞물리는
+        실질적인 상한이 필요하다. drain이 pod grace window 안에 끝나지 않으면 K8s가 도중에
+        SIGKILL하고, drain이 막으려던 유실이 조용히 다시 발생한다.
 
-        Returns ``True`` if the drain genuinely finished within ``timeout``
-        (buffer empty, no worker still running, no exception); ``False`` on
-        timeout or failure (the caller logs a warning and proceeds to exit --
-        any unfinished tail is dropped, strictly better than no flush). Default:
-        ``True`` (a backend with no buffer has nothing to drain), so the host may
-        call this unconditionally when memory is enabled; backends with a debounce
-        queue override to flush within ``timeout``.
+        Returns:
+            ``timeout`` 안에 drain이 실제로 끝났으면(버퍼가 비었고, 실행 중인 worker가 없고,
+            예외도 없으면) ``True``. timeout이나 실패면 ``False``(호출자는 경고를 남기고 종료를
+            진행한다. 끝내지 못한 잔여분은 버려지지만 아예 flush하지 않는 것보다는 낫다).
+            기본값은 ``True``다(버퍼가 없는 backend는 비울 것이 없다). 덕분에 host는 memory가
+            켜져 있으면 조건 없이 호출할 수 있고, debounce 큐가 있는 backend는 ``timeout`` 안에
+            flush하도록 override한다.
         """
         return True
 
-    # ── Tier 3: optional hooks ──────────────────────────────────────────
-    # A-class: agent-side has real callers (startup warm-up, manual reload, fact
-    # CRUD). Previously reached via ``hasattr`` probing; now contracted with
-    # defaults so callers invoke directly and catch ``NotImplementedError``.
-    # ``warm`` defaults to None (nothing to warm); the rest default to raise.
+    # ── Tier 3: 선택 hook ──────────────────────────────────────────
+    # A급: 에이전트 쪽에 실제 호출자가 있다(startup warm-up, 수동 reload, fact CRUD).
+    # 예전에는 ``hasattr`` 탐지로 접근했지만, 이제 기본 구현과 함께 계약으로 두어
+    # 호출자가 직접 호출하고 ``NotImplementedError``를 잡는다.
+    # ``warm``의 기본값은 None(warm할 것 없음)이고 나머지는 raise다.
     def warm(self) -> bool | None:
-        """Pre-warm backend resources at startup (e.g. the tiktoken encoding
-        cache). Probed off the event loop by the Gateway lifespan.
+        """startup 시 backend 리소스를 미리 준비한다(예: tiktoken encoding 캐시).
 
-        Return contract (tri-state so the host logs accurately):
-          * ``True``  -- warmed successfully (or already cached / unnecessary).
-          * ``False`` -- warming was attempted and failed (host falls back).
-          * ``None``  -- this backend has nothing to warm (the default). The
-            host logs a "skipping" message instead of the misleading "warmed
-            successfully", so a non-DeerMem backend doesn't claim a tiktoken
-            cache it never touched.
+        Gateway lifespan이 event loop 밖에서 호출한다.
 
-        Backends with heavy one-time init override and return ``True``/``False``.
+        반환 계약은 host가 정확한 로그를 남기도록 3-상태다.
+
+        * ``True``  — warm 성공(또는 이미 캐시됨 / 불필요).
+        * ``False`` — warm을 시도했으나 실패(host가 fallback한다).
+        * ``None``  — 이 backend는 warm할 것이 없음(기본값). host는 오해를 부르는
+          "warmed successfully" 대신 "skipping"을 남기므로, DeerMem이 아닌 backend가
+          건드린 적 없는 tiktoken 캐시를 준비했다고 주장하지 않는다.
+
+        일회성 초기화 비용이 큰 backend는 override해서 ``True``/``False``를 반환한다.
         """
         return None
 
@@ -371,9 +358,11 @@ class MemoryManager(BaseModel):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> dict[str, Any]:
-        """Drop the cached memory document and reload from storage. Default:
-        unsupported (callers fall back to :meth:`get_memory`). Backends with a
-        cache override."""
+        """캐시된 memory 문서를 버리고 storage에서 다시 읽는다.
+
+        기본 구현은 미지원이며 호출자는 :meth:`get_memory`로 fallback한다. 캐시가 있는
+        backend가 override한다.
+        """
         raise NotImplementedError(f"reload_memory not supported by {type(self).__name__}")
 
     def create_fact(
@@ -385,8 +374,11 @@ class MemoryManager(BaseModel):
         agent_name: str | None = None,
         user_id: str | None = None,
     ) -> tuple[dict[str, Any], str | None]:
-        """Manually add one fact. Returns ``(memory_data, fact_id)`` -- ``fact_id``
-        is None when a storage cap evicted the just-added fact. Default: unsupported."""
+        """fact 하나를 수동으로 추가한다.
+
+        ``(memory_data, fact_id)``를 반환하며, storage 상한 때문에 방금 추가한 fact가
+        밀려났으면 ``fact_id``는 None이다. 기본 구현은 미지원이다.
+        """
         raise NotImplementedError(f"create_fact not supported by {type(self).__name__}")
 
     def delete_fact(
@@ -396,7 +388,7 @@ class MemoryManager(BaseModel):
         agent_name: str | None = None,
         user_id: str | None = None,
     ) -> dict[str, Any]:
-        """Delete one fact by id. Default: unsupported."""
+        """id로 fact 하나를 삭제한다. 기본 구현은 미지원이다."""
         raise NotImplementedError(f"delete_fact not supported by {type(self).__name__}")
 
     def update_fact(
@@ -409,29 +401,28 @@ class MemoryManager(BaseModel):
         agent_name: str | None = None,
         user_id: str | None = None,
     ) -> dict[str, Any]:
-        """Update one fact by id (preserving omitted fields). Default: unsupported."""
+        """id로 fact 하나를 갱신한다(생략된 필드는 보존). 기본 구현은 미지원이다."""
         raise NotImplementedError(f"update_fact not supported by {type(self).__name__}")
 
-    # B-class: no agent-side caller yet -- signatures only, for future scenarios.
-    # Default no-op so callers can invoke unconditionally without gating. (The
-    # self-serving hooks on_delegation / on_session_end / on_memory_write are
-    # deliberately NOT contracted: no caller, no event source, or subsumed by
-    # the callbacks field.)
+    # B급: 아직 에이전트 쪽 호출자가 없다. 향후 시나리오를 위한 시그니처만 둔다.
+    # 기본 no-op이라 호출자가 게이팅 없이 호출할 수 있다. (자기 완결형 hook인
+    # on_delegation / on_session_end / on_memory_write는 의도적으로 계약에 넣지 않았다.
+    # 호출자나 이벤트 소스가 없거나, callbacks 필드가 이미 대체한다.)
     def on_pre_compress(self, messages: list[Any]) -> str:
-        """Memory -> compressor feedback (future memory-driven summary
-        enrichment). Returns text to inject into the compression prompt
-        (default: none)."""
+        """memory -> compressor 피드백(향후 memory 기반 summary 보강용).
+
+        압축 prompt에 주입할 텍스트를 반환한다(기본값은 없음).
+        """
         return ""
 
     def on_turn_start(self, turn_number: int, message: Any, **kwargs: Any) -> None:
-        """Turn-start nudge (future background review). Default: no-op."""
+        """turn 시작 알림(향후 백그라운드 리뷰용). 기본 구현은 no-op이다."""
         return None
 
-    # ── Async (speculative) ──────────────────────────────────────────────
-    # Interface placeholders so a future async LLM client can override without
-    # changing the contract. Defaults delegate to the sync methods (no
-    # concurrency benefit -- the real LLM call stays sync); callers today use
-    # the sync path.
+    # ── Async (예비) ──────────────────────────────────────────────
+    # 향후 async LLM 클라이언트가 계약 변경 없이 override할 수 있도록 둔 인터페이스
+    # 자리표시자다. 기본 구현은 sync 메서드에 위임한다(실제 LLM 호출이 여전히 sync라
+    # 동시성 이득은 없다). 현재 호출자들은 sync 경로를 쓴다.
     async def aadd(
         self,
         thread_id: str,
@@ -463,7 +454,7 @@ class MemoryManager(BaseModel):
     ) -> list[dict[str, Any]]:
         return self.search(query, top_k, user_id=user_id, agent_name=agent_name, category=category)
 
-    # ── Construction ─────────────────────────────────────────────────────
+    # ── 생성 ─────────────────────────────────────────────────────
     @classmethod
     @abstractmethod
     def from_config(
@@ -473,38 +464,33 @@ class MemoryManager(BaseModel):
         mode: Literal["middleware", "tool"] = "middleware",
         **host_hooks: Any,
     ) -> MemoryManager:
-        """Build a fully-wired instance from backend config + host-provided hooks.
+        """backend config와 host가 제공한 hook으로 완전히 배선된 인스턴스를 만든다.
 
-        The factory calls this instead of constructing the class directly, so
-        each backend owns its own assembly (parse config, wire dependencies,
-        consume the host hooks it needs). Adding a backend = implement
-        ``from_config``; the factory stays unchanged. ``host_hooks`` carries
-        host-provided callables/values (tracing, hidden-message filter,
-        trace-context manager, a host-llm factory); a backend that needs none
-        of them (e.g. noop) ignores them and returns
-        ``cls(backend_config=backend_config, mode=mode)``.
+        factory는 클래스를 직접 생성하는 대신 이 메서드를 호출한다. 덕분에 각 backend가
+        자체 조립(config 파싱, 의존성 배선, 필요한 host hook 소비)을 책임진다. backend 추가는
+        ``from_config`` 구현만으로 끝나고 factory는 그대로다. ``host_hooks``에는 host가
+        제공하는 callable/값(tracing, hidden-message 필터, trace-context manager, host-llm
+        factory)이 담긴다. 이 중 아무것도 필요 없는 backend(예: noop)는 무시하고
+        ``cls(backend_config=backend_config, mode=mode)``를 반환한다.
         """
 
     def close(self) -> None:
-        """Release backend resources during graceful process shutdown.
+        """graceful shutdown 중 backend 리소스를 해제한다.
 
-        Backends that own external resources may override this hook. The
-        default is intentionally a no-op for lightweight or third-party
-        implementations.
+        외부 리소스를 소유한 backend가 이 hook을 override한다. 가벼운 구현이나 서드파티
+        구현을 위해 기본은 의도적으로 no-op이다.
         """
         return None
 
 
-# ── Backend discovery (drop-in) ───────────────────────────────────────────
+# ── backend 탐색(drop-in) ───────────────────────────────────────────
 def _scan_backends() -> dict[str, type[MemoryManager]]:
-    """Discover pluggable backends under ``backends/<name>/``.
+    """``backends/<name>/`` 아래의 교체 가능한 backend를 탐색한다.
 
-    Each subpackage that exposes a ``MANAGER_CLASS`` attribute (a
-    :class:`MemoryManager` subclass) is registered under its folder name.
-    Results are cached for the process. Folder name == backend name ==
-    ``manager_class`` config value (drop-in contract). A backend that fails
-    to import is logged and skipped so a broken optional backend never breaks
-    the factory.
+    ``MANAGER_CLASS`` 속성(:class:`MemoryManager` 하위 클래스)을 노출하는 하위 패키지를
+    폴더 이름으로 등록한다. 결과는 프로세스 단위로 캐시된다. 폴더 이름 == backend 이름 ==
+    ``manager_class`` config 값이라는 drop-in 계약을 지킨다. import에 실패한 backend는
+    로그만 남기고 건너뛰므로, 깨진 선택 backend가 factory 전체를 망가뜨리지 않는다.
     """
     global _backends_cache
     if _backends_cache is not None:
@@ -523,7 +509,7 @@ def _scan_backends() -> dict[str, type[MemoryManager]]:
         dotted = f"deerflow.agents.memory.backends.{entry.name}"
         try:
             module: ModuleType = importlib.import_module(dotted)
-        except Exception:  # noqa: BLE001 - a broken backend must not break the factory
+        except Exception:  # noqa: BLE001 - 깨진 backend가 factory를 망가뜨리면 안 된다
             logger.exception("Failed to import memory backend %r; skipping", entry.name)
             continue
         cls = getattr(module, _MANAGER_CLASS_ATTR, None)
@@ -543,25 +529,24 @@ def _scan_backends() -> dict[str, type[MemoryManager]]:
 
 
 def _resolve_manager_class(manager_class: str) -> type[MemoryManager]:
-    """Resolve a ``manager_class`` config value to a concrete class.
+    """``manager_class`` config 값을 구체 클래스로 해석한다.
 
-    Resolution order:
-      1. Registered short name (from :func:`_scan_backends`).
-      2. Dotted import path (``pkg.mod:Cls`` or ``pkg.mod.Cls``).
+    해석 순서:
 
-    A value that resolves to neither is a config error: raise rather than
-    silently fall back to a different storage backend. Memory is persistent
-    state, so silently substituting DeerMem when an explicit ``manager_class``
-    fails to resolve (typo / import error / missing attr) would route writes to
-    the wrong store -- a silent data-integrity footgun. Fail loud (the manager
-    is resolved eagerly at startup so it can be warmed) so the operator fixes
-    ``memory.manager_class`` instead of discovering the mismatch later.
+    1. 등록된 짧은 이름(:func:`_scan_backends` 결과).
+    2. dotted import 경로(``pkg.mod:Cls`` 또는 ``pkg.mod.Cls``).
+
+    둘 다 아니면 config 오류이므로, 다른 storage backend로 조용히 fallback하지 않고 raise한다.
+    memory는 영속 상태다. 명시된 ``manager_class`` 해석이 실패했을 때(오타 / import 오류 /
+    속성 없음) 조용히 DeerMem으로 대체하면 쓰기가 엉뚱한 저장소로 가는, 눈에 띄지 않는
+    데이터 무결성 사고가 된다. manager는 warm-up을 위해 startup에 미리 해석하므로 여기서 크게
+    실패시켜 operator가 나중에 불일치를 발견하는 대신 ``memory.manager_class``를 고치게 한다.
     """
     registry = _scan_backends()
     if manager_class in registry:
         return registry[manager_class]
 
-    # Treat as a dotted path: support both "pkg.mod:Cls" and "pkg.mod.Cls".
+    # dotted 경로로 취급한다. "pkg.mod:Cls"와 "pkg.mod.Cls"를 모두 지원한다.
     dotted_error: str | None = None
     if ":" in manager_class:
         module_path, _, attr = manager_class.partition(":")
@@ -590,37 +575,32 @@ def _resolve_manager_class(manager_class: str) -> type[MemoryManager]:
 
 
 def backend_requires_passive_writes_in_tool_mode(manager_class: str) -> bool:
-    """Return whether a backend needs middleware writes in tool mode.
+    """tool 모드에서 backend가 middleware 쓰기를 필요로 하는지 반환한다.
 
-    Resolve the class without constructing it so agent assembly does not run
-    backend startup checks or perform network I/O.
+    클래스를 생성하지 않고 해석만 하므로, 에이전트 조립 과정에서 backend startup 검사나
+    네트워크 I/O가 발생하지 않는다.
     """
     return _resolve_manager_class(manager_class).requires_passive_writes_in_tool_mode
 
 
-# ── Host-default hook providers (passed to from_config by the factory) ────
+# ── host 기본 hook 제공자(factory가 from_config로 넘긴다) ────
 #
-# These callables are the host's defaults for the slots a backend may consume
-# (tracing, hidden-message filtering, trace-context binding, a host default
-# LLM). The portable backend package never names a deer-flow concept; the host
-# supplies them HERE (host code outside ``backends/deermem/``). The factory
-# passes them to ``cls.from_config(..., **host_hooks)``; each backend's
-# ``from_config`` consumes the ones it needs (DeerMem does; noop ignores them).
-# An explicit value in ``backend_config`` (set programmatically) takes
-# precedence and is left untouched (from_config's merge skips present keys).
+# backend가 소비할 수 있는 슬롯(tracing, hidden-message 필터링, trace-context 바인딩,
+# host 기본 LLM)에 대한 host의 기본 구현이다. 이식 가능한 backend 패키지는 deer-flow 개념을
+# 이름으로도 언급하지 않으며, host가 여기서(``backends/deermem/`` 바깥의 host 코드) 공급한다.
+# factory가 ``cls.from_config(..., **host_hooks)``로 넘기고, 각 backend의 ``from_config``가
+# 필요한 것만 소비한다(DeerMem은 쓰고 noop은 무시한다). ``backend_config``에 프로그램적으로
+# 설정된 명시값이 우선하며 그대로 유지된다(from_config의 병합이 이미 있는 키를 건너뛴다).
 #
-# Imports are lazy (matching the ``runtime_home`` precedent) so this module
-# stays cheap to import and so another agent vendoring the contract only has
-# to edit these helpers, not the top-level imports.
+# import는 ``runtime_home`` 선례를 따라 lazy로 둔다. 이 모듈의 import 비용을 낮게 유지하고,
+# 계약을 벤더링하는 다른 에이전트가 최상위 import가 아니라 이 헬퍼들만 고치면 되게 하기 위해서다.
 class LangfuseMemoryCallbacks(MemoryCallbacks):
-    """Host default callbacks: emit langfuse spans at the memory-LLM boundary.
+    """host 기본 callbacks — memory-LLM 경계에서 langfuse span을 남긴다.
 
-    Implements ``on_memory_llm_call`` (pre-LLM-call) by merging langfuse trace
-    metadata into ``invoke_config`` -- identical to the former
-    ``_host_default_tracing_callback`` (same signature, same timing, same
-    mutation), repackaged as a callbacks method so the langfuse binding lives in
-    host code and the portable backend package never names langfuse. No-op when
-    langfuse is not an enabled tracing provider.
+    ``on_memory_llm_call``(LLM 호출 직전)에서 langfuse trace metadata를 ``invoke_config``에
+    병합한다. 이전 ``_host_default_tracing_callback``과 시그니처·시점·변형이 모두 동일하며,
+    langfuse 바인딩을 host 코드에 두고 이식 가능한 backend 패키지가 langfuse를 언급하지 않도록
+    callbacks 메서드로 재포장했을 뿐이다. langfuse가 활성 tracing provider가 아니면 no-op이다.
     """
 
     def on_memory_llm_call(
@@ -646,13 +626,12 @@ class LangfuseMemoryCallbacks(MemoryCallbacks):
 
 
 def _host_default_should_keep_hidden_message(additional_kwargs: Any) -> bool:
-    """deer-flow default for DeerMem's ``should_keep_hidden_message`` slot.
+    """DeerMem의 ``should_keep_hidden_message`` 슬롯에 대한 deer-flow 기본 구현.
 
-    Keep a ``hide_from_ui`` message only when it carries a human-input
-    clarification response, so the user's clarification is captured into
-    memory; drop all other hidden messages (framework-internal reminders,
-    view-image payloads, etc.). Restores the pre-abstraction behaviour where
-    ``message_processing`` imported ``read_human_input_response`` directly.
+    ``hide_from_ui`` 메시지는 human-input clarification 응답을 담고 있을 때만 남겨서
+    사용자의 해명이 memory에 반영되게 한다. 그 외 hidden 메시지(framework 내부 reminder,
+    view-image payload 등)는 버린다. ``message_processing``이 ``read_human_input_response``를
+    직접 import하던 추상화 이전 동작을 복원한 것이다.
     """
     from deerflow.agents.human_input import read_human_input_response
 
@@ -660,34 +639,31 @@ def _host_default_should_keep_hidden_message(additional_kwargs: Any) -> bool:
 
 
 def _host_default_llm() -> Any:
-    """deer-flow default for DeerMem's ``host_llm`` slot (zero-config extraction).
+    """DeerMem의 ``host_llm`` 슬롯에 대한 deer-flow 기본 구현(zero-config 추출).
 
-    Builds the host's default chat model (``create_chat_model(name=None)`` ->
-    app default, ``attach_tracing=True`` so memory LLM calls surface in langfuse
-    via the callbacks' ``on_memory_llm_call`` metadata merge), mirroring pre-abstraction
-    ``model_name: null``. Returns ``None`` if no model is available (no models
-    configured) so DeerMem no-ops extraction with a clear error rather than
-    crashing startup.
+    host의 기본 chat model을 만든다(``create_chat_model(name=None)`` -> 앱 기본값,
+    ``attach_tracing=True``이므로 callbacks의 ``on_memory_llm_call`` metadata 병합을 통해
+    memory LLM 호출이 langfuse에 드러난다). 추상화 이전의 ``model_name: null``과 동일하다.
+    사용 가능한 모델이 없으면(모델 미설정) ``None``을 반환해, DeerMem이 startup을 죽이는 대신
+    명확한 에러와 함께 추출을 no-op으로 처리하게 한다.
     """
     try:
         from deerflow.models import create_chat_model
 
         return create_chat_model(name=None)
-    except Exception:  # noqa: BLE001 - no default model is a config state, not a crash
+    except Exception:  # noqa: BLE001 - 기본 모델 부재는 config 상태이지 크래시 사유가 아니다
         logger.warning("Could not build host default model for DeerMem memory extraction; memory extraction will be disabled", exc_info=True)
         return None
 
 
 def _host_default_extraction_callback(payload: Any) -> None:
-    """deer-flow default for DeerMem's ``extraction_callback`` slot.
+    """DeerMem의 ``extraction_callback`` 슬롯에 대한 deer-flow 기본 구현.
 
-    Logs post-extraction metrics (token usage, facts passing/rejected by the
-    confidence filter, gate rejection rate) for ops observability, and flags a
-    high rejection rate
-    (>60%) so a prompt/threshold regression is visible without inspecting every
-    trace. A Langfuse-aware callback can replace this to emit a dedicated
-    extraction span; the metrics keys are stable for that handoff. Exceptions
-    are never raised (the DeerMem side already wraps the call).
+    운영 observability를 위해 추출 후 지표(token 사용량, confidence 필터 통과/거부 fact 수,
+    gate 거부율)를 로깅하고, 거부율이 60%를 넘으면 경고한다. 덕분에 prompt/임계값 회귀를
+    모든 trace를 뒤지지 않고도 알아챌 수 있다. 전용 extraction span을 남기려면 Langfuse를
+    인지하는 callback으로 교체하면 된다. 그 인수인계를 위해 metrics 키는 안정적으로 유지한다.
+    예외는 절대 던지지 않는다(DeerMem 쪽이 이미 호출을 감싸고 있다).
     """
     if not isinstance(payload, dict):
         return
@@ -742,15 +718,13 @@ def _host_default_extraction_callback(payload: Any) -> None:
 
 
 def _collect_host_hooks() -> dict[str, Any]:
-    """Provide host hook callables for backends to consume in ``from_config``.
+    """backend가 ``from_config``에서 소비할 host hook callable을 제공한다.
 
-    The factory is a hook *provider*; each backend's ``from_config`` is the
-    *consumer* that decides which hooks to use (so adding a backend does not
-    change this factory). ``host_llm`` is provided as a factory callable
-    (``host_llm_factory``) rather than a built instance so a backend only
-    builds the host default model when it actually needs one (i.e. has no model
-    of its own) -- building an unused default on every startup would waste
-    time. The others are direct values (cheap function refs).
+    factory는 hook *제공자*이고, 어떤 hook을 쓸지는 각 backend의 ``from_config``가 정하는
+    *소비자* 역할이다(그래서 backend를 추가해도 이 factory는 바뀌지 않는다). ``host_llm``은
+    이미 만들어진 인스턴스가 아니라 factory callable(``host_llm_factory``)로 준다. backend가
+    자체 모델이 없어 실제로 필요할 때만 host 기본 모델을 만들게 하기 위해서다. 매 startup마다
+    쓰지도 않을 기본 모델을 만드는 것은 시간 낭비다. 나머지는 값싼 함수 참조라 바로 넘긴다.
     """
     from deerflow.trace_context import request_trace_context
 
@@ -763,25 +737,23 @@ def _collect_host_hooks() -> dict[str, Any]:
     }
 
 
-# ── Singleton factory ─────────────────────────────────────────────────────
+# ── 싱글턴 factory ─────────────────────────────────────────────────────
 def get_memory_manager() -> MemoryManager:
-    """Return the singleton :class:`MemoryManager` for the active config.
+    """현재 config에 대한 싱글턴 :class:`MemoryManager`를 반환한다.
 
-    Reads ``MemoryConfig.manager_class`` and resolves it via
-    :func:`_resolve_manager_class`. The instance is cached; call
-    :func:`reset_memory_manager` to force re-resolution (tests / runtime
-    backend switching).
+    ``MemoryConfig.manager_class``를 읽어 :func:`_resolve_manager_class`로 해석한다.
+    인스턴스는 캐시되며, 재해석이 필요하면(테스트 / 런타임 backend 전환)
+    :func:`reset_memory_manager`를 호출한다.
     """
     global _memory_manager
     if _memory_manager is not None:
         return _memory_manager
 
-    # deer-flow is multi-threaded: memory injection runs via asyncio.to_thread,
-    # the update queue fires on a Timer thread, and gateway/agent threads all
-    # reach here. Double-checked locking ensures only one instance is built even
-    # on first-call contention -- essential since backends now own stateful
-    # dependencies (DeerMem owns its storage/queue/updater; others may open
-    # connections) constructed here in __init__.
+    # deer-flow는 멀티스레드다. memory 주입은 asyncio.to_thread로 돌고, 갱신 큐는 Timer
+    # thread에서 발화하며, gateway/agent thread도 모두 여기로 온다. double-checked locking으로
+    # 첫 호출이 경쟁해도 인스턴스가 하나만 생성되게 한다. 이제 backend가 __init__에서 만드는
+    # 상태 있는 의존성(DeerMem은 storage/queue/updater를 소유하고, 다른 backend는 커넥션을
+    # 열 수도 있다)을 갖기 때문에 필수다.
     with _manager_lock:
         if _memory_manager is not None:
             return _memory_manager
@@ -790,42 +762,39 @@ def get_memory_manager() -> MemoryManager:
         manager_class = cfg.manager_class
         cls = _resolve_manager_class(manager_class)
         backend_config = dict(cfg.backend_config or {})
-        # Zero-config UX: default DeerMem storage to deer-flow's state dir
-        # (absolute, CWD-independent) so memory lands at
-        # {runtime_home}/users/{user_id}/memory.json (deer-flow's base_dir,
-        # same as pre-abstraction) unless the host explicitly sets storage_path.
+        # zero-config UX: host가 storage_path를 명시하지 않으면 DeerMem storage를 deer-flow의
+        # state 디렉터리(절대 경로, CWD 무관)로 기본 설정한다. 그러면 memory가 추상화 이전과
+        # 동일하게 {runtime_home}/users/{user_id}/memory.json(deer-flow의 base_dir)에 놓인다.
         if not backend_config.get("storage_path"):
             from deerflow.config.runtime_paths import runtime_home
 
             backend_config["storage_path"] = str(runtime_home())
         elif not Path(backend_config.get("storage_path", "")).is_absolute():
-            # A relative storage_path is resolved against runtime_home() (base_dir-
-            # relative, CWD-independent) to preserve pre-abstraction semantics; left
-            # as-is it would be CWD-relative and fragile. (Resolved here in host code
-            # so the portable paths.py stays free of any runtime_home dependency.)
+            # 상대 storage_path는 추상화 이전 의미를 유지하도록 runtime_home() 기준으로
+            # 해석한다(base_dir 상대, CWD 무관). 그대로 두면 CWD 상대라 취약하다.
+            # 이식 가능한 paths.py가 runtime_home에 의존하지 않도록 host 코드인 여기서 해석한다.
             from deerflow.config.runtime_paths import runtime_home
 
             backend_config["storage_path"] = str((Path(runtime_home()) / backend_config["storage_path"]).resolve())
-        # storage_path-is-a-file guard lives on DeerMemConfig.model_validator
-        # now (DeerMem-private semantics; fires even when the factory bypassed).
-        # Host hook providers: the factory supplies these as kwargs; each
-        # backend's from_config decides which to consume (the factory stays
-        # backend-agnostic -- it no longer knows which hooks a backend needs).
-        # An explicit value in backend_config still wins (from_config's merge
-        # skips keys already present).
+        # storage_path가 파일인지 검사하는 guard는 이제 DeerMemConfig.model_validator에 있다
+        # (DeerMem 내부 의미이며 factory를 우회해도 동작한다).
+        # host hook 제공: factory가 kwargs로 넘기고, 어떤 것을 소비할지는 각 backend의
+        # from_config가 정한다(factory는 backend 중립을 유지하며 어떤 hook이 필요한지 모른다).
+        # backend_config에 이미 있는 명시값이 여전히 우선한다(from_config의 병합이 기존 키를
+        # 건너뛴다).
         host_hooks = _collect_host_hooks()
-        # ``mode`` mirrors host MemoryConfig.mode so the invariant validator
-        # (mode=="tool" requires search) can fire on the factory path too.
+        # ``mode``는 host의 MemoryConfig.mode를 그대로 반영한다. 그래야 invariant validator
+        # (mode=="tool"이면 search 필요)가 factory 경로에서도 동작한다.
         _memory_manager = cls.from_config(backend_config, mode=cfg.mode, **host_hooks)
         logger.info("Memory manager resolved: %s (manager_class=%r)", cls.__name__, manager_class)
         return _memory_manager
 
 
 def reset_memory_manager() -> None:
-    """Clear the cached singleton manager and the backend registry.
+    """캐시된 싱글턴 manager와 backend 레지스트리를 비운다.
 
-    The next :func:`get_memory_manager` call re-reads the config and re-scans
-    backends. Use this in tests or when switching backends at runtime.
+    다음 :func:`get_memory_manager` 호출이 config를 다시 읽고 backend를 다시 스캔한다.
+    테스트나 런타임 backend 전환 시 사용한다.
     """
     global _memory_manager, _backends_cache
     with _manager_lock:

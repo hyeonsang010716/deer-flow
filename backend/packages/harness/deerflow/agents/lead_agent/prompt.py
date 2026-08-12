@@ -26,14 +26,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# LRU cap on the per-(app_config, user_id) enabled-skills cache.
-# Without this, a long-running multi-user process leaks one entry per
-# distinct user (and per app_config injection), bounded only by the
-# number of distinct identities the process has ever seen. 256 is
-# generous for realistic traffic and matches the cap used for
-# ``_user_scoped_storages`` in ``deerflow.skills.storage``; the
-# least-recently-used entry is evicted on overflow and re-computed on
-# the next miss.
+# (app_config, user_id)별 enabled-skills 캐시의 LRU 상한.
+# 이게 없으면 오래 도는 다중 사용자 프로세스가 서로 다른 사용자마다(그리고 app_config 주입마다)
+# 항목을 하나씩 흘리고, 그 한도는 프로세스가 본 identity 수뿐이다. 256은 현실적인 트래픽에
+# 넉넉하며 ``deerflow.skills.storage``의 ``_user_scoped_storages`` 상한과 같다.
+# 넘치면 가장 오래 안 쓴 항목을 evict하고 다음 miss에서 다시 계산한다.
 _ENABLED_SKILLS_BY_CONFIG_CACHE_MAXSIZE = 256
 
 _ENABLED_SKILLS_REFRESH_WAIT_TIMEOUT_SECONDS = 5.0
@@ -99,8 +96,8 @@ def _refresh_enabled_skills_cache_worker() -> None:
                     waiter.event.set()
                 return
 
-            # A newer invalidation happened while loading. Keep the worker alive
-            # and loop again so the cache always converges on the latest version.
+            # 로드 중에 더 최신 invalidation이 발생했다. worker를 살려 두고 다시 돌려서
+            # 캐시가 항상 최신 버전으로 수렴하게 한다.
 
 
 def _ensure_enabled_skills_cache() -> threading.Event:
@@ -154,10 +151,10 @@ def _get_enabled_skills():
 
 
 def get_cached_enabled_skills() -> list[Skill]:
-    """Return the cached enabled-skills list, kicking off a background refresh on miss.
+    """캐시된 enabled-skills 목록을 반환하고, miss면 백그라운드 refresh를 시작한다.
 
-    Safe to call from request paths: never blocks on disk I/O. Returns an empty
-    list on cache miss; the next call will see the warmed result.
+    request 경로에서 호출해도 안전하다. disk I/O로 블로킹하지 않는다. 캐시 miss면 빈 목록을
+    반환하며, 다음 호출이 워밍된 결과를 본다.
     """
     with _enabled_skills_lock:
         cached = _enabled_skills_cache
@@ -170,16 +167,14 @@ def get_cached_enabled_skills() -> list[Skill]:
 
 
 def get_enabled_skills_for_config(app_config: AppConfig | None = None, user_id: str | None = None) -> list[Skill]:
-    """Return enabled skills using the caller's config source and user scope.
+    """호출자의 config 소스와 사용자 범위를 사용해 활성화된 skill을 반환한다.
 
-    When a concrete ``app_config`` is supplied, cache the loaded skills by that
-    config object's identity combined with ``user_id`` so request-scoped config
-    injection resolves skill paths from the matching config AND user scope
-    without rescanning storage on every agent factory call.
+    구체적인 ``app_config``가 주어지면 그 config 객체의 identity와 ``user_id``를 합친 키로
+    로드된 skill을 캐시한다. 그래야 request 범위 config 주입이 agent factory 호출마다 저장소를
+    다시 스캔하지 않고도 해당 config와 사용자 범위에서 skill 경로를 해석한다.
 
-    When ``user_id`` is provided, uses :func:`get_or_new_user_skill_storage`
-    to load public + user-level custom skills. Otherwise falls back to the
-    global storage (public + global custom fallback).
+    ``user_id``가 주어지면 :func:`get_or_new_user_skill_storage`로 public과 사용자 수준 custom
+    skill을 로드한다. 아니면 전역 저장소(public + 전역 custom fallback)로 넘어간다.
     """
     if app_config is None:
         return _get_enabled_skills()
@@ -190,8 +185,7 @@ def get_enabled_skills_for_config(app_config: AppConfig | None = None, user_id: 
         if cached is not None:
             cached_config, cached_skills = cached
             if cached_config is app_config:
-                # LRU touch: move the entry to the end so it survives the
-                # next eviction cycle.
+                # LRU touch. 다음 eviction 주기를 넘기도록 항목을 맨 뒤로 옮긴다.
                 _enabled_skills_by_config_cache.move_to_end(cache_key)
                 return list(cached_skills)
         load_version = _enabled_skills_refresh_version
@@ -203,9 +197,9 @@ def get_enabled_skills_for_config(app_config: AppConfig | None = None, user_id: 
     with _enabled_skills_lock:
         if _enabled_skills_refresh_version == load_version:
             _enabled_skills_by_config_cache[cache_key] = (app_config, skills)
-            # Evict the least-recently-used entries when we exceed the cap.
-            # The cap is intentionally small (256) so a long-running process
-            # cannot leak one entry per distinct (config, user) pair seen.
+            # 상한을 넘으면 가장 오래 안 쓴 항목부터 evict한다.
+            # 상한을 일부러 작게(256) 잡아, 오래 도는 프로세스가 (config, user) 조합마다
+            # 항목을 하나씩 흘리지 못하게 한다.
             while len(_enabled_skills_by_config_cache) > _ENABLED_SKILLS_BY_CONFIG_CACHE_MAXSIZE:
                 _enabled_skills_by_config_cache.popitem(last=False)
     return list(skills)
@@ -220,10 +214,9 @@ def _skill_mutability_label(category: SkillCategory | str) -> str:
 
 
 def _render_available_skill(name: str, description: str, category: SkillCategory | str, location: str) -> str:
-    # name/description/location come from a ``.skill`` archive's frontmatter
-    # (untrusted); escape them so a value cannot close its tag and forge a
-    # framework block in the system prompt (matches the slash-activation and
-    # durable-context siblings). ``category`` is a controlled enum.
+    # name/description/location은 ``.skill`` 아카이브의 frontmatter에서 오는 신뢰할 수 없는
+    # 값이다. 값이 자기 태그를 닫고 system prompt에 framework 블록을 위조하지 못하도록
+    # escape한다(slash-activation, durable-context 쪽과 동일). ``category``는 통제된 enum이다.
     esc_name = html.escape(name, quote=False)
     esc_description = html.escape(description, quote=False)
     esc_location = html.escape(location, quote=False)
@@ -244,29 +237,26 @@ async def refresh_skills_system_prompt_cache_async() -> None:
 
 
 def invalidate_user_skill_cache(user_id: str) -> None:
-    """Invalidate the skill cache for a specific user only.
+    """특정 사용자의 skill 캐시만 무효화한다.
 
-    Removes all entries in ``_enabled_skills_by_config_cache`` that
-    match the given ``user_id``, without affecting other users' caches.
-    The prompt-section LRU cache is also cleared so stale skill
-    signatures are not served on the next prompt construction.
+    ``_enabled_skills_by_config_cache``에서 주어진 ``user_id``에 해당하는 항목만 제거하고 다른
+    사용자의 캐시는 건드리지 않는다. 다음 prompt 구성에서 오래된 skill signature가 나가지
+    않도록 prompt-section LRU 캐시도 함께 비운다.
     """
     with _enabled_skills_lock:
         keys_to_remove = [key for key in _enabled_skills_by_config_cache if key[1] == user_id]
         for key in keys_to_remove:
             _enabled_skills_by_config_cache.pop(key, None)
-    # Also clear the prompt-section LRU cache so stale skill signatures
-    # for this user are not served on the next prompt construction.
+    # 다음 prompt 구성에서 이 사용자의 오래된 skill signature가 나가지 않도록
+    # prompt-section LRU 캐시도 비운다.
     _get_cached_skills_prompt_section.cache_clear()
 
 
 async def refresh_user_skills_system_prompt_cache_async(user_id: str) -> None:
-    """Per-user variant of :func:`refresh_skills_system_prompt_cache_async`.
+    """:func:`refresh_skills_system_prompt_cache_async`의 사용자별 변형.
 
-    Only invalidates the cache entries for the given ``user_id``, leaving
-    other users' caches intact. The prompt-section LRU cache is also
-    cleared so stale skill signatures are not served on the next prompt
-    construction.
+    주어진 ``user_id``의 캐시 항목만 무효화하고 다른 사용자의 캐시는 그대로 둔다. 다음 prompt
+    구성에서 오래된 skill signature가 나가지 않도록 prompt-section LRU 캐시도 비운다.
     """
     invalidate_user_skill_cache(user_id)
 
@@ -300,22 +290,22 @@ Skip simple one-off tasks.
 
 
 def _build_available_subagents_description(available_names: list[str], bash_available: bool, *, app_config: AppConfig | None = None) -> str:
-    """Dynamically build subagent type descriptions from registry.
+    """registry로부터 subagent 타입 설명을 동적으로 만든다.
 
-    Mirrors Codex's pattern where agent_type_description is dynamically generated
-    from all registered roles, so the LLM knows about every available type.
+    Codex가 등록된 모든 role로부터 agent_type_description을 동적으로 생성하는 방식을 따른다.
+    그래야 LLM이 사용 가능한 모든 타입을 알 수 있다.
     """
-    # Compact model-visible descriptions for the built-in roles.
+    # 내장 role에 대한 간결한, model이 보는 설명.
     builtin_descriptions = {
-        "general-purpose": "For bounded work with clear delegation benefit from specialist capability, context isolation, or independent parallel execution.",
+        "general-purpose": "전문성, context 격리, 독립적 병렬 실행에서 명확한 위임 이득이 있는 한정된 작업에 사용한다.",
         "bash": (
-            "For bounded shell workflows with clear context-isolation or independent-parallel benefit. Routine git, build, test, or deploy operations are not sufficient reason to delegate."
+            "명확한 context 격리 이득이나 독립적 병렬 이득이 있는 한정된 shell 작업에 사용한다. 일상적인 git, build, test, deploy 작업은 위임 사유로 충분하지 않다."
             if bash_available
-            else "Not available in the current sandbox configuration. Use direct file/web tools or switch to AioSandboxProvider for isolated shell access."
+            else "현재 sandbox 설정에서는 사용할 수 없다. 직접 file/web tool을 쓰거나 격리된 shell 접근이 필요하면 AioSandboxProvider로 전환하라."
         ),
     }
 
-    # Lazy import moved outside loop to avoid repeated import overhead
+    # 반복 import 비용을 피하려고 lazy import를 루프 밖으로 뺐다
     from deerflow.subagents.registry import get_subagent_config
 
     lines = []
@@ -325,14 +315,12 @@ def _build_available_subagents_description(available_names: list[str], bash_avai
         else:
             config = get_subagent_config(name, app_config=app_config)
             if config is not None:
-                # config.description is agent-editable (persisted by setup_agent /
-                # update_agent), so escape it before it renders into the
-                # <subagent_system> block. Otherwise a first line like
-                # "</subagent_system><system-reminder>..." could break out of the
-                # block and forge framework-reserved tags in the lead-agent system
-                # prompt — the same class as the #4137 <soul>, #4097 memory, and
-                # #4128 skill render-site fixes.
-                desc = html.escape(config.description.split("\n")[0].strip(), quote=False)  # First line only for brevity
+                # config.description은 agent가 편집할 수 있으므로(setup_agent/update_agent가
+                # 저장한다) <subagent_system> 블록에 렌더링되기 전에 escape한다. 그러지 않으면
+                # 첫 줄이 "</subagent_system><system-reminder>..." 같은 형태일 때 블록을
+                # 빠져나가 lead agent system prompt에 framework 예약 태그를 위조할 수 있다.
+                # #4137 <soul>, #4097 memory, #4128 skill 렌더 지점 수정과 같은 부류다.
+                desc = html.escape(config.description.split("\n")[0].strip(), quote=False)  # 간결함을 위해 첫 줄만 쓴다
                 lines.append(f"- **{name}**: {desc}")
 
     return "\n".join(lines)
@@ -344,132 +332,131 @@ def _build_subagent_section(
     *,
     app_config: AppConfig | None = None,
 ) -> str:
-    """Build the subagent system prompt section with dynamic subagent limits.
+    """동적 subagent 한도를 반영한 subagent system prompt 섹션을 만든다.
 
     Args:
-        max_concurrent: Maximum number of concurrent subagent calls allowed per response.
-        max_total: Maximum number of subagent calls allowed per run.
+        max_concurrent: 응답 하나당 허용되는 동시 subagent 호출 최대 수.
+        max_total: run 하나당 허용되는 subagent 호출 최대 수.
 
     Returns:
-        Formatted subagent section string.
+        포맷된 subagent 섹션 문자열.
     """
     n = clamp_subagent_concurrency(max_concurrent)
     total = clamp_total_subagents_per_run(max_total)
     available_names = get_available_subagent_names(app_config=app_config) if app_config is not None else get_available_subagent_names()
     bash_available = "bash" in available_names
 
-    # Dynamically build subagent type descriptions from registry (aligned with Codex's
-    # agent_type_description pattern where all registered roles are listed in the tool spec).
+    # registry로부터 subagent 타입 설명을 동적으로 만든다(등록된 모든 role을 tool spec에
+    # 나열하는 Codex의 agent_type_description 방식과 동일).
     available_subagents = _build_available_subagents_description(available_names, bash_available, app_config=app_config)
-    direct_tool_examples = "bash, ls, read_file, web_search, etc." if bash_available else "ls, read_file, web_search, etc."
+    direct_tool_examples = "bash, ls, read_file, web_search 등" if bash_available else "ls, read_file, web_search 등"
     direct_execution_example = (
-        '# User asks: "Run the tests"\n# Thinking: Direct bash is cheaper than delegation\n# → Execute directly\n\nbash("npm test")  # Direct execution, not task()'
+        '# 사용자 요청: "테스트를 실행해줘"\n# 판단: 직접 bash가 위임보다 저렴하다\n# → 직접 수행\n\nbash("npm test")  # task()가 아니라 직접 수행'
         if bash_available
-        else '# User asks: "Read the README"\n# Thinking: Single straightforward file read\n# → Execute directly\n\nread_file("/mnt/user-data/workspace/README.md")  # Direct execution, not task()'
+        else '# 사용자 요청: "README를 읽어줘"\n# 판단: 단순한 파일 읽기 한 번\n# → 직접 수행\n\nread_file("/mnt/user-data/workspace/README.md")  # task()가 아니라 직접 수행'
     )
     if n == 1:
-        expected_benefit = "specialist capability + context isolation"
+        expected_benefit = "전문성 + context 격리"
         parallel_dispatch_guidance = ""
-        valid_benefits = """- **Specialist capability**: A subagent has tools, skills, a model, or domain instructions that materially improve the result.
-- **Context isolation**: A bounded, unusually context-heavy investigation would otherwise displace important lead-agent context.
+        valid_benefits = """- **전문성**: subagent가 결과를 실질적으로 개선하는 tool, skill, model, 도메인 지시문을 갖고 있다.
+- **context 격리**: 비정상적으로 context를 많이 소모하는 한정된 조사가, 그대로 두면 중요한 lead agent context를 밀어낸다.
 
-With a per-response limit of 1, delegate only for material specialist or context-isolation benefit. Parallel dispatch cannot reduce wall-clock latency in this configuration."""
-        limit_action_guidance = """- When the per-response limit is reached, verify and synthesize the returned result or continue directly."""
-        followup_guidance = """- After any delegated result, re-evaluate whether the remaining work still has specialist or context-isolation benefit. Do not chain delegations merely to work around the per-response limit."""
-        workflow = """1. Establish the cheapest credible direct-execution path.
-2. Include all negative signals in expected cost.
-3. Compare specialist or context-isolation benefit with all listed costs.
-4. If delegation wins clearly, give the single subagent a bounded scope, relevant known context and paths, an expected output, and explicit side-effect ownership.
-5. Launch at most 1 call and stay within the remaining run allowance.
-6. Verify and synthesize the returned result against primary evidence."""
-        examples = """- Refactor authentication implementation and its tests directly when analysis, edits, and test feedback share files or depend on one another. Complexity alone does not justify delegation.
-- Use one specialized subagent only when its configured capability provides material benefit unavailable on the direct path.
-- Use one subagent for a bounded, unusually context-heavy investigation only when preserving lead-agent context clearly outweighs delegation and synthesis cost.
-- Run a routine test, build, or git command directly. Use one Bash subagent only when a bounded shell workflow has material context-isolation benefit."""
+응답당 한도가 1일 때는 실질적인 전문성 이득이나 context 격리 이득이 있을 때만 위임하라. 이 구성에서는 병렬 dispatch로 wall-clock 지연을 줄일 수 없다."""
+        limit_action_guidance = """- 응답당 한도에 도달하면 반환된 결과를 검증하고 종합하거나 직접 계속 진행하라."""
+        followup_guidance = """- 위임 결과를 받은 뒤에는 남은 작업에 여전히 전문성 이득이나 context 격리 이득이 있는지 다시 판단하라. 응답당 한도를 우회하려고 위임을 연쇄하지 마라."""
+        workflow = """1. 가장 저렴하면서 실현 가능한 직접 수행 경로를 정한다.
+2. 모든 부정 신호를 기대 비용에 포함한다.
+3. 전문성 이득이나 context 격리 이득을 나열된 모든 비용과 비교한다.
+4. 위임이 명확히 이기면, 그 subagent 하나에게 한정된 범위, 이미 알고 있는 관련 context와 경로, 기대 출력, 명시적인 side effect 담당을 준다.
+5. 최대 1개의 호출만 실행하고 남은 run 허용치 안에 머문다.
+6. 반환된 결과를 1차 증거와 대조해 검증하고 종합한다."""
+        examples = """- 분석, 수정, 테스트 피드백이 같은 파일을 공유하거나 서로 의존한다면 authentication 구현과 그 테스트는 직접 리팩터링하라. 복잡하다는 것만으로는 위임이 정당화되지 않는다.
+- 설정된 능력이 직접 수행 경로에서는 얻을 수 없는 실질적 이득을 줄 때만 전문 subagent 하나를 사용하라.
+- 비정상적으로 context를 많이 소모하는 한정된 조사에는, lead agent context를 지키는 이득이 위임과 종합 비용보다 명확히 클 때만 subagent 하나를 사용하라.
+- 일상적인 test, build, git 명령은 직접 실행하라. 한정된 shell 작업에 실질적인 context 격리 이득이 있을 때만 Bash subagent 하나를 사용하라."""
         multi_batch_example = ""
     else:
-        expected_benefit = "parallel wall-clock savings + specialist capability + context isolation"
-        parallel_dispatch_guidance = """**Hard vetoes for parallel dispatch - do not launch these scopes concurrently:**
-- **Inter-agent dependencies**: One delegated task needs another delegated task's result. Keep the dependency chain together instead of splitting it across parallel subagents.
-- **Unsafe shared state**: Tasks may touch overlapping files, shared mutable state, or external side effects without disjoint ownership.
+        expected_benefit = "병렬 wall-clock 시간 절감 + 전문성 + context 격리"
+        parallel_dispatch_guidance = """**병렬 dispatch 절대 금지 조건 - 다음 범위는 동시에 실행하지 마라:**
+- **agent 간 의존**: 한 위임 작업이 다른 위임 작업의 결과를 필요로 한다. 그 의존 체인은 여러 병렬 subagent로 쪼개지 말고 하나로 묶어 두라.
+- **안전하지 않은 공유 상태**: 작업들이 파일이 겹치거나, 가변 상태를 공유하거나, 담당이 분리되지 않은 외부 side effect를 건드릴 수 있다.
 
-A bounded sequential chain may still be delegated to one subagent when specialist capability or context isolation clearly outweighs delegation overhead.
+전문성이나 context 격리 이득이 위임 오버헤드보다 명확히 크다면, 한정된 순차 체인을 subagent 하나에 위임할 수는 있다.
 """
-        valid_benefits = """- **Parallel latency**: Two or more independent, non-overlapping tasks can run concurrently and materially reduce wall-clock time.
-- **Specialist capability**: A subagent has tools, skills, a model, or domain instructions that materially improve the result.
-- **Context isolation**: A bounded, unusually context-heavy investigation would otherwise displace important lead-agent context.
+        valid_benefits = """- **병렬 지연 감소**: 독립적이고 겹치지 않는 작업 둘 이상을 동시에 실행해 wall-clock 시간을 실질적으로 줄일 수 있다.
+- **전문성**: subagent가 결과를 실질적으로 개선하는 tool, skill, model, 도메인 지시문을 갖고 있다.
+- **context 격리**: 비정상적으로 context를 많이 소모하는 한정된 조사가, 그대로 두면 중요한 lead agent context를 밀어낸다.
 
-A single subagent is justified only by material specialist or context-isolation benefit. Parallelism requires independent scopes with no output dependency. **Use the fewest subagents needed** to realize the benefit."""
-        limit_action_guidance = """- Never start a batch that would exceed either limit. When a limit is reached, synthesize existing results or continue directly."""
+subagent 하나만 쓰는 것은 실질적인 전문성 이득이나 context 격리 이득으로만 정당화된다. 병렬 실행은 출력 의존이 없는 독립적인 범위를 요구한다. **이득을 얻는 데 필요한 최소 수의 subagent만 사용하라.**"""
+        limit_action_guidance = """- 어느 한도든 초과하게 될 batch는 절대 시작하지 마라. 한도에 도달하면 기존 결과를 종합하거나 직접 계속 진행하라."""
         followup_guidance = (
-            "- **Re-evaluate the remaining work after every batch.** Later batches cannot overlap earlier batches, but can still deliver "
-            "material within-batch parallel savings. Recompute benefit and cost instead of automatically continuing or stopping."
+            "- **매 batch가 끝날 때마다 남은 작업을 다시 판단하라.** 이후 batch는 앞선 batch와 겹칠 수 없지만, batch 내부의 실질적인 병렬 절감은 여전히 얻을 수 있다. 자동으로 계속하거나 멈추지 말고 이득과 비용을 다시 계산하라."
         )
-        workflow = f"""1. Establish the cheapest credible direct-execution path.
-2. Apply the parallel-dispatch hard vetoes and include all negative signals in expected cost.
-3. Compare expected benefit with all listed costs.
-4. If delegation wins clearly, give each subagent a bounded, non-overlapping scope, relevant known context and paths, an expected output, and explicit side-effect ownership.
-5. Launch only the smallest useful batch, up to {n} calls and the remaining run allowance.
-6. Verify and synthesize returned results. Resolve contradictions against primary evidence instead of forwarding incompatible conclusions."""
-        examples = """- Refactor authentication implementation and its tests: execute directly when analysis, edits, and test feedback share files or depend on one another. Complexity alone does not justify delegation.
-- Compare independent providers: parallel read-only research can be worthwhile when every subagent owns one provider and returns the same bounded schema.
-- Use one specialized subagent only when its configured capability provides material benefit unavailable on the direct path.
-- Run a routine test, build, or git command directly. Use one Bash subagent only when a bounded shell workflow has material context-isolation benefit."""
-        multi_batch_example = f"""**Multi-batch example (limit {n}):** For independent scopes that exceed the per-response limit:
-- **Batch 1: launch up to {n} independent scopes.**
-- Wait for the batch, then re-evaluate the remaining work and net benefit.
-- **Batch 2** may launch the next scopes if it still wins; otherwise continue directly.
-- **Synthesize all retained results** at the end.
+        workflow = f"""1. 가장 저렴하면서 실현 가능한 직접 수행 경로를 정한다.
+2. 병렬 dispatch 절대 금지 조건을 적용하고 모든 부정 신호를 기대 비용에 포함한다.
+3. 기대 이득을 나열된 모든 비용과 비교한다.
+4. 위임이 명확히 이기면, 각 subagent에게 한정되고 겹치지 않는 범위, 이미 알고 있는 관련 context와 경로, 기대 출력, 명시적인 side effect 담당을 준다.
+5. 쓸모 있는 최소 batch만 실행하되 최대 {n}개 호출과 남은 run 허용치를 넘지 않는다.
+6. 반환된 결과들을 검증하고 종합한다. 모순은 서로 맞지 않는 결론을 그대로 전달하지 말고 1차 증거와 대조해 해소한다."""
+        examples = """- authentication 구현과 그 테스트: 분석, 수정, 테스트 피드백이 같은 파일을 공유하거나 서로 의존한다면 직접 수행하라. 복잡하다는 것만으로는 위임이 정당화되지 않는다.
+- 독립적인 provider 비교: 각 subagent가 provider 하나씩만 맡고 동일한 한정 schema를 반환한다면 읽기 전용 병렬 조사는 해볼 만하다.
+- 설정된 능력이 직접 수행 경로에서는 얻을 수 없는 실질적 이득을 줄 때만 전문 subagent 하나를 사용하라.
+- 일상적인 test, build, git 명령은 직접 실행하라. 한정된 shell 작업에 실질적인 context 격리 이득이 있을 때만 Bash subagent 하나를 사용하라."""
+        multi_batch_example = f"""**다중 batch 예시(한도 {n}):** 응답당 한도를 넘는 독립적인 범위가 있을 때:
+- **Batch 1: 독립적인 범위를 최대 {n}개까지 실행한다.**
+- 해당 batch를 기다린 뒤 남은 작업과 순이득을 다시 판단한다.
+- **Batch 2**는 여전히 이득이 크다면 다음 범위들을 실행할 수 있다. 아니면 직접 계속 진행한다.
+- 마지막에 **남긴 모든 결과를 종합한다.**
 """
     return f"""<subagent_system>
-## Subagent Routing: Delegate Only for Clear Net Benefit
+## Subagent 라우팅: 순이득이 명확할 때만 위임하라
 
-Subagents are optional. **Default to direct execution.** Do not delegate merely because a task is complex, has many steps, produces verbose output, or touches a large repository.
+subagent는 선택 사항이다. **기본은 직접 수행이다.** 단지 작업이 복잡하거나, 여러 단계이거나, 장황한 출력을 내거나, 큰 repository를 다룬다는 이유만으로 위임하지 마라.
 
-**DELEGATION CHECK (required before every `task` call):**
+**위임 점검 (모든 `task` 호출 전에 필수):**
 
-Expected benefit = {expected_benefit}
+기대 이득 = {expected_benefit}
 
-Expected cost = delegation and startup overhead + duplicate context and repository discovery + coordination and synthesis + state-conflict risk + side-effect risk
+기대 비용 = 위임과 startup 오버헤드 + 중복된 context 및 repository 탐색 + 조율과 종합 + 상태 충돌 위험 + side effect 위험
 
-**Delegate only when the expected benefit is clearly greater than the expected cost.** When uncertain, execute directly.
+**기대 이득이 기대 비용보다 명확히 클 때만 위임하라.** 확신이 없으면 직접 수행하라.
 
 {parallel_dispatch_guidance}
 
-**Delegation costs and negative signals - include these in the net-benefit comparison:**
-- **Duplicate discovery**: Each subagent would need to read the same repository area or reconstruct context the lead agent already has.
-- **Cheap direct path**: The lead agent can finish with a small number of tool calls or less work than delegation plus synthesis.
-- **Coordination burden**: The lead agent would spend substantial work reconciling or verifying subagent results.
+**위임 비용과 부정 신호 - 순이득 비교에 반드시 포함하라:**
+- **중복 탐색**: 각 subagent가 같은 repository 영역을 다시 읽거나 lead agent가 이미 가진 context를 재구성해야 한다.
+- **저렴한 직접 경로**: lead agent가 적은 수의 tool 호출로, 또는 위임과 종합보다 적은 작업으로 끝낼 수 있다.
+- **조율 부담**: lead agent가 subagent 결과를 조정하거나 검증하는 데 상당한 작업을 써야 한다.
 
-**Clarify first**: Requirements that need user input must be resolved before direct execution or delegation.
+**먼저 명확히 하라**: 사용자 입력이 필요한 요구사항은 직접 수행이든 위임이든 시작하기 전에 해소해야 한다.
 
-**Valid sources of delegation benefit:**
+**유효한 위임 이득의 원천:**
 {valid_benefits}
 
-**HARD LIMITS - NON-NEGOTIABLE:**
-- **MAXIMUM {n} `task` CALLS PER RESPONSE - NEVER emit more. VIOLATION IS A HARD ERROR.** Excess calls are discarded and their work is lost.
-- **MAXIMUM {total} `task` CALLS PER RUN - NEVER exceed it. VIOLATION IS A HARD ERROR.** Count only delegations for the current user request/run; older thread history does not consume this run's allowance.
+**HARD LIMITS - 절대 협상 불가:**
+- **응답당 `task` 호출은 최대 {n}개 - 절대 더 내보내지 마라(NEVER). 위반은 HARD ERROR다.** 초과한 호출은 폐기되고 그 작업은 사라진다.
+- **run당 `task` 호출은 최대 {total}개 - 절대 초과하지 마라(NEVER). 위반은 HARD ERROR다.** 현재 사용자 요청/run의 위임만 센다. 이전 thread 이력은 이번 run의 허용치를 소모하지 않는다.
 {limit_action_guidance}
 {followup_guidance}
 
-**Available Subagents:**
+**사용 가능한 Subagent:**
 {available_subagents}
 
-**Delegation workflow:**
+**위임 절차:**
 {workflow}
 
-**Examples:**
+**예시:**
 {examples}
 
 {multi_batch_example}
 
-Otherwise execute directly using available tools ({direct_tool_examples}):
+그 외에는 사용 가능한 tool({direct_tool_examples})로 직접 수행하라:
 
 ```python
 {direct_execution_example}
 ```
 
-The `task` tool waits for the subagent and returns its result directly; no polling is needed.
+`task` tool은 subagent를 기다렸다가 결과를 바로 반환한다. 별도의 polling은 필요 없다.
 </subagent_system>"""
 
 
@@ -708,17 +695,17 @@ def _get_memory_context(
     app_config: AppConfig | None = None,
     user_id: str | None = None,
 ) -> str:
-    """Get memory context for injection into system prompt.
+    """system prompt에 주입할 memory context를 가져온다.
 
     Args:
-        agent_name: If provided, loads per-agent memory. If None, loads global memory.
-        app_config: Explicit application config. When provided, memory options
-            are read from this value instead of the global config singleton.
-        user_id: Explicit user bucket. When omitted, resolves the current
-            Gateway or standalone LangGraph Server identity.
+        agent_name: 주어지면 agent별 memory를, None이면 전역 memory를 로드한다.
+        app_config: 명시적 애플리케이션 config. 주어지면 전역 config singleton 대신 이 값에서
+            memory 옵션을 읽는다.
+        user_id: 명시적 사용자 버킷. 생략하면 현재 Gateway 또는 독립 LangGraph Server의
+            identity를 해석한다.
 
     Returns:
-        Formatted memory context string wrapped in XML tags, or empty string if disabled.
+        XML 태그로 감싼 memory context 문자열. 비활성화면 빈 문자열.
     """
     config = None
     try:
@@ -814,22 +801,20 @@ def get_skills_prompt_section(
     user_id: str | None = None,
     skill_names: frozenset[str] | None = None,
 ) -> str:
-    """Generate the skills prompt section.
+    """skill prompt 섹션을 생성한다.
 
-    When *skill_names* is provided, renders a compact ``<skill_index>`` (names
-    only) so the LLM can discover skills via ``describe_skill``.  When omitted,
-    falls back to the legacy full-metadata ``<available_skills>`` rendering for
-    backward compatibility.
+    *skill_names*가 주어지면 이름만 담은 간결한 ``<skill_index>``를 렌더링해 LLM이
+    ``describe_skill``로 skill을 발견하게 한다. 생략하면 하위 호환을 위해 전체 메타데이터를
+    담은 레거시 ``<available_skills>`` 렌더링으로 넘어간다.
     """
     if app_config is None:
         try:
             from deerflow.config import get_app_config
 
-            # Rebind so the storage/enabled-skills loads below use this resolved
-            # config too. Reading only container_path here and then letting
-            # get_enabled_skills_for_config(None) fall back to the warm cache
-            # rendered an empty enabled-skills list on a cold start while the
-            # synchronously-loaded disabled section was populated (#4144).
+            # 아래의 storage/enabled-skills 로드도 이 해석된 config를 쓰도록 다시 바인딩한다.
+            # 여기서 container_path만 읽고 get_enabled_skills_for_config(None)이 warm 캐시로
+            # 넘어가게 두면, cold start에서 동기 로드된 disabled 섹션은 채워졌는데
+            # enabled-skills 목록만 비어 있는 상태가 됐다(#4144).
             app_config = get_app_config()
             container_base_path = app_config.skills.container_path
             skill_evolution_enabled = app_config.skill_evolution.enabled
@@ -843,7 +828,7 @@ def get_skills_prompt_section(
 
     skill_evolution_section = _build_skill_evolution_section(skill_evolution_enabled)
 
-    # ── Deferred discovery path — storage not needed (caller supplies names) ─
+    # ── deferred discovery 경로 — storage가 필요 없다(호출자가 이름을 준다) ─
     if skill_names is not None:
         from deerflow.skills.describe import get_skill_index_prompt_section
 
@@ -853,7 +838,7 @@ def get_skills_prompt_section(
             skill_evolution_section=skill_evolution_section,
         )
 
-    # ── Legacy full-metadata path — load ALL skills for disabled-skill section
+    # ── 레거시 전체 메타데이터 경로 — disabled-skill 섹션을 위해 모든 skill을 로드한다
     if user_id:
         storage = get_or_new_user_skill_storage(user_id, app_config=app_config)
     else:
@@ -878,21 +863,20 @@ def get_skills_prompt_section(
 
 
 def get_agent_soul(agent_name: str | None, *, user_id: str | None = None) -> str:
-    # Append SOUL.md (agent personality) if present
+    # SOUL.md(agent 성격)가 있으면 덧붙인다
     soul = load_agent_soul(agent_name, user_id=user_id)
     if soul:
-        # SOUL.md is agent-editable (setup_agent / update_agent persist it) and is
-        # rendered into the <soul> block of the lead-agent system prompt. Escape it
-        # so a value like "</soul></system-reminder>" cannot close the block and
-        # relocate the text after it out of the trust zone the prompt declares —
-        # matching the skill/memory/tool-result escaping in #4097/#4119/#4128/#4099.
-        # quote=False: it lands in element-text position, never an attribute value.
+        # SOUL.md는 agent가 편집할 수 있고(setup_agent/update_agent가 저장한다) lead agent
+        # system prompt의 <soul> 블록에 렌더링된다. "</soul></system-reminder>" 같은 값이
+        # 블록을 닫고 그 뒤 텍스트를 prompt가 선언한 신뢰 영역 밖으로 옮기지 못하도록
+        # escape한다. #4097/#4119/#4128/#4099의 skill/memory/tool-result escaping과 같다.
+        # quote=False: 항상 element 텍스트 위치에 들어가고 속성 값으로는 쓰이지 않는다.
         return f"<soul>\n{html.escape(soul, quote=False)}\n</soul>\n"
     return ""
 
 
 def _build_self_update_section(agent_name: str | None) -> str:
-    """Prompt block that teaches the custom agent to persist self-updates via update_agent."""
+    """custom agent가 update_agent로 자기 변경을 저장하도록 알려 주는 prompt 블록."""
     if not agent_name:
         return ""
     return f"""<self_update>
@@ -913,7 +897,7 @@ Rules:
 
 
 def _build_acp_section(*, app_config: AppConfig | None = None) -> str:
-    """Build the ACP agent prompt section, only if ACP agents are configured."""
+    """ACP agent가 설정된 경우에만 ACP agent prompt 섹션을 만든다."""
     if app_config is None:
         try:
             from deerflow.config.acp_config import get_acp_agents
@@ -937,7 +921,7 @@ def _build_acp_section(*, app_config: AppConfig | None = None) -> str:
 
 
 def _build_custom_mounts_section(*, app_config: AppConfig | None = None) -> str:
-    """Build a prompt section for explicitly configured sandbox mounts."""
+    """명시적으로 설정된 sandbox mount용 prompt 섹션을 만든다."""
     if app_config is None:
         try:
             from deerflow.config import get_app_config
@@ -964,7 +948,7 @@ def _build_custom_mounts_section(*, app_config: AppConfig | None = None) -> str:
 
 
 def _build_memory_tool_section(*, app_config: AppConfig | None = None) -> str:
-    """Build tool-mode memory guidance for the static system prompt."""
+    """정적 system prompt에 넣을 tool 모드 memory 안내를 만든다."""
     try:
         if app_config is None:
             from deerflow.config.memory_config import get_memory_config
@@ -1003,7 +987,7 @@ def apply_prompt_template(
     user_id: str | None = None,
     skill_names: frozenset[str] | None = None,
 ) -> str:
-    # Include subagent section only if enabled (from runtime parameter)
+    # runtime 인자로 활성화된 경우에만 subagent 섹션을 포함한다
     n = clamp_subagent_concurrency(max_concurrent_subagents)
     total = max_total_subagents
     if total is None:
@@ -1012,33 +996,33 @@ def apply_prompt_template(
     total = clamp_total_subagents_per_run(total)
     subagent_section = _build_subagent_section(n, total, app_config=app_config) if subagent_enabled else ""
 
-    # Add subagent reminder to critical_reminders if enabled
-    reminder_benefits = "specialist capability or context isolation" if n == 1 else "real parallel latency, specialist capability, or context isolation"
+    # 활성화돼 있으면 critical_reminders에 subagent reminder를 추가한다
+    reminder_benefits = "전문성 또는 context 격리" if n == 1 else "실제 병렬 지연 단축, 전문성, context 격리"
     subagent_reminder = (
-        f"- **Benefit-Based Delegation**: Default to direct execution. Use `task` only when expected benefit from {reminder_benefits} "
-        "clearly exceeds delegation, duplicate-discovery, synthesis, conflict, and side-effect costs. "
-        f"Use the fewest subagents needed. HARD LIMITS ARE NON-NEGOTIABLE: max {n} `task` calls per response, max {total} per run; excess calls are discarded and their work is lost.\n"
+        f"- **기대 이득 기반 위임**: 직접 실행을 기본으로 하라. {reminder_benefits}에서 오는 기대 이득이 "
+        "위임·중복 탐색·종합·충돌·부작용 비용을 명확히 넘어설 때만 `task`를 쓰라. "
+        f"필요한 최소 개수의 subagent만 쓰라. 한계는 협상 불가다: 응답당 `task` 호출 최대 {n}회, run당 최대 {total}회. 초과 호출은 폐기되고 그 작업은 사라진다.\n"
         if subagent_enabled
         else ""
     )
 
-    # Add subagent thinking guidance if enabled
+    # 활성화돼 있으면 subagent thinking 안내를 추가한다
     if subagent_enabled and n == 1:
         subagent_thinking = (
-            "- **DELEGATION CHECK: Default to direct execution; complexity alone is not a reason to delegate. Before each `task` call, "
-            "require clear positive net benefit from specialist capability or context isolation. "
-            f"Never exceed {n} `task` call in one response or {total} total in this run.**\n"
+            "- **위임 점검: 직접 실행을 기본으로 하라. 복잡하다는 것만으로는 위임 사유가 되지 않는다. 매 `task` 호출 전에 "
+            "전문성 또는 context 격리에서 오는 명확한 순이득을 확인하라. "
+            f"한 응답에서 `task` 호출 {n}회, 이번 run 전체에서 {total}회를 절대 넘기지 마라.**\n"
         )
     elif subagent_enabled:
         subagent_thinking = (
-            "- **DELEGATION CHECK: Default to direct execution; complexity alone is not a reason to delegate. Before each `task` call, "
-            "require clear positive net benefit; before parallel calls, rule out inter-agent dependencies and overlapping state or side effects. "
-            f"If delegating, use the fewest agents needed and never exceed {n} `task` calls in one response or {total} total in this run.**\n"
+            "- **위임 점검: 직접 실행을 기본으로 하라. 복잡하다는 것만으로는 위임 사유가 되지 않는다. 매 `task` 호출 전에 "
+            "명확한 순이득을 확인하고, 병렬 호출 전에는 agent 간 의존 관계와 겹치는 state·부작용이 없는지 배제하라. "
+            f"위임한다면 필요한 최소 개수의 agent만 쓰고, 한 응답에서 `task` 호출 {n}회, 이번 run 전체에서 {total}회를 절대 넘기지 마라.**\n"
         )
     else:
         subagent_thinking = ""
 
-    # Get skills section (deferred discovery when skill_names is provided)
+    # skill 섹션을 가져온다(skill_names가 주어지면 deferred discovery)
     skills_section = get_skills_prompt_section(
         available_skills,
         app_config=app_config,
@@ -1046,16 +1030,16 @@ def apply_prompt_template(
         skill_names=skill_names,
     )
 
-    # Get deferred tools section (tool_search)
+    # deferred tool 섹션을 가져온다(tool_search)
     deferred_tools_section = get_deferred_tools_prompt_section(deferred_names=deferred_names)
 
-    # Build ACP agent section only if ACP agents are configured
+    # ACP agent가 설정된 경우에만 ACP agent 섹션을 만든다
     acp_section = _build_acp_section(app_config=app_config)
     custom_mounts_section = _build_custom_mounts_section(app_config=app_config)
     acp_and_mounts_section = "\n".join(section for section in (acp_section, custom_mounts_section) if section)
 
-    # Gate the "Skill First" instruction on the deferred discovery path:
-    # legacy mode uses tool-agnostic wording; deferred mode references describe_skill.
+    # "Skill First" 지시를 deferred discovery 경로에 맞춰 분기한다.
+    # 레거시 모드는 tool에 무관한 표현을 쓰고, deferred 모드는 describe_skill을 언급한다.
     skill_first_reminder = (
         "- Skill First: For complex tasks, call describe_skill(name) to check if a matching skill exists, then read_file to load it.\n"
         if skill_names is not None
@@ -1064,10 +1048,10 @@ def apply_prompt_template(
 
     memory_tool_section = _build_memory_tool_section(app_config=app_config)
 
-    # Build and return the fully static system prompt.
-    # Memory and current date are injected per-turn via DynamicContextMiddleware
-    # as a <system-reminder> in the first HumanMessage, keeping this prompt
-    # identical across users and sessions for maximum prefix-cache reuse.
+    # 완전히 정적인 system prompt를 만들어 반환한다.
+    # memory와 현재 날짜는 DynamicContextMiddleware가 턴마다 첫 HumanMessage에
+    # <system-reminder>로 주입한다. 덕분에 이 prompt가 사용자와 세션에 관계없이 동일해
+    # prefix-cache 재사용이 최대가 된다.
     return SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",
         soul=get_agent_soul(agent_name, user_id=user_id),

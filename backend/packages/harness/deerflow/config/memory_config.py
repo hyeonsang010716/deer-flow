@@ -1,13 +1,12 @@
-"""Configuration for the memory mechanism (host-shared fields only).
+"""memory 메커니즘 설정(host 공용 필드만).
 
-DeerMem-private fields live in ``backends/deermem/config.py`` (``DeerMemConfig``),
-reached via ``backend_config`` (a dict the factory passes to the backend's
-``__init__``). This module holds ONLY the host-shared fields every backend /
-call site / factory reads: ``enabled`` / ``injection_enabled`` /
-``shutdown_flush_timeout_seconds`` / ``manager_class`` / ``backend_config``.
-Keeping the shared schema slim is what
-makes backends swappable and portable (DeerMem's knobs do not leak onto the
-shared contract).
+DeerMem 전용 필드는 ``backends/deermem/config.py``(``DeerMemConfig``)에 있고,
+factory가 backend의 ``__init__``에 넘기는 dict인 ``backend_config``를 통해 전달된다.
+이 모듈은 모든 backend/호출부/factory가 읽는 host 공용 필드만 담는다:
+``enabled`` / ``injection_enabled`` / ``shutdown_flush_timeout_seconds`` /
+``manager_class`` / ``backend_config``.
+공용 스키마를 얇게 유지해야 backend를 갈아끼울 수 있다(DeerMem의 설정값이 공용 계약으로
+새어나오지 않는다).
 """
 
 import logging
@@ -17,14 +16,13 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# Host-shared MemoryConfig fields (read by every backend / call site / factory).
+# 모든 backend/호출부/factory가 읽는 host 공용 MemoryConfig 필드.
 _SHARED_FIELDS = frozenset({"enabled", "mode", "injection_enabled", "shutdown_flush_timeout_seconds", "manager_class", "backend_config"})
 
-# DeerMem-private fields that used to live at the top level of `memory:` in
-# config.yaml (pre-abstraction). On load they are auto-migrated into
-# `backend_config` so an upgrade does NOT silently revert customized settings
-# to defaults. `model_name` maps to `backend_config.model.model` (the new nested
-# model sub-config); the rest are 1:1.
+# 추상화 이전에 config.yaml의 `memory:` 최상위에 있던 DeerMem 전용 필드들. 로드 시
+# `backend_config`로 자동 이관되므로, 업그레이드가 사용자 설정을 조용히 기본값으로
+# 되돌리지 않는다. `model_name`은 새로 중첩된 model 하위 설정인
+# `backend_config.model.model`로 매핑되고, 나머지는 1:1이다.
 _LEGACY_DEERMEM_FIELDS = frozenset(
     {
         "storage_path",
@@ -53,7 +51,7 @@ _LEGACY_DEERMEM_FIELDS = frozenset(
 
 
 class MemoryConfig(BaseModel):
-    """Host-shared memory configuration (backend-agnostic)."""
+    """backend에 종속되지 않는 host 공용 memory 설정."""
 
     enabled: bool = Field(
         default=True,
@@ -112,41 +110,38 @@ class MemoryConfig(BaseModel):
 
 
 def should_use_memory_tools(config: MemoryConfig) -> bool:
-    """Return True when memory should use model-directed tools."""
+    """memory가 모델 주도 도구를 써야 하면 True를 반환한다."""
     return config.enabled and config.mode == "tool"
 
 
-# Global configuration instance
+# 전역 설정 인스턴스
 _memory_config: MemoryConfig = MemoryConfig()
 
 
 def get_memory_config() -> MemoryConfig:
-    """Get the current memory configuration.
+    """현재 memory 설정을 반환한다.
 
-    ``_memory_config`` is only refreshed as a side effect of ``get_app_config()``
-    reloading (via ``_apply_singleton_configs`` -> ``load_memory_config_from_dict``).
-    A reader that reaches memory config without going through ``get_app_config()``
-    first -- e.g. the agent factory deciding whether to bind the memory tools --
-    would otherwise see a stale ``memory.mode`` after a ``config.yaml`` edit, even
-    though ``memory.*`` is documented as hot-reloadable. Trigger the same
-    signature-checked reload here so the singleton follows the config file.
+    ``_memory_config``는 ``get_app_config()`` reload의 부수 효과로만 갱신된다
+    (``_apply_singleton_configs`` -> ``load_memory_config_from_dict``). ``get_app_config()``를
+    거치지 않고 memory 설정을 읽는 쪽(예: memory 도구를 bind할지 결정하는 agent factory)은
+    ``memory.*``가 hot-reload 대상이라고 문서화돼 있음에도 ``config.yaml`` 수정 후 낡은
+    ``memory.mode``를 보게 된다. 그래서 여기서 동일한 signature 기반 reload를 트리거해
+    singleton이 설정 파일을 따라가게 한다.
 
-    If ``get_app_config()`` has never been called (``_app_config`` is ``None``),
-    there is no stale config to refresh, so we keep the pre-existing behaviour
-    of returning the in-memory singleton.  This avoids picking up a config file
-    as a side effect of the first access to ``get_memory_config()``, which would
-    break callers that expect module-level defaults (e.g. unit tests).
+    ``get_app_config()``가 한 번도 호출된 적 없으면(``_app_config``가 ``None``) 갱신할
+    낡은 설정도 없으므로 기존 동작대로 메모리 상의 singleton을 그대로 반환한다. 이렇게
+    해야 첫 ``get_memory_config()`` 호출이 부수적으로 설정 파일을 읽어들여 모듈 기본값을
+    기대하는 호출자(예: 단위 테스트)를 깨뜨리지 않는다.
     """
-    # Lazy import: app_config imports this module, so a top-level import cycles.
+    # lazy import: app_config가 이 모듈을 import하므로 최상위 import는 순환이 된다.
     from .app_config import _app_config, get_app_config
 
     if _app_config is not None:
         try:
             get_app_config()
         except Exception:
-            # If the config file is transiently broken (invalid YAML, schema
-            # violation, missing env var, etc.), keep the last-good singleton
-            # so an in-flight turn completes normally instead of crashing.
+            # 설정 파일이 일시적으로 깨졌으면(잘못된 YAML, 스키마 위반, 누락된 환경변수 등)
+            # 마지막 정상 singleton을 유지해서 진행 중인 turn이 죽지 않고 끝나게 한다.
             logger.warning(
                 "Failed to reload app config from get_memory_config(); falling back to cached memory config.",
                 exc_info=True,
@@ -155,23 +150,21 @@ def get_memory_config() -> MemoryConfig:
 
 
 def set_memory_config(config: MemoryConfig) -> None:
-    """Set the memory configuration."""
+    """memory 설정을 지정한다."""
     global _memory_config
     _memory_config = config
 
 
 def load_memory_config_from_dict(config_dict: dict) -> None:
-    """Load memory configuration from a dictionary.
+    """dict에서 memory 설정을 읽는다.
 
-    Host-shared fields (``enabled`` / ``mode`` / ``injection_enabled`` /
-    ``manager_class`` / ``backend_config``) are read directly. DeerMem-private
-    fields that used to live at the top level of ``memory:`` in config.yaml
-    (pre-abstraction: ``storage_path``, ``max_facts``, ``debounce_seconds``,
-    ``model_name``, ``token_counting``, ``staleness_*``, ``consolidation_*``,
-    ...) are **auto-migrated into ``backend_config``** with a warning, so an
-    upgrade from a pre-abstraction config does NOT silently revert customized
-    settings to defaults. Unknown top-level keys (likely typos) are warned and
-    ignored.
+    host 공용 필드(``enabled`` / ``mode`` / ``injection_enabled`` / ``manager_class`` /
+    ``backend_config``)는 그대로 읽는다. 추상화 이전에 config.yaml의 ``memory:`` 최상위에
+    있던 DeerMem 전용 필드(``storage_path``, ``max_facts``, ``debounce_seconds``,
+    ``model_name``, ``token_counting``, ``staleness_*``, ``consolidation_*`` 등)는 경고와
+    함께 **``backend_config``로 자동 이관**한다. 그래야 추상화 이전 설정에서 업그레이드할
+    때 사용자 설정이 조용히 기본값으로 되돌아가지 않는다. 알 수 없는 최상위 키(대개 오타)는
+    경고 후 무시한다.
     """
     global _memory_config
     config_dict = dict(config_dict or {})
@@ -183,23 +176,22 @@ def load_memory_config_from_dict(config_dict: dict) -> None:
         if key in _LEGACY_DEERMEM_FIELDS:
             value = config_dict.pop(key)
             if value is None or value == "":
-                continue  # default / empty value, no migration needed
+                continue  # 기본값이거나 빈 값이라 이관할 필요가 없다.
             if key == "model_name":
-                # old top-level model_name -> backend_config.model.model
+                # 예전 최상위 model_name -> backend_config.model.model
                 model_cfg = dict(backend_config.get("model") or {})
                 if "model" not in model_cfg:
                     model_cfg["model"] = value
                     backend_config["model"] = model_cfg
                     migrated.append(f"{key} -> backend_config.model.model")
             elif key == "storage_path" and str(value).endswith(".json"):
-                # Pre-abstraction storage_path was a FILE path (absolute = shared
-                # file opting out of per-user; a relative value like the old default
-                # "memory.json" was ignored for per-user). DeerMem now treats it as a
-                # root DIRECTORY. Carrying a file-style value verbatim would be
-                # resolved as a dir and either orphan per-user memory or hit
-                # NotADirectoryError on save. Drop it so the factory's zero-config
-                # runtime_home kicks in (per-user location unchanged:
-                # {base_dir}/users/{uid}/memory.json) and warn the operator.
+                # 추상화 이전의 storage_path는 파일 경로였다(절대 경로는 per-user를
+                # 포기하고 공유 파일을 쓰는 의미였고, 예전 기본값 "memory.json" 같은
+                # 상대 경로는 per-user에서 무시됐다). DeerMem은 이제 이를 루트 디렉터리로
+                # 취급한다. 파일 형태 값을 그대로 넘기면 디렉터리로 해석돼 per-user memory가
+                # 고아가 되거나 저장 시 NotADirectoryError가 난다. 그래서 값을 버리고
+                # factory의 무설정 runtime_home이 동작하게 하며(per-user 위치는 그대로
+                # {base_dir}/users/{uid}/memory.json) 운영자에게 경고한다.
                 logger.warning(
                     "Legacy memory.storage_path=%r looks like a file path; DeerMem now "
                     "treats storage_path as a root DIRECTORY (per-user memory under "
@@ -210,7 +202,7 @@ def load_memory_config_from_dict(config_dict: dict) -> None:
                     value,
                 )
             elif key not in backend_config:
-                # don't override an explicit backend_config value
+                # 명시적으로 지정된 backend_config 값은 덮어쓰지 않는다.
                 backend_config[key] = value
                 migrated.append(f"{key} -> backend_config.{key}")
         else:

@@ -1,5 +1,5 @@
-"""Shared inbound webhook dedupe table (issue #4120).
+"""공유 inbound webhook dedupe 테이블 (issue #4120).
 
-ORM model only; row writes/reads go through raw SQL in
-``app.channels.dedupe_store.PostgresInboundDedupeStore``.
+ORM model만 둔다. row 읽기/쓰기는 ``app.channels.dedupe_store.PostgresInboundDedupeStore``의
+raw SQL을 통해 이뤄진다.
 """

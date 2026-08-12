@@ -1,44 +1,37 @@
-"""Managed Lark/Feishu CLI integration support.
+"""관리형 Lark/Feishu CLI integration 지원.
 
-The integration installs the official ``lark-*`` AI-agent skills into a
-global read-only managed integration skill directory. It deliberately
-does not use the ordinary custom-skill archive path: this is a trusted,
-versioned first-party integration package, not user-authored mutable content.
+이 integration은 공식 ``lark-*`` AI 에이전트 skill을 전역 읽기 전용 관리형 integration
+skill 디렉터리에 설치한다. 일반 custom skill 아카이브 경로를 쓰지 않는 것은 의도적이다.
+사용자가 작성해 변경 가능한 콘텐츠가 아니라 신뢰된 버전 관리 1st-party 패키지이기 때문이다.
 
-Version resolution & integrity
+버전 결정과 무결성
 -------------------------------
-The installed skill-pack version follows the Gateway runtime ``lark-cli``
-binary version (``lark-cli --version``). This keeps the managed skills aligned
-with the server-side CLI that will execute them. ``FALLBACK_LARK_CLI_VERSION``
-matches the Dockerfile/npm pin and is used only when the runtime binary is
-unavailable or does not report a parseable version.
+설치되는 skill pack 버전은 Gateway 런타임 ``lark-cli`` 바이너리 버전
+(``lark-cli --version``)을 따른다. 관리형 skill을 실제로 실행할 서버 측 CLI와 맞추기
+위해서다. ``FALLBACK_LARK_CLI_VERSION``은 Dockerfile/npm 고정 버전과 일치하며, 런타임
+바이너리가 없거나 파싱 가능한 버전을 알려주지 않을 때만 쓴다.
 
-Integrity is enforced without pinning a per-version archive byte hash (GitHub
-does not guarantee source-archive bytes are stable across their internal git
-upgrades, and pinning conflicts with tracking latest). Instead:
+무결성은 버전별 아카이브 바이트 해시를 고정하지 않고 확보한다(GitHub는 내부 git 업그레이드를
+거쳐도 소스 아카이브 바이트가 동일하다고 보장하지 않으며, 해시 고정은 최신 버전 추적과 충돌한다).
+대신 다음을 지킨다.
 
-* the download source is fixed to the official GitHub host over HTTPS and the
-  version only comes from the Gateway runtime CLI version or the pinned
-  fallback (no external URL injection);
-* every archive member passes structural guards (zip-slip / symlink /
-  executable-binary / size / required-skill completeness / ``SKILL.md`` parse);
-* a **content** SHA-256 over the extracted skill tree, after DeerFlow's shared
-  guidance is injected, is recorded in the manifest, so a reinstall whose
-  effective skill content changed is detectable/auditable even when GitHub
-  re-packs identical content with different archive bytes.
+* 다운로드 원본은 HTTPS 공식 GitHub 호스트로 고정하고, 버전은 Gateway 런타임 CLI 버전이나
+  고정된 fallback에서만 온다(외부 URL 주입 불가).
+* 모든 아카이브 멤버가 구조적 검사(zip-slip, symlink, 실행 바이너리, 크기, 필수 skill 완비,
+  ``SKILL.md`` 파싱)를 통과한다.
+* DeerFlow 공용 가이드를 주입한 뒤 추출된 skill 트리에 대한 **콘텐츠** SHA-256을 manifest에
+  기록한다. 그래서 GitHub가 같은 콘텐츠를 다른 바이트로 다시 패킹하더라도, 실효 skill 콘텐츠가
+  바뀐 재설치는 감지하고 감사할 수 있다.
 
-Runtime coupling: the npm-installed ``lark-cli`` binary version is pinned in
-``backend/Dockerfile`` (``ARG LARK_CLI_NPM_VERSION``) and
-``docker/docker-compose*.yaml`` as a bootstrap fallback. The admin install path
-also manages a writable DeerFlow-owned Gateway CLI under
-``.deer-flow/integrations/lark-cli/gateway-cli`` and prefers it over the system
-PATH, so users do not need to run terminal installation commands. Reinstalling
-the integration refreshes both the managed Gateway CLI and the skill pack to the
-same version when network access is available. ``get_lark_integration_status``
-surfaces ``latest_available_version`` and ``runtime_version_mismatch`` for
-operators, and ``test_python_and_docker_lark_cli_versions_match`` pins the
-fallback constant to the Dockerfile ARG so packaged deployments do not silently
-diverge.
+런타임 결합: npm으로 설치되는 ``lark-cli`` 바이너리 버전은 ``backend/Dockerfile``
+(``ARG LARK_CLI_NPM_VERSION``)과 ``docker/docker-compose*.yaml``에 부트스트랩 fallback으로
+고정되어 있다. 관리자 설치 경로는 ``.deer-flow/integrations/lark-cli/gateway-cli`` 아래에
+쓰기 가능한 DeerFlow 소유 Gateway CLI도 관리하며 시스템 PATH보다 우선한다. 덕분에 사용자가
+터미널 설치 명령을 실행할 필요가 없다. integration을 재설치하면 네트워크가 되는 한 관리형
+Gateway CLI와 skill pack이 같은 버전으로 갱신된다. ``get_lark_integration_status``는 운영자를
+위해 ``latest_available_version``과 ``runtime_version_mismatch``를 노출하고,
+``test_python_and_docker_lark_cli_versions_match``가 fallback 상수를 Dockerfile ARG에 고정해
+패키지 배포본이 조용히 어긋나지 않게 한다.
 """
 
 from __future__ import annotations
@@ -69,7 +62,7 @@ from weakref import WeakValueDictionary
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - Windows fallback
+except ImportError:  # pragma: no cover - Windows fallback 경로
     fcntl = None  # type: ignore[assignment]
     import msvcrt
 
@@ -84,8 +77,8 @@ from deerflow.skills.types import SKILL_MD_FILE, SkillCategory
 logger = logging.getLogger(__name__)
 
 INTEGRATION_ID = "lark-cli"
-# Matches the Gateway image/npm pin. Used when the runtime binary is unavailable
-# or reports an unparsable version.
+# Gateway 이미지/npm 고정 버전과 일치한다. 런타임 바이너리가 없거나 파싱 불가능한 버전을
+# 보고할 때 쓴다.
 FALLBACK_LARK_CLI_VERSION = "v1.0.65"
 LARK_CLI_NPM_VERSION = FALLBACK_LARK_CLI_VERSION.removeprefix("v")
 LARK_CLI_NPM_PACKAGE = "@larksuite/cli"
@@ -113,14 +106,14 @@ LARK_CLI_LINUX_ARCHES = ("amd64", "arm64")
 LARK_CLI_RUNTIME_MANIFEST_FILE = ".deerflow-lark-cli-runtime.json"
 LARK_CLI_FLOW_STATE_FILE = ".deerflow-lark-cli-flow.json"
 
-# Pattern B (issue #4338): loopback URL the sandbox shim uses to reach the broker
-# sidecar. LARK_BROKER_URL_ENV is imported from the broker module so the shim,
-# server, and Gateway overlay share one source of truth.
+# Pattern B(issue #4338): sandbox shim이 broker sidecar에 닿는 loopback URL.
+# LARK_BROKER_URL_ENV는 broker 모듈에서 import해 shim, 서버, Gateway overlay가
+# 하나의 진실 원천을 공유하게 한다.
 LARK_BROKER_SANDBOX_URL = "http://127.0.0.1:8788"
 
-# Arch-dispatch launcher for the sandbox runtime layout. Shared by the Gateway
-# writer (`_write_lark_cli_sandbox_launcher`) and the `docker/lark-cli-init`
-# init image so the two producers of `bin/lark-cli` never drift.
+# sandbox 런타임 레이아웃용 아키텍처 분기 launcher. Gateway 쪽 writer
+# (`_write_lark_cli_sandbox_launcher`)와 `docker/lark-cli-init` init 이미지가 공유하므로
+# `bin/lark-cli`를 만드는 두 생산자가 어긋나지 않는다.
 LARK_CLI_SANDBOX_LAUNCHER_SCRIPT = """#!/bin/sh
 set -eu
 case "$(uname -m)" in
@@ -255,14 +248,14 @@ class LarkAuthCompleteResult:
 
 
 class LarkFlowSupersededError(ValueError):
-    """Raised when a delayed integration flow is no longer current."""
+    """지연된 integration flow가 더 이상 최신이 아닐 때 발생한다."""
 
 
 def lark_integration_root(_user_id: str | None = None) -> Path:
-    """Return the shared root for globally installed managed Lark skills.
+    """전역 설치된 관리형 Lark skill의 공유 루트를 반환한다.
 
-    ``_user_id`` is accepted temporarily for source compatibility with the
-    pre-global-install API; it does not influence the shared package path.
+    ``_user_id``는 전역 설치 이전 API와의 소스 호환을 위해 한시적으로 받는다.
+    공유 패키지 경로에는 영향을 주지 않는다.
     """
     return get_paths().integration_skills_dir() / INTEGRATION_ID
 
@@ -272,11 +265,11 @@ def lark_manifest_path(user_id: str) -> Path:
 
 
 def lark_skills_installed(user_id: str | None = None) -> bool:
-    """Whether the managed Lark skill pack is installed.
+    """관리형 Lark skill pack이 설치되어 있는지 반환한다.
 
-    Mirrors the ``installed`` field of :func:`get_lark_integration_status`
-    (manifest present and ``lark-shared`` extracted) without probing the CLI or
-    auth. Used to decide whether a sandbox should request the lark-cli runtime.
+    CLI나 auth를 조회하지 않고 :func:`get_lark_integration_status`의 ``installed`` 필드와
+    같은 판단(manifest 존재 + ``lark-shared`` 추출됨)을 한다. sandbox가 lark-cli 런타임을
+    요청할지 결정하는 데 쓴다.
     """
     root = lark_integration_root(user_id)
     manifest = _read_manifest(root)
@@ -298,11 +291,11 @@ def _lark_cli_credential_root(user_id: str) -> Path:
 
 
 def ensure_lark_cli_credential_tree(user_id: str, *, paths: Paths | None = None) -> None:
-    """Make the user's secret-bearing Lark CLI tree owner-only.
+    """비밀을 담은 사용자 Lark CLI 트리를 소유자 전용 권한으로 만든다.
 
-    The CLI writes plaintext app secrets and OAuth tokens beneath this tree.
-    Reject links before changing modes so a compromised tree cannot redirect a
-    chmod or subsequent CLI write outside the user's integration directory.
+    CLI가 이 트리 아래에 평문 app secret과 OAuth 토큰을 쓴다. 권한을 바꾸기 전에 링크를
+    거부해, 침해된 트리가 chmod나 이후 CLI 쓰기를 사용자 integration 디렉터리 밖으로
+    돌리지 못하게 한다.
     """
     paths = paths or get_paths()
     root = paths.user_dir(user_id) / "integrations" / INTEGRATION_ID
@@ -326,12 +319,12 @@ def ensure_lark_cli_credential_tree(user_id: str, *, paths: Paths | None = None)
 
 
 def lark_cli_managed_gateway_dir() -> Path:
-    """Gateway-scoped DeerFlow-managed lark-cli install root."""
+    """Gateway 범위의 DeerFlow 관리형 lark-cli 설치 루트."""
     return get_paths().base_dir / "integrations" / INTEGRATION_ID / "gateway-cli"
 
 
 def lark_cli_managed_sandbox_dir() -> Path:
-    """Gateway-visible source directory mounted into Linux AIO sandboxes."""
+    """Linux AIO sandbox에 마운트되는 Gateway 측 원본 디렉터리."""
     return get_paths().base_dir / "integrations" / INTEGRATION_ID / "sandbox-cli"
 
 
@@ -353,7 +346,7 @@ def _lark_cli_release_asset_url(version: str, asset_name: str) -> str:
 
 
 def _download_lark_release_asset(version: str, asset_name: str, *, max_bytes: int = LARK_CLI_MAX_RUNTIME_ASSET_BYTES) -> bytes:
-    """Download one official release asset with a strict size bound."""
+    """공식 release asset 하나를 엄격한 크기 제한과 함께 다운로드한다."""
     request = urllib.request.Request(
         _lark_cli_release_asset_url(version, asset_name),
         headers={"Accept": "application/octet-stream", "User-Agent": "deer-flow"},
@@ -369,7 +362,7 @@ def _download_lark_release_asset(version: str, asset_name: str, *, max_bytes: in
                 chunks.append(chunk)
     except ValueError:
         raise
-    except Exception as exc:  # noqa: BLE001 - network boundary
+    except Exception as exc:  # noqa: BLE001 - 네트워크 경계
         raise ValueError(f"Could not download official Lark CLI release asset {asset_name!r} for {version}.") from exc
     return b"".join(chunks)
 
@@ -389,7 +382,7 @@ def _release_checksums(raw: bytes) -> dict[str, str]:
 
 
 def _extract_lark_cli_runtime_binary(archive: bytes, destination: Path) -> None:
-    """Safely extract the single CLI executable from an official tar archive."""
+    """공식 tar 아카이브에서 CLI 실행 파일 하나만 안전하게 추출한다."""
     candidate: bytes | None = None
     total = 0
     try:
@@ -452,7 +445,7 @@ def _read_json_object_file(path: Path) -> dict[str, Any] | None:
 
 @contextmanager
 def _exclusive_install_lock(lock_path: Path, thread_lock):
-    """Hold one advisory file lock plus its in-process counterpart."""
+    """advisory 파일 lock과 프로세스 내 lock을 함께 잡는다."""
     with thread_lock, lock_path.open("a+b") as lock_file:
         lock_file.seek(0, os.SEEK_END)
         if lock_file.tell() == 0:
@@ -461,7 +454,7 @@ def _exclusive_install_lock(lock_path: Path, thread_lock):
         lock_file.seek(0)
         if fcntl is not None:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
-        else:  # pragma: no cover - Windows fallback
+        else:  # pragma: no cover - Windows fallback 경로
             msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
         try:
             yield
@@ -469,7 +462,7 @@ def _exclusive_install_lock(lock_path: Path, thread_lock):
             lock_file.seek(0)
             if fcntl is not None:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
-            else:  # pragma: no cover - Windows fallback
+            else:  # pragma: no cover - Windows fallback 경로
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
 
 
@@ -480,7 +473,7 @@ def _lark_credential_thread_lock(user_id: str) -> threading.Lock:
 
 @contextmanager
 def _lark_credential_lock(user_id: str):
-    """Serialize credential replacement for one user across threads/processes."""
+    """한 사용자의 자격증명 교체를 thread/프로세스 간에 직렬화한다."""
     root = _lark_cli_credential_root(user_id)
     root.parent.mkdir(parents=True, exist_ok=True)
     lock_path = root.parent / f".{INTEGRATION_ID}.credentials.lock"
@@ -521,7 +514,7 @@ def _require_lark_flow_generation_locked(user_id: str, generation: str) -> str:
 
 
 def _ensure_managed_sandbox_lark_cli(version: str) -> Path:
-    """Install verified official Linux binaries for AIO sandbox execution."""
+    """AIO sandbox 실행용으로 검증된 공식 Linux 바이너리를 설치한다."""
     tag = _normalize_lark_cli_version_tag(version)
     if tag is None:
         raise ValueError(f"Invalid Lark CLI version tag: {version!r}")
@@ -593,16 +586,15 @@ def _lark_cli_managed_path() -> str | None:
 
 
 def lark_cli_env_overlay(user_id: str, *, sandbox_paths: bool = False, broker: bool = False) -> dict[str, str]:
-    """Environment overlay for lark-cli using DeerFlow-managed credentials.
+    """DeerFlow 관리형 자격증명을 쓰는 lark-cli용 환경 overlay.
 
-    The directories are per-user so a local trusted-mode login cannot bleed
-    across accounts.
+    디렉터리는 사용자별이라 로컬 trusted 모드 로그인이 다른 계정으로 새지 않는다.
 
-    When ``broker`` is set (Pattern B, issue #4338), the sandbox talks to a
-    broker sidecar that owns the credentials, so the overlay carries only the
-    broker URL and the runtime PATH — never ``LARKSUITE_CLI_CONFIG_DIR`` /
-    ``DATA_DIR``. This keeps the plaintext app secret / OAuth tokens out of the
-    sandbox filesystem entirely. ``broker`` implies ``sandbox_paths``.
+    ``broker``가 설정되면(Pattern B, issue #4338) sandbox는 자격증명을 소유한 broker
+    sidecar와 통신하므로 overlay에는 broker URL과 런타임 PATH만 담기고
+    ``LARKSUITE_CLI_CONFIG_DIR``/``DATA_DIR``은 절대 들어가지 않는다. 덕분에 평문 app
+    secret과 OAuth 토큰이 sandbox 파일시스템에 아예 존재하지 않는다. ``broker``는
+    ``sandbox_paths``를 함의한다.
     """
     if broker:
         return {
@@ -630,7 +622,7 @@ def lark_cli_env_overlay(user_id: str, *, sandbox_paths: bool = False, broker: b
 
 
 def lark_cli_env(user_id: str) -> dict[str, str]:
-    """Full environment for Gateway-side lark-cli probes."""
+    """Gateway 쪽 lark-cli probe에 쓰는 전체 환경."""
     return {**os.environ, **lark_cli_env_overlay(user_id)}
 
 
@@ -650,7 +642,7 @@ def _probe_lark_cli_at_path(path: str) -> LarkCliProbe:
             text=True,
             timeout=5,
         )
-    except Exception as exc:  # noqa: BLE001 - probe boundary
+    except Exception as exc:  # noqa: BLE001 - probe 경계
         return LarkCliProbe(available=False, path=path, error=str(exc))
 
     output = (result.stdout or result.stderr or "").strip()
@@ -660,13 +652,12 @@ def _probe_lark_cli_at_path(path: str) -> LarkCliProbe:
 
 
 def probe_lark_auth(user_id: str, *, verify: bool = False) -> LarkAuthProbe:
-    """Probe the user's Lark authorization state.
+    """사용자의 Lark 인가 상태를 조회한다.
 
-    By default this only checks local token presence (``auth status --json``),
-    which is cheap and offline — suitable for the frequently-polled status
-    endpoint. Pass ``verify=True`` to add ``--verify`` for a live token check
-    against Lark; reserve that for the explicit "complete authorization" step
-    since it costs a network round-trip on every call.
+    기본적으로는 로컬 토큰 존재 여부만 확인한다(``auth status --json``). 저렴하고 오프라인이라
+    자주 폴링되는 상태 엔드포인트에 적합하다. ``verify=True``를 주면 ``--verify``를 붙여 Lark에
+    실제 토큰 검증을 한다. 호출마다 네트워크 왕복 비용이 들므로 명시적인 "인가 완료" 단계에만
+    쓴다.
     """
     path = _resolve_lark_cli_path()
     if path is None:
@@ -688,7 +679,7 @@ def probe_lark_auth(user_id: str, *, verify: bool = False) -> LarkAuthProbe:
         )
     except subprocess.TimeoutExpired:
         return LarkAuthProbe(status="error", message="lark-cli auth status timed out")
-    except Exception as exc:  # noqa: BLE001 - probe boundary
+    except Exception as exc:  # noqa: BLE001 - probe 경계
         return LarkAuthProbe(status="error", message=str(exc))
 
     raw = (result.stdout or result.stderr or "").strip()
@@ -733,21 +724,20 @@ def _resolve_sandbox_runtime_readiness(
     *,
     probe: bool,
 ) -> tuple[str, bool, str | None]:
-    """Resolve the sandbox lark-cli runtime mode and readiness.
+    """sandbox lark-cli 런타임 모드와 준비 상태를 판정한다.
 
-    Modes:
-    - ``none``: sandboxes don't run lark-cli (non-AIO provider).
-    - ``gateway-download``: local AIO — the Gateway stages a ``sandbox-cli`` dir
-      and bind-mounts it; ready when that dir validates.
-    - ``init-container``: remote provisioner — a lark-cli init image provisions
-      the runtime binary + plaintext credential mounts (Pattern A); ready when
-      the provisioner reports the init image is configured.
-    - ``broker``: remote provisioner — a lark-cli broker sidecar holds the
-      credentials and the sandbox gets only a shim (Pattern B, issue #4338);
-      ready when the provisioner reports the broker image is configured. Broker
-      supersedes ``init-container`` when both are available.
+    모드:
+    - ``none``: sandbox가 lark-cli를 실행하지 않는다(AIO가 아닌 provider).
+    - ``gateway-download``: 로컬 AIO. Gateway가 ``sandbox-cli`` 디렉터리를 준비해
+      bind-mount한다. 그 디렉터리가 검증을 통과하면 준비 완료다.
+    - ``init-container``: 원격 provisioner. lark-cli init 이미지가 런타임 바이너리와 평문
+      자격증명 마운트를 제공한다(Pattern A). provisioner가 init 이미지 설정을 보고하면
+      준비 완료다.
+    - ``broker``: 원격 provisioner. lark-cli broker sidecar가 자격증명을 갖고 sandbox에는
+      shim만 준다(Pattern B, issue #4338). provisioner가 broker 이미지 설정을 보고하면
+      준비 완료다. 둘 다 가능하면 broker가 ``init-container``보다 우선한다.
 
-    ``probe`` gates the (best-effort, short-timeout) provisioner capability call.
+    ``probe``는 provisioner capability 호출(best-effort, 짧은 timeout) 수행 여부를 결정한다.
     """
     if not _uses_aio_sandbox(config):
         return "none", False, "Sandbox does not run lark-cli in this configuration."
@@ -758,15 +748,15 @@ def _resolve_sandbox_runtime_readiness(
         caps = _probe_provisioner_capabilities(config)
         if caps is None:
             return "init-container", False, "Could not reach the provisioner to confirm the lark-cli runtime image."
-        # Pattern B (broker) supersedes Pattern A (init-container binary) when
-        # the provisioner has a broker image configured.
+        # provisioner에 broker 이미지가 설정되어 있으면 Pattern B(broker)가
+        # Pattern A(init container 바이너리)보다 우선한다.
         if caps["lark_cli_broker_image"]:
             return "broker", True, None
         if caps["lark_cli_init_image"]:
             return "init-container", True, None
         return "init-container", False, "The provisioner has no lark-cli runtime image configured (LARK_CLI_INIT_IMAGE / LARK_CLI_BROKER_IMAGE)."
 
-    # Local AIO: Gateway-download runtime dir.
+    # 로컬 AIO: Gateway가 내려받는 런타임 디렉터리.
     runtime_dir = lark_cli_managed_sandbox_dir()
     try:
         _validate_lark_cli_sandbox_runtime(runtime_dir)
@@ -776,40 +766,37 @@ def _resolve_sandbox_runtime_readiness(
 
 
 LARK_BROKER_MODE_TTL_SECONDS = 60
-# Negative results (broker not active) are cached longer than positive ones: a
-# non-broker remote-provisioner deployment stays non-broker for the life of the
-# process far more often than it flips on, so this keeps the hot bash path from
-# re-probing every minute. A positive result still refreshes on the shorter TTL.
+# 부정 결과(broker 비활성)를 긍정 결과보다 오래 캐싱한다. broker가 아닌 원격 provisioner
+# 배포는 도중에 broker로 바뀌기보다 프로세스 수명 내내 그대로일 확률이 훨씬 높으므로,
+# bash hot path가 1분마다 재조회하지 않게 한다. 긍정 결과는 여전히 짧은 TTL로 갱신된다.
 LARK_BROKER_MODE_NEGATIVE_TTL_SECONDS = 300
-# Tight probe budget on the per-bash-call hot path: unlike the Settings status
-# probe (5s, user is waiting on a page), this runs inline before a sandbox
-# lark-cli command, so a slow/unreachable provisioner must not add seconds of
-# latency to every first-call-per-TTL for non-broker deployments.
+# bash 호출마다 도는 hot path이므로 probe 예산을 빡빡하게 잡는다. Settings 상태 probe(5초,
+# 사용자가 페이지에서 기다린다)와 달리 이건 sandbox lark-cli 명령 직전에 인라인으로 돌기
+# 때문에, 느리거나 닿지 않는 provisioner가 broker 아닌 배포의 TTL마다 첫 호출에 수 초의
+# 지연을 더해서는 안 된다.
 LARK_BROKER_MODE_PROBE_TIMEOUT_SECONDS = 1.5
-# Guards the cache attribute on sandbox_lark_broker_active against concurrent
-# bash invocations so the correctness story doesn't rely on idempotent races.
+# sandbox_lark_broker_active의 캐시 속성을 동시 bash 호출로부터 보호한다. 정확성이
+# 멱등한 race에 기대지 않게 하기 위함이다.
 _LARK_BROKER_MODE_CACHE_LOCK = threading.Lock()
 
 
 def sandbox_lark_broker_active(config: AppConfig | None = None) -> bool:
-    """Whether sandbox ``lark-cli`` runs in broker mode (Pattern B).
+    """sandbox ``lark-cli``가 broker 모드(Pattern B)로 도는지 반환한다.
 
-    Cached with a short TTL because it is consulted on every ``lark-cli`` bash
-    call and reads the provisioner capability over HTTP. Broker mode requires a
-    remote provisioner that reports a configured broker image; any other config
-    (local AIO, init-container binary mode, unreachable provisioner) is False, so
-    the caller falls back to the credential-mount overlay.
+    모든 ``lark-cli`` bash 호출에서 참조되고 provisioner capability를 HTTP로 읽으므로 짧은
+    TTL로 캐싱한다. broker 모드는 broker 이미지 설정을 보고하는 원격 provisioner를 요구한다.
+    그 밖의 구성(로컬 AIO, init container 바이너리 모드, 닿지 않는 provisioner)은 False이며,
+    호출자는 자격증명 마운트 overlay로 되돌아간다.
 
-    The probe uses a tight timeout and negatives are cached longer than positives
-    so a non-broker remote-provisioner deployment does not pay a latency penalty
-    on the bash hot path.
+    probe는 빡빡한 timeout을 쓰고 부정 결과를 긍정보다 오래 캐싱하므로, broker가 아닌 원격
+    provisioner 배포가 bash hot path에서 지연 비용을 치르지 않는다.
     """
     if config is None:
         try:
             from deerflow.config.app_config import get_app_config
 
             config = get_app_config()
-        except Exception:  # noqa: BLE001 - degrade to non-broker overlay
+        except Exception:  # noqa: BLE001 - broker 아닌 overlay로 degrade
             return False
 
     now = time.monotonic()
@@ -870,7 +857,7 @@ def get_lark_integration_status(
 
 
 def _normalize_version(value: str | None) -> str | None:
-    """Extract a comparable ``major.minor.patch`` from a version-ish string."""
+    """버전처럼 생긴 문자열에서 비교 가능한 ``major.minor.patch``를 뽑는다."""
     if not value:
         return None
     match = re.search(r"\d+\.\d+\.\d+", value)
@@ -878,11 +865,10 @@ def _normalize_version(value: str | None) -> str | None:
 
 
 def _versions_drifted(manifest_version: str | None, cli_version: str | None) -> bool:
-    """True when both versions are known and their numeric cores differ.
+    """두 버전을 모두 알고 있고 숫자 부분이 다르면 True를 반환한다.
 
-    The manifest records the installed skill-pack version; ``cli_version`` is
-    the Gateway runtime ``lark-cli`` binary. Unknown on either side means we
-    cannot claim a mismatch, so we stay quiet.
+    manifest는 설치된 skill pack 버전을, ``cli_version``은 Gateway 런타임 ``lark-cli``
+    바이너리 버전을 담는다. 한쪽이라도 알 수 없으면 불일치를 주장할 수 없으므로 조용히 넘어간다.
     """
     left = _normalize_version(manifest_version)
     right = _normalize_version(cli_version)
@@ -892,13 +878,12 @@ def _versions_drifted(manifest_version: str | None, cli_version: str | None) -> 
 
 
 def _resolve_runtime_lark_cli_version() -> str:
-    """Resolve the skill-pack version that matches the Gateway runtime CLI.
+    """Gateway 런타임 CLI에 맞는 skill pack 버전을 결정한다.
 
-    Managed Lark skills are executed by the server-side ``lark-cli`` binary, so
-    integration installs should align to that binary rather than blindly taking
-    GitHub's newest release. Packaged deployments install the pinned fallback in
-    the Gateway image; local/dev deployments can override this by putting a
-    newer ``lark-cli`` on the Gateway PATH and restarting the backend.
+    관리형 Lark skill은 서버 측 ``lark-cli`` 바이너리가 실행하므로, integration 설치는
+    GitHub 최신 릴리스를 무작정 따르지 말고 그 바이너리에 맞춰야 한다. 패키지 배포본은
+    Gateway 이미지에 고정된 fallback을 설치한다. 로컬/개발 배포는 더 새로운 ``lark-cli``를
+    Gateway PATH에 놓고 백엔드를 재시작해 이를 덮어쓸 수 있다.
     """
     cli = probe_lark_cli()
     version = _normalize_version(cli.version)
@@ -993,7 +978,7 @@ def _uses_aio_sandbox(config: AppConfig) -> bool:
 
 
 def _sandbox_config_value(config: AppConfig, key: str) -> str:
-    """Read a sandbox config value as a string, tolerating dict/attr configs."""
+    """sandbox config 값을 문자열로 읽는다. dict/속성 형태의 config를 모두 허용한다."""
     sandbox = getattr(config, "sandbox", None)
     value = getattr(sandbox, key, None)
     if value is None and isinstance(sandbox, dict):
@@ -1002,18 +987,18 @@ def _sandbox_config_value(config: AppConfig, key: str) -> str:
 
 
 def _uses_remote_provisioner(config: AppConfig) -> bool:
-    """True when sandboxes are provisioned by a remote provisioner (K8s mode)."""
+    """sandbox를 원격 provisioner가 프로비저닝하는 경우(K8s 모드) True."""
     return bool(_sandbox_config_value(config, "provisioner_url"))
 
 
 def _probe_provisioner_capabilities(config: AppConfig, *, timeout: float = 5.0) -> dict[str, bool] | None:
-    """Best-effort read of the provisioner's lark-cli capabilities.
+    """provisioner의 lark-cli capability를 best-effort로 읽는다.
 
-    Returns the capability dict when the provisioner answers, or None when it
-    can't be reached. Used both for the status readiness signal and to select
-    broker vs. binary mode on the bash hot path; failures degrade to "not
-    ready"/"not broker" rather than raising. ``timeout`` is caller-tunable so the
-    per-bash-call probe can use a tighter budget than the Settings status probe.
+    provisioner가 응답하면 capability dict를, 접근할 수 없으면 None을 반환한다. status의
+    준비 여부 신호와 bash hot path에서 broker/binary 모드를 고르는 데 모두 쓴다. 실패는
+    예외를 던지지 않고 "준비 안 됨"/"broker 아님"으로 낮춘다. ``timeout``은 호출자가 조절할
+    수 있어서, bash 호출마다 도는 probe는 Settings의 status probe보다 더 빡빡한 예산을 쓸
+    수 있다.
     """
     base = _sandbox_config_value(config, "provisioner_url")
     if not base:
@@ -1036,7 +1021,7 @@ def _probe_provisioner_capabilities(config: AppConfig, *, timeout: float = 5.0) 
 
 
 def start_lark_config(user_id: str, *, brand: str = "feishu") -> LarkConfigStartResult:
-    """Start the browser flow that creates/binds a Lark OAuth app for this user."""
+    """이 사용자를 위한 Lark OAuth 앱을 생성/바인딩하는 브라우저 flow를 시작한다."""
     parsed_brand = _normalize_lark_brand(brand)
     with _lark_credential_lock(user_id):
         generation = _advance_lark_flow_generation_locked(user_id)
@@ -1067,7 +1052,7 @@ def complete_lark_config(
     interval: int | None = None,
     expires_in: int | None = None,
 ) -> LarkConfigCompleteResult:
-    """Complete app registration and persist app credentials through lark-cli."""
+    """앱 등록을 완료하고 lark-cli를 통해 앱 credential을 저장한다."""
     device_code = device_code.strip()
     if not device_code:
         raise ValueError("device_code is required.")
@@ -1081,10 +1066,10 @@ def complete_lark_config(
         expires_in=expires_in or 300,
     )
     if not result.get("client_secret") and _tenant_brand(result) == "lark":
-        # Lark CLI starts polling on the Feishu accounts host for both brands.
-        # For Lark tenants that response can include user_info.tenant_brand and
-        # client_id but omit client_secret; polling the Lark accounts host with
-        # the same device_code returns the complete app credentials.
+        # Lark CLI는 두 brand 모두 Feishu accounts host에서 polling을 시작한다.
+        # Lark tenant의 경우 그 응답에 user_info.tenant_brand와 client_id는 있어도
+        # client_secret이 빠질 수 있다. 같은 device_code로 Lark accounts host를 polling하면
+        # 완전한 앱 credential을 받는다.
         result = _poll_lark_app_registration(
             device_code=device_code,
             brand="lark",
@@ -1123,7 +1108,7 @@ def set_lark_app_credentials(
     app_secret: str,
     brand: str = "feishu",
 ) -> LarkConfigCompleteResult:
-    """Atomically switch this user's app and revoke the previous OAuth token."""
+    """이 사용자의 앱을 원자적으로 교체하고 이전 OAuth token을 폐기한다."""
     app_id = app_id.strip()
     app_secret = app_secret.strip()
     if not app_id:
@@ -1160,11 +1145,11 @@ def start_lark_auth(
     recommend: bool = False,
     generation: str | None = None,
 ) -> LarkAuthStartResult:
-    """Start a non-blocking Lark device authorization flow.
+    """블로킹하지 않는 Lark device authorization flow를 시작한다.
 
-    The returned URL is safe to show in the browser UI or in a chat message.
-    ``device_code`` must be sent back to :func:`complete_lark_auth` after the
-    user finishes authorization in Lark/Feishu.
+    반환된 URL은 브라우저 UI나 채팅 메시지에 그대로 보여줘도 안전하다. 사용자가
+    Lark/Feishu에서 인증을 마치면 ``device_code``를 :func:`complete_lark_auth`로 돌려줘야
+    한다.
     """
     path = _require_lark_cli_path()
     args = [path, "auth", "login", "--no-wait", "--json"]
@@ -1205,7 +1190,7 @@ def complete_lark_auth(
     generation: str,
     wait_timeout_seconds: int = LARK_AUTH_COMPLETE_DEFAULT_WAIT_SECONDS,
 ) -> LarkAuthCompleteResult:
-    """Complete a Lark device authorization flow after the user approves it."""
+    """사용자가 승인한 뒤 Lark device authorization flow를 완료한다."""
     device_code = device_code.strip()
     if not device_code:
         raise ValueError("device_code is required.")
@@ -1234,12 +1219,12 @@ def _resolve_lark_cli_path() -> str | None:
 
 
 def _ensure_managed_gateway_lark_cli() -> LarkCliProbe:
-    """Install/update the DeerFlow-managed Gateway lark-cli.
+    """DeerFlow가 관리하는 Gateway lark-cli를 설치/갱신한다.
 
-    This is called by the admin install endpoint so non-technical users do not
-    need to install ``@larksuite/cli`` in a terminal. If npm/GitHub are not
-    reachable but an existing CLI is already available (managed or on PATH), we
-    keep using it and let the skill-pack install align to that runtime version.
+    비기술 사용자가 터미널에서 ``@larksuite/cli``를 설치할 필요가 없도록 관리자 설치
+    엔드포인트에서 호출한다. npm/GitHub에 접근할 수 없어도 이미 사용 가능한 CLI가 있으면
+    (관리 대상이든 PATH에 있든) 그것을 계속 쓰고, skill pack 설치가 그 runtime 버전에
+    맞추게 한다.
     """
     target_version = _resolve_latest_lark_cli_version()
     current = probe_lark_cli()
@@ -1268,13 +1253,12 @@ def _install_managed_gateway_lark_cli(version: str) -> LarkCliProbe:
 
     install_root = lark_cli_managed_gateway_dir()
     install_root.mkdir(parents=True, exist_ok=True)
-    # NOTE: this runs @larksuite/cli's install scripts (postinstall fetches the
-    # platform lark-cli binary), so `--ignore-scripts` is not viable here — the
-    # CLI would be unusable without it. The tradeoff: an admin-triggered install
-    # executes the official package's install scripts (and those of its deps)
-    # with Gateway privileges, so a supply-chain compromise of that package is
-    # the blast radius. This mirrors the pinned `npm install -g` in the Gateway
-    # Dockerfile; both are gated behind the admin install action.
+    # NOTE: 여기서는 @larksuite/cli의 install script가 실행된다(postinstall이 플랫폼용
+    # lark-cli 바이너리를 받는다). 따라서 `--ignore-scripts`는 쓸 수 없다 — 그것 없이는
+    # CLI가 동작하지 않는다. 트레이드오프: 관리자가 트리거한 설치가 Gateway 권한으로 공식
+    # 패키지(및 그 의존성)의 install script를 실행하므로, 해당 패키지의 supply-chain
+    # 침해가 곧 피해 범위다. Gateway Dockerfile의 버전 고정된 `npm install -g`와 같은
+    # 구조이며, 둘 다 관리자 설치 액션 뒤에 있다.
     result = subprocess.run(
         [
             npm,
@@ -1328,8 +1312,8 @@ def _lark_endpoints(brand: str) -> dict[str, str]:
 
 
 def _request_lark_app_registration_begin(brand: str) -> dict[str, Any]:
-    # lark-cli uses the Feishu accounts endpoint for the begin step, then
-    # switches to the tenant brand only if the poll response indicates Lark.
+    # lark-cli는 begin 단계에서 Feishu accounts 엔드포인트를 쓰고, poll 응답이 Lark임을
+    # 알릴 때만 tenant brand로 전환한다.
     accounts_url = _lark_endpoints("feishu")["accounts"] + _LARK_APP_REGISTRATION_PATH
     body = urllib.parse.urlencode(
         {
@@ -1347,9 +1331,8 @@ def _request_lark_app_registration_begin(brand: str) -> dict[str, Any]:
 
 def _build_lark_config_verification_url(brand: str, user_code: str) -> str:
     base = f"{_lark_endpoints(brand)['open']}/page/cli"
-    # lpv/ocv mirror the *runtime* lark-cli client version doing the auth, which
-    # is the server-side Gateway binary — not the latest available skill-pack
-    # version.
+    # lpv/ocv는 인증을 수행하는 *runtime* lark-cli 클라이언트 버전, 즉 서버 쪽 Gateway
+    # 바이너리를 반영한다 — 최신 skill pack 버전이 아니다.
     runtime_version = _resolve_runtime_lark_cli_version()
     query = urllib.parse.urlencode(
         {
@@ -1401,7 +1384,7 @@ def _post_lark_form(url: str, body: bytes) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(request, timeout=LARK_HTTP_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
-    except Exception as exc:  # noqa: BLE001 - network boundary
+    except Exception as exc:  # noqa: BLE001 - 네트워크 경계
         raise ValueError(f"Lark app registration request failed: {exc}") from exc
     parsed = _parse_json_object(raw)
     if parsed is None:
@@ -1465,7 +1448,7 @@ def _save_lark_app_config_with_cli(user_id: str, *, app_id: str, app_secret: str
 
 
 def _validate_lark_app_credentials_with_cli(*, app_id: str, app_secret: str, brand: str) -> None:
-    """Validate credentials through config init's live tenant-token probe."""
+    """config init의 실시간 tenant-token probe로 credential을 검증한다."""
     with tempfile.TemporaryDirectory(prefix=".validating-lark-app-") as temp_dir:
         root = Path(temp_dir)
         config_dir = root / "config"
@@ -1502,7 +1485,7 @@ def _clear_directory_contents(directory: Path) -> None:
 
 @contextmanager
 def _lark_credential_transaction(user_id: str, root: Path):
-    """Restore the active credential tree if a switch step fails."""
+    """전환 단계가 실패하면 활성 credential 트리를 복원한다."""
     with tempfile.TemporaryDirectory(prefix=".switching-lark-app-", dir=str(root.parent)) as temp_dir:
         snapshot = Path(temp_dir) / "credentials"
         shutil.copytree(root, snapshot, symlinks=False)
@@ -1564,9 +1547,9 @@ def _run_lark_cli_json(
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError("Timed out waiting for Lark/Feishu authorization. Complete authorization in the browser, then try again.") from exc
     finally:
-        # OAuth commands may create new plaintext token files after the
-        # pre-command environment guard has run. Re-harden every file even on
-        # timeout or CLI failure before returning control to the Gateway.
+        # OAuth 명령은 명령 실행 전 환경 guard가 돈 뒤에 새 평문 token 파일을 만들 수
+        # 있다. timeout이나 CLI 실패 시에도 Gateway로 제어를 넘기기 전에 모든 파일의 권한을
+        # 다시 강화한다.
         ensure_lark_cli_credential_tree(user_id)
 
     stdout = (result.stdout or "").strip()
@@ -1652,12 +1635,11 @@ def _enabled_lark_skill_names(user_id: str, config: AppConfig) -> set[str]:
 
 
 def _resolve_latest_lark_cli_version() -> str:
-    """Resolve the newest published ``larksuite/cli`` release tag.
+    """가장 최근에 배포된 ``larksuite/cli`` release 태그를 해석한다.
 
-    Queries the official ``releases/latest`` API. Any failure (rate limit,
-    offline, air-gapped, malformed payload) falls back to
-    ``FALLBACK_LARK_CLI_VERSION`` so an install can still proceed with a known
-    good version rather than aborting.
+    공식 ``releases/latest`` API를 조회한다. 실패(rate limit, 오프라인, 폐쇄망, 잘못된
+    payload)하면 ``FALLBACK_LARK_CLI_VERSION``으로 fallback해서, 설치를 중단하는 대신
+    알려진 정상 버전으로 진행할 수 있게 한다.
     """
     try:
         request = urllib.request.Request(
@@ -1671,17 +1653,16 @@ def _resolve_latest_lark_cli_version() -> str:
         version = _normalize_lark_cli_version_tag(tag)
         if version is not None:
             return version
-    except Exception:  # noqa: BLE001 - version discovery is best-effort
+    except Exception:  # noqa: BLE001 - 버전 탐색은 best-effort
         pass
     return FALLBACK_LARK_CLI_VERSION
 
 
 def _cached_latest_lark_cli_version() -> str | None:
-    """Best-effort latest version for status display, cached with a short TTL.
+    """상태 표시용 최신 버전을 best-effort로 가져오고 짧은 TTL로 캐시한다.
 
-    Returns ``None`` on failure so the status endpoint never blocks the UI on a
-    GitHub outage; the install path uses :func:`_resolve_latest_lark_cli_version`
-    which has its own fallback.
+    실패하면 ``None``을 반환해서 GitHub 장애 때 status 엔드포인트가 UI를 막지 않게 한다.
+    설치 경로는 자체 fallback이 있는 :func:`_resolve_latest_lark_cli_version`을 쓴다.
     """
     now = time.monotonic()
     cached = getattr(_cached_latest_lark_cli_version, "_cache", None)
@@ -1696,7 +1677,7 @@ def _cached_latest_lark_cli_version() -> str | None:
             data = json.loads(response.read().decode("utf-8"))
         tag = str(data.get("tag_name") or "").strip() if isinstance(data, dict) else ""
         version = _normalize_lark_cli_version_tag(tag)
-    except Exception:  # noqa: BLE001 - status probe is best-effort
+    except Exception:  # noqa: BLE001 - 상태 probe는 best-effort
         version = None
     _cached_latest_lark_cli_version._cache = (now, version)  # type: ignore[attr-defined]
     return version
@@ -1733,19 +1714,19 @@ def _download_lark_archive(version: str) -> Path:
     except ValueError:
         archive_path.unlink(missing_ok=True)
         raise
-    except Exception as exc:  # noqa: BLE001 - network boundary
+    except Exception as exc:  # noqa: BLE001 - 네트워크 경계
         archive_path.unlink(missing_ok=True)
         raise ValueError(f"Could not download the Lark skill pack ({version}) from GitHub. Check the Gateway's internet access, or pre-stage the archive via {LARK_CLI_SOURCE_ARCHIVE_ENV}.") from exc
     return archive_path
 
 
 def _content_sha256(root: Path, skill_names: set[str]) -> str:
-    """SHA-256 over effective installed skill contents (not archive bytes).
+    """archive 바이트가 아니라 실제로 설치된 skill 내용에 대한 SHA-256.
 
-    The caller computes this after injecting DeerFlow's shared guidance, so the
-    digest covers both official extracted files and the guidance users/agents
-    actually read. It remains stable across GitHub re-packs of identical
-    content. Paths and bytes are hashed in sorted order for determinism.
+    호출자는 DeerFlow의 공용 guidance를 주입한 뒤 이 값을 계산하므로, digest는 공식
+    추출 파일과 사용자/agent가 실제로 읽는 guidance를 모두 포함한다. 내용이 같으면 GitHub가
+    archive를 다시 패킹해도 값이 유지된다. 결정성을 위해 경로와 바이트를 정렬된 순서로
+    해싱한다.
     """
     digest = hashlib.sha256()
     for skill_name in sorted(skill_names):
@@ -1762,10 +1743,10 @@ def _content_sha256(root: Path, skill_names: set[str]) -> str:
 
 
 def _infer_lark_archive_version(zf: zipfile.ZipFile) -> str | None:
-    """Infer version from GitHub source archive roots such as ``cli-1.0.65/``.
+    """``cli-1.0.65/`` 같은 GitHub 소스 archive 루트에서 버전을 추론한다.
 
-    This keeps air-gapped / pre-staged archives from being mislabeled as the
-    fallback version when the archive itself clearly identifies its release.
+    archive 자체가 release를 명확히 밝히고 있을 때, 폐쇄망/미리 준비한 archive가 fallback
+    버전으로 잘못 표시되는 것을 막는다.
     """
     for info in zf.infolist():
         normalized = posixpath.normpath(info.filename.replace("\\", "/"))
@@ -1790,7 +1771,7 @@ def _install_lark_skills_from_archive(user_id: str, archive_path: Path, *, versi
 
 @contextmanager
 def _lark_install_lock(parent: Path):
-    """Serialize the cross-process atomic replacement of the global pack."""
+    """전역 pack의 프로세스 간 원자적 교체를 직렬화한다."""
     with _exclusive_install_lock(parent / ".lark-cli.install.lock", _LARK_INSTALL_THREAD_LOCK):
         yield
 
@@ -1824,10 +1805,9 @@ def _install_lark_skills_from_archive_locked(
             target.rename(backup)
         staging_target.rename(target)
         if backup is not None:
-            # Best-effort: the new skills are already live after the rename, so a
-            # transient error deleting the old backup must not flip a successful
-            # install into a failure (the except-branch restore guard would also
-            # not fire because ``target`` now exists with the new content).
+            # best-effort: rename 이후 새 skill은 이미 활성 상태이므로, 예전 백업을 지우다
+            # 난 일시적 오류가 성공한 설치를 실패로 뒤집어서는 안 된다(``target``이 이미 새
+            # 내용으로 존재하므로 except 분기의 복원 guard도 동작하지 않는다).
             shutil.rmtree(backup, ignore_errors=True)
         return tuple(sorted(extracted)), content_sha
     except Exception:

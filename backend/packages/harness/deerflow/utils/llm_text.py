@@ -1,26 +1,24 @@
-"""Utilities for normalizing LLM response text before structured parsing."""
+"""구조화 파싱 전에 LLM 응답 텍스트를 정규화하는 유틸리티."""
 
 from __future__ import annotations
 
 import re
 
-# Matches a complete <think>...</think> block (case-insensitive, spans newlines).
+# 완결된 <think>...</think> 블록에 매칭한다(대소문자 무시, 줄바꿈 포함).
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTALL)
-# Matches a dangling, unclosed <think> (model truncated at max_tokens mid-thought).
+# 닫히지 않고 남은 <think>에 매칭한다(모델이 생각 도중 max_tokens로 잘린 경우).
 _OPEN_THINK_RE = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
 
 
 def strip_think_blocks(text: str, *, truncate_unclosed: bool = True) -> str:
-    """Remove inline reasoning ``<think>`` blocks from a model response.
+    """모델 응답에서 inline reasoning ``<think>`` 블록을 제거한다.
 
-    Complete ``<think>...</think>`` blocks are always removed. A dangling,
-    unclosed ``<think>`` open tag is treated as a model that was truncated
-    mid-thought: when ``truncate_unclosed`` is True (the default, used by JSON
-    parsers like suggestions/goal where trailing garbage must be dropped) the
-    text is cut at that tag. Callers that may legitimately echo a literal
-    ``<think>`` substring in their output (e.g. the input polisher rewriting a
-    draft that mentions the tag) pass ``truncate_unclosed=False`` so the tag is
-    preserved instead of silently discarding the rest of the text.
+    완결된 ``<think>...</think>`` 블록은 항상 제거한다. 닫히지 않은 ``<think>`` 여는 태그는
+    모델이 생각 도중 잘린 것으로 본다. ``truncate_unclosed``가 True면(기본값이며, 뒤쪽 쓰레기
+    문자를 버려야 하는 suggestions/goal 같은 JSON 파서가 쓴다) 그 태그에서 텍스트를 자른다.
+    출력에 ``<think>`` 문자열을 정당하게 그대로 담을 수 있는 호출자(예: 그 태그를 언급하는 초안을
+    다시 쓰는 input polisher)는 ``truncate_unclosed=False``를 넘겨, 뒤 텍스트를 조용히 버리는
+    대신 태그를 보존한다.
     """
     text = _THINK_BLOCK_RE.sub("", text)
     if truncate_unclosed:
@@ -31,7 +29,7 @@ def strip_think_blocks(text: str, *, truncate_unclosed: bool = True) -> str:
 
 
 def strip_markdown_code_fence(text: str) -> str:
-    """Remove a single wrapping markdown code fence when present."""
+    """감싸고 있는 markdown code fence가 하나 있으면 제거한다."""
     stripped = text.strip()
     if not stripped.startswith("```"):
         return stripped
@@ -42,7 +40,7 @@ def strip_markdown_code_fence(text: str) -> str:
 
 
 def extract_response_text(content: object) -> str:
-    """Extract textual content from common chat-model response content shapes."""
+    """흔한 chat model 응답 content 형태에서 텍스트를 추출한다."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):

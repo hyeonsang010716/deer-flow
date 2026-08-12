@@ -1,10 +1,9 @@
-"""Durable-context middleware: inject summary, delegation ledger, and skills.
+"""durable context middleware: summary, delegation ledger, skill을 주입한다.
 
-Capture enumerates task delegations and loaded skill files into checkpointed
-state channels. Injection renders static authority rules as a SystemMessage and
-renders untrusted channel values (`summary_text`, `delegations`,
-`skill_context`) as one hidden <durable_context_data> HumanMessage, never
-written back to state.
+capture는 task delegation과 읽어 들인 skill 파일을 checkpoint되는 state channel에 모은다.
+injection은 정적 권한 규칙을 SystemMessage로 렌더링하고, 신뢰할 수 없는 channel 값
+(`summary_text`, `delegations`, `skill_context`)은 숨겨진 <durable_context_data>
+HumanMessage 하나로 렌더링하며 state에 다시 쓰지 않는다.
 """
 
 from __future__ import annotations
@@ -150,12 +149,11 @@ def _messages_after_pre_existing_boundary(messages: list[AnyMessage], pre_existi
 
 
 def _current_run_messages(messages: list[AnyMessage], run_id: str | None, pre_existing_message_ids: frozenset[str]) -> list[AnyMessage]:
-    """Return the message tail where this invocation may have emitted tasks.
+    """이번 호출이 task를 냈을 수 있는 메시지 꼬리 구간을 반환한다.
 
-    A resumed run may not append a new HumanMessage marker. In that case the
-    latest HumanMessage can belong to an older run. The worker supplies the
-    message ids that existed before this run so we can capture only newly
-    appended messages instead of re-tagging old task calls.
+    resume된 run은 새 HumanMessage 마커를 붙이지 않을 수 있고, 그러면 가장 최근 HumanMessage가
+    이전 run의 것일 수 있다. worker가 이 run 이전에 존재하던 message id를 넘겨주므로, 오래된
+    task 호출에 다시 태그를 붙이지 않고 새로 추가된 메시지만 캡처할 수 있다.
     """
     if run_id is None:
         return messages
@@ -175,7 +173,7 @@ def _current_run_messages(messages: list[AnyMessage], run_id: str | None, pre_ex
 
 
 def _with_run_id(delegations: list[dict], run_id: str | None, existing: list[dict]) -> list[dict]:
-    """Tag only new delegation ids with the current run_id."""
+    """새로 생긴 delegation id에만 현재 run_id를 태그한다."""
     if run_id is None:
         return delegations
     existing_by_id = {entry.get("id"): entry for entry in existing if isinstance(entry, dict)}
@@ -194,7 +192,7 @@ def _with_run_id(delegations: list[dict], run_id: str | None, existing: list[dic
 
 
 class DurableContextMiddleware(AgentMiddleware[AgentState]):
-    """Capture delegations + loaded skills; inject durable context ephemerally."""
+    """delegation과 읽어 들인 skill을 캡처하고, durable context를 일회성으로 주입한다."""
 
     def __init__(
         self,

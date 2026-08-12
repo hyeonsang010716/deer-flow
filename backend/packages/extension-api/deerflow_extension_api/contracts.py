@@ -1,10 +1,10 @@
-"""The extension contracts and their data types.
+"""extension contract와 그 데이터 타입.
 
-Compatibility rules enforced throughout this module:
-  * every Protocol method carries a default implementation, so adding a method
-    later stays additive for already-released extensions;
-  * every optional dataclass field carries a default, so adding a field stays
-    additive.
+이 모듈 전체에서 지키는 호환성 규칙은 두 가지다.
+
+  * 모든 Protocol 메서드는 기본 구현을 가진다. 나중에 메서드를 추가해도 이미 릴리스된
+    extension에는 additive로 남는다.
+  * 모든 선택적 dataclass 필드는 기본값을 가진다. 필드를 추가해도 additive로 남는다.
 """
 
 from __future__ import annotations
@@ -15,22 +15,21 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 
 from deerflow_extension_api.state import ExtensionData
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
+if TYPE_CHECKING:  # pragma: no cover - 타입 체크 전용
     from deerflow_extension_api.placement import AgentBuildContext, MiddlewarePlacement
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-# --- Host projections -------------------------------------------------------
+# --- Host 투영 --------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class HostPolicySnapshot:
-    """The limits the host actually enforces, projected for extensions.
+    """host가 실제로 강제하는 제한을 extension용으로 투영한 값.
 
-    A narrow projection instead of the host's AppConfig: exposing AppConfig
-    would pin every extension to the harness release cadence. Every field has
-    a default so widening this stays additive.
+    host의 AppConfig 대신 좁게 투영한다. AppConfig를 그대로 노출하면 모든 extension이
+    harness 릴리스 주기에 묶인다. 모든 필드에 기본값이 있어 확장해도 additive로 남는다.
     """
 
     token_budget_enabled: bool = False
@@ -54,38 +53,36 @@ class MiddlewareContributor(Protocol):
         return ()
 
 
-# --- Registration surface ---------------------------------------------------
+# --- 등록 표면 ---------------------------------------------------------------
 
 
 @runtime_checkable
 class ExtensionRegistry(Protocol):
-    """The write-only registration surface handed to ``install()``.
+    """``install()``에 넘겨지는 쓰기 전용 등록 표면.
 
-    Structural and minimal on purpose. This first capability slice exposes
-    middleware contribution only; later slices can add defaulted registration
-    methods without breaking existing implementations. The host's concrete
-    registry additionally carries host-only machinery (attribution, positional
-    rollback, build) that is deliberately absent here.
+    의도적으로 구조적이고 최소한이다. 이 첫 capability 슬라이스는 middleware 기여만
+    노출하며, 이후 슬라이스는 기본 구현이 있는 등록 메서드를 추가해도 기존 구현을 깨지
+    않는다. host의 실제 registry는 host 전용 기능(attribution, 위치 기반 rollback, build)을
+    추가로 갖지만 여기에는 일부러 두지 않는다.
     """
 
     def middlewares(self, contributor: MiddlewareContributor) -> None:
         return None
 
 
-#: The install() entry point signature every extension exposes.
+#: 모든 extension이 노출하는 install() 진입점 시그니처.
 ExtensionInstall = Callable[[ExtensionRegistry, Mapping[str, Any]], None]
 
 
-# --- Declaration decorator --------------------------------------------------
+# --- 선언 decorator ----------------------------------------------------------
 
 
 def extension(*, api: str, name: str | None = None) -> Callable[[F], F]:
-    """Stamp an install function with the API version it was written against.
+    """install 함수에 어떤 API 버전을 기준으로 작성됐는지 표시한다.
 
-    Optional. pip's dependency resolution is the primary compatibility
-    mechanism; this covers `--no-deps` installs and editable monorepo checkouts
-    where versions can skew, and turns a deep AttributeError into an
-    actionable startup diagnostic.
+    선택 사항이다. 호환성은 기본적으로 pip의 의존성 해석이 담당한다. 이 decorator는
+    버전이 어긋날 수 있는 `--no-deps` 설치와 editable monorepo checkout을 보완하며,
+    깊은 곳에서 터지는 AttributeError를 조치 가능한 startup 진단으로 바꾼다.
     """
 
     def _decorate(func: F) -> F:

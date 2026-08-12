@@ -1,13 +1,11 @@
-"""Patched ChatOpenAI adapter for MiniMax reasoning output.
+"""MiniMax reasoning 출력을 위한 patch된 ChatOpenAI adapter.
 
-MiniMax's OpenAI-compatible chat completions API can return structured
-``reasoning_details`` when ``extra_body.reasoning_split=true`` is enabled.
-``langchain_openai.ChatOpenAI`` currently ignores that field, so DeerFlow's
-frontend never receives reasoning content in the shape it expects.
+MiniMax의 OpenAI 호환 chat completions API는 ``extra_body.reasoning_split=true``가 켜지면
+구조화된 ``reasoning_details``를 반환할 수 있다. 그런데 ``langchain_openai.ChatOpenAI``는 현재
+그 필드를 무시하므로, DeerFlow frontend는 기대하는 형태로 reasoning content를 받지 못한다.
 
-This adapter preserves ``reasoning_split`` in the request payload and maps the
-provider-specific reasoning field into ``additional_kwargs.reasoning_content``,
-which DeerFlow already understands.
+이 adapter는 request payload에 ``reasoning_split``을 유지하고, provider 고유의 reasoning 필드를
+DeerFlow가 이미 이해하는 ``additional_kwargs.reasoning_content``로 매핑한다.
 """
 
 from __future__ import annotations
@@ -96,7 +94,7 @@ def _with_reasoning_content(
 
 
 class PatchedChatMiniMax(ChatOpenAI):
-    """ChatOpenAI adapter that preserves MiniMax reasoning output."""
+    """MiniMax reasoning 출력을 보존하는 ChatOpenAI adapter."""
 
     def _get_request_payload(
         self,
@@ -119,14 +117,13 @@ class PatchedChatMiniMax(ChatOpenAI):
 
     @staticmethod
     def _strip_user_message_names(payload: dict) -> None:
-        """Drop the per-message ``name`` field from user-role messages.
+        """user role 메시지에서 메시지별 ``name`` 필드를 제거한다.
 
-        DeerFlow middlewares tag user messages with internal provenance names
-        (``user-input``, ``summary``, ``loop_warning``, ...). ``langchain_openai``
-        serializes those into the OpenAI-compatible request, but MiniMax requires
-        every user-role ``name`` to be identical and otherwise rejects the request
-        with ``invalid params, user name must be consistent (2013)``. MiniMax does
-        not use the per-message author name, so strip it.
+        DeerFlow middleware는 user 메시지에 내부 provenance 이름(``user-input``, ``summary``,
+        ``loop_warning`` 등)을 붙인다. ``langchain_openai``는 이를 OpenAI 호환 request에
+        직렬화하지만, MiniMax는 모든 user role의 ``name``이 동일할 것을 요구하며 그렇지 않으면
+        ``invalid params, user name must be consistent (2013)``으로 request를 거부한다. MiniMax는
+        메시지별 작성자 이름을 쓰지 않으므로 제거한다.
         """
         messages = payload.get("messages")
         if not isinstance(messages, list):

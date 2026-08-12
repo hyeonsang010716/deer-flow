@@ -1,15 +1,16 @@
-"""FTS5-based retrieval engine for DeerMem.
+"""DeerMem용 FTS5 기반 retrieval 엔진.
 
-Provides BM25 full-text search over stored facts with:
-- jieba Chinese tokenization (optional, falls back to whitespace)
-- FTS5 MATCH syntax support (AND/OR/NOT/phrase/prefix) with fallback
-- Time-decay + confidence-weighted ranking
-- Category filtering
-- Scope (user_id) isolation
+저장된 fact에 대해 BM25 전문 검색을 제공하며 다음을 지원한다.
 
-``FTS5Retrieval`` is the low-level SQLite engine.  The storage integration is
-owned by ``FTS5RetrievalAdapter``, which implements ``storage.RetrievalPort``
-without importing storage and creating a circular dependency.
+- jieba 중국어 tokenization (선택적, 없으면 공백 분리로 fallback)
+- FTS5 MATCH 문법(AND/OR/NOT/구문/접두어) 지원과 fallback
+- 시간 감쇠 + confidence 가중 랭킹
+- category 필터링
+- scope(user_id) 격리
+
+``FTS5Retrieval``은 저수준 SQLite 엔진이다. storage 연동은
+``FTS5RetrievalAdapter``가 맡으며, storage를 import하지 않고
+``storage.RetrievalPort``를 구현해 순환 의존을 피한다.
 """
 
 from __future__ import annotations
@@ -26,20 +27,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ── Scoring weights ──────────────────────────────────────────────────
+# ── 점수 가중치 ──────────────────────────────────────────────────
 #
-# SQLite FTS5 ``bm25(memory_fts)`` (no positional params → defaults K1=1.2,
-# B=0.75) returns a negative value whose magnitude scales with document
-# relevance.  Critically the function takes positional params in order
-# ``(table, k1, b, *column_weights)``: the original code passed
-# ``bm25(..., 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)``, which set **k1 = 0**
-# and silently zeroed out the entire BM25 score (disabled tf saturation),
-# collapsing ranking to ``confidence * _CONFIDENCE_WEIGHT``.  Use the
-# no-arg form so SQLite defaults apply and BM25 is actually scored.
+# SQLite FTS5의 ``bm25(memory_fts)``는 위치 인자 없이 쓰면 기본값 K1=1.2, B=0.75가
+# 적용되며, 문서 관련도에 비례한 크기의 음수를 반환한다. 중요한 점은 이 함수의 인자
+# 순서가 ``(table, k1, b, *column_weights)``라는 것이다. 원래 코드는
+# ``bm25(..., 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)``을 넘겨 **k1 = 0**으로 만들었고,
+# 그 결과 BM25 점수 전체가 조용히 0이 되어(tf saturation 비활성화) 랭킹이
+# ``confidence * _CONFIDENCE_WEIGHT``로 붕괴했다. 인자 없는 형태를 써야 SQLite 기본값이
+# 적용되고 BM25가 실제로 점수에 반영된다.
 _CONFIDENCE_WEIGHT = 0.2
 
 
-# ── jieba (optional) ──────────────────────────────────────────────────
+# ── jieba (선택적) ──────────────────────────────────────────────────
 
 try:
     import jieba
@@ -50,7 +50,7 @@ except ImportError:
 
 
 def _tokenize(text: str) -> list[str]:
-    """Tokenize text: jieba for Chinese, whitespace split for English."""
+    """텍스트를 토큰화한다. 중국어는 jieba, 영어는 공백 분리를 쓴다."""
     if not text or not text.strip():
         return []
     if _jieba_available:
@@ -58,60 +58,59 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in text.split() if t.strip()]
 
 
-# ── FTS5 query preprocessing ──────────────────────────────────────────
+# ── FTS5 질의 전처리 ──────────────────────────────────────────
 
 _FTS5_ADVANCED_RE = re.compile(
     r"(\bAND\b|\bOR\b|\bNOT\b|\bNEAR\b"
-    r'|"\w.*?"'  # phrase "..."
-    r"|\w+\*"  # prefix prefix*
-    r"|\(.*?\))"  # group (...)
+    r'|"\w.*?"'  # 구문 "..."
+    r"|\w+\*"  # 접두어 prefix*
+    r"|\(.*?\))"  # 그룹 (...)
 )
 
 
 def _is_advanced_query(query: str) -> bool:
-    """Detect whether the query uses FTS5 advanced syntax."""
+    """질의가 FTS5 고급 문법을 쓰는지 판별한다."""
     return bool(_FTS5_ADVANCED_RE.search(query))
 
 
 def _build_fallback_query(query: str) -> str:
-    """Convert natural-language query to FTS5 OR query (fallback strategy)."""
+    """자연어 질의를 FTS5 OR 질의로 변환한다(fallback 전략)."""
     tokens = [token for token in _tokenize(query) if any(char.isalnum() for char in token)]
     if not tokens:
         return ""
-    # Quote each token so punctuation in natural-language input cannot become
-    # an FTS5 operator or syntax error. Double quotes inside a token are the
-    # FTS5 escape sequence for a literal quote.
+    # 토큰마다 따옴표를 씌워, 자연어 입력의 문장부호가 FTS5 연산자가 되거나 문법 오류를
+    # 내지 않게 한다. 토큰 안의 큰따옴표 두 개는 리터럴 따옴표를 뜻하는 FTS5 escape다.
     return " OR ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
 
 
-# ── Core retrieval engine ─────────────────────────────────────────────
+# ── 핵심 retrieval 엔진 ─────────────────────────────────────────────
 
 
 class FTS5Retrieval:
-    """SQLite FTS5-based retrieval engine.
+    """SQLite FTS5 기반 retrieval 엔진.
 
-    Query strategy:
-      1. Advanced FTS5 syntax -> pass through to MATCH
-      2. Natural language -> jieba tokenize + OR join
-      3. Syntax error -> fall back to tokenized OR query
-      4. Still fails -> return empty
+    질의 전략:
+      1. FTS5 고급 문법이면 MATCH로 그대로 넘긴다.
+      2. 자연어면 jieba로 토큰화한 뒤 OR로 잇는다.
+      3. 문법 오류가 나면 토큰화 OR 질의로 fallback한다.
+      4. 그래도 실패하면 빈 결과를 반환한다.
 
-    Ranking:
-      BM25 score × time_decay + confidence × 0.2
+    랭킹:
+      BM25 점수 × time_decay + confidence × 0.2
     """
 
     def __init__(self, db_path: str | Path = ":memory:"):
         self._db_path = str(db_path)
-        # Gateway runs tool calls via asyncio.to_thread / ThreadPoolExecutor;
-        # SQLite connections are not safe to share across threads even when the
-        # top-level instance is single-process. We pick two defensive layers:
-        #   1. ``check_same_thread=False`` so a connection created in thread A
-        #      is accessible from thread B (libsqlite itself is reentrant under
-        #      a serialised wrapper, see #4208 hot-path discussion).
-        #   2. ``_lock`` guards all mutating sqlite calls so concurrent callers
-        #      serialise through here (prevents interleaved writes / FTS5 index
-        #      reorderings). Callers from outside instance methods MUST enter
-        #      the lock via the public API and not bypass into ``self._conn``.
+        # Gateway는 asyncio.to_thread / ThreadPoolExecutor로 도구 호출을 실행한다.
+        # 최상위 인스턴스가 단일 프로세스여도 SQLite 연결을 스레드 간에 공유하는 것은
+        # 안전하지 않아 방어 계층을 둘 둔다.
+        #   1. ``check_same_thread=False``로 스레드 A에서 만든 연결을 스레드 B에서도
+        #      쓸 수 있게 한다(libsqlite 자체는 직렬화 래퍼 아래서 재진입 가능하다.
+        #      #4208의 hot path 논의 참고).
+        #   2. ``_lock``이 모든 변경성 sqlite 호출을 감싸 동시 호출자를 직렬화한다
+        #      (쓰기 교차와 FTS5 인덱스 재정렬을 막는다). 인스턴스 메서드 밖의 호출자는
+        #      반드시 공개 API를 통해 lock을 거쳐야 하며 ``self._conn``에 직접 접근하면
+        #      안 된다.
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._lock = threading.RLock()
         try:
@@ -143,10 +142,10 @@ class FTS5Retrieval:
         )
         conn.commit()
 
-    # ── Index operations ───────────────────────────────────────────────
+    # ── 인덱스 연산 ───────────────────────────────────────────────
 
     def _preprocess_content(self, content: str) -> str:
-        """Preprocess content for indexing: jieba tokenize for Chinese."""
+        """색인용으로 content를 전처리한다. 중국어는 jieba로 토큰화한다."""
         if not content:
             return ""
         if _jieba_available:
@@ -181,10 +180,10 @@ class FTS5Retrieval:
         source: str | None = None,
         fact_data: dict[str, Any] | None = None,
     ) -> None:
-        """Insert or update a fact in the FTS5 index."""
+        """FTS5 인덱스에 fact를 삽입하거나 갱신한다."""
         with self._lock:
             conn = self._conn
-            # Delete existing entry with same doc_id (INSERT OR REPLACE for FTS5)
+            # 같은 doc_id의 기존 항목을 지운다(FTS5에서의 INSERT OR REPLACE 대용)
             conn.execute("DELETE FROM memory_fts WHERE doc_id = ?", (fact_id,))
             conn.execute(
                 """
@@ -210,7 +209,7 @@ class FTS5Retrieval:
             conn.commit()
 
     def replace_documents(self, documents: list[dict[str, Any]], *, scopes: list[tuple[str, str]] | None = None) -> None:
-        """Atomically replace all or selected scope rows in one transaction."""
+        """전체 또는 지정한 scope의 행을 한 트랜잭션에서 원자적으로 교체한다."""
         with self._lock:
             conn = self._conn
             try:
@@ -237,21 +236,21 @@ class FTS5Retrieval:
                 raise
 
     def remove_fact(self, fact_id: str) -> None:
-        """Remove a fact from the FTS5 index."""
+        """FTS5 인덱스에서 fact를 제거한다."""
         with self._lock:
             conn = self._conn
             conn.execute("DELETE FROM memory_fts WHERE doc_id = ?", (fact_id,))
             conn.commit()
 
     def clear_index(self) -> None:
-        """Clear the entire FTS5 index."""
+        """FTS5 인덱스 전체를 비운다."""
         with self._lock:
             conn = self._conn
             conn.execute("DELETE FROM memory_fts")
             conn.commit()
 
     def clear_scope(self, *, scope_user: str, scope_agent: str) -> None:
-        """Clear one exact adapter scope without affecting other users."""
+        """다른 사용자에 영향을 주지 않고 지정한 adapter scope 하나만 비운다."""
         with self._lock:
             self._conn.execute(
                 "DELETE FROM memory_fts WHERE scope_user = ? AND scope_agent = ?",
@@ -266,7 +265,7 @@ class FTS5Retrieval:
         scope_user: str | None = None,
         scope_agent: str | None = None,
     ) -> None:
-        """Rebuild the entire index from a list of fact dicts."""
+        """fact dict 목록으로 인덱스 전체를 다시 만든다."""
         with self._lock:
             conn = self._conn
             try:
@@ -303,7 +302,7 @@ class FTS5Retrieval:
                 conn.rollback()
                 raise
 
-    # ── Search ─────────────────────────────────────────────────────────
+    # ── 검색 ─────────────────────────────────────────────────────────
 
     def search(
         self,
@@ -314,10 +313,10 @@ class FTS5Retrieval:
         category: str | None = None,
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        """FTS5 BM25 search with category and scope filtering.
+        """category와 scope 필터를 적용한 FTS5 BM25 검색을 수행한다.
 
-        Returns list of fact dicts (id, content, category, confidence,
-        createdAt, source, score, bm25_score) sorted by relevance.
+        관련도 순으로 정렬된 fact dict 목록(id, content, category, confidence,
+        createdAt, source, score, bm25_score)을 반환한다.
         """
         import time
 
@@ -328,7 +327,7 @@ class FTS5Retrieval:
 
         query = query.strip()
 
-        # Determine query strategy
+        # 질의 전략 결정
         if _is_advanced_query(query):
             fts5_query = query
             strategy = "advanced"
@@ -346,7 +345,7 @@ class FTS5Retrieval:
             top_k,
         )
 
-        # Try search
+        # 검색 시도
         results = self._execute_search(fts5_query, scope_user, scope_agent, category, top_k)
         if results is not None:
             logger.debug(
@@ -357,7 +356,7 @@ class FTS5Retrieval:
             )
             return results
 
-        # Fallback: advanced syntax error -> tokenized OR
+        # fallback: 고급 문법 오류면 토큰화 OR 질의로 재시도한다
         if strategy == "advanced":
             fallback = _build_fallback_query(query)
             if fallback and fallback != fts5_query:
@@ -385,7 +384,7 @@ class FTS5Retrieval:
         category: str | None,
         top_k: int,
     ) -> list[dict[str, Any]] | None:
-        """Execute FTS5 query. Return None on syntax error."""
+        """FTS5 질의를 실행한다. 문법 오류면 None을 반환한다."""
         if not fts5_query:
             return []
 
@@ -440,7 +439,7 @@ class FTS5Retrieval:
             ) = row
 
             score = self._compute_final_score(
-                bm25_score=-bm25_score,  # FTS5 returns negative
+                bm25_score=-bm25_score,  # FTS5는 음수를 반환한다
                 confidence=confidence,
                 created_at=created_at,
             )
@@ -482,11 +481,11 @@ class FTS5Retrieval:
         confidence: float,
         created_at: str,
     ) -> float:
-        """Combined score: BM25 × time_decay + confidence weight.
+        """BM25 × time_decay + confidence 가중치를 합친 최종 점수를 계산한다.
 
-        ``bm25_score`` is negative for relevant docs (SQLite FTS5 convention).
-        The caller negates it (``-bm25_score``) before storing in the result
-        dict, so here we treat it as positive relevance magnitude.
+        SQLite FTS5 관례상 ``bm25_score``는 관련 문서일수록 음수다. 호출자가 결과 dict에
+        저장하기 전에 부호를 뒤집으므로(``-bm25_score``) 여기서는 양수 관련도 크기로
+        취급한다.
         """
         score = bm25_score
 
@@ -496,7 +495,7 @@ class FTS5Retrieval:
             time_decay = 1.0 if age_days < 30 else math.exp(-0.01 * (age_days - 30))
             score *= time_decay
         except (AttributeError, ValueError, TypeError):
-            time_decay = -1.0  # sentinel for "unparseable" → skipped decay
+            time_decay = -1.0  # "파싱 불가"를 뜻하는 sentinel. 감쇠를 건너뛴다
             age_days = -1
 
         try:
@@ -517,10 +516,10 @@ class FTS5Retrieval:
         )
         return score
 
-    # ── Stats ──────────────────────────────────────────────────────────
+    # ── 통계 ──────────────────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
-        """Index statistics."""
+        """인덱스 통계를 반환한다."""
         with self._lock:
             conn = self._conn
             total = conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0]
@@ -536,7 +535,7 @@ class FTS5Retrieval:
 
 
 def _scope_value(value: str | None) -> str:
-    """Encode a typed scope value so ``None`` cannot collide with a user id."""
+    """``None``이 user id와 충돌하지 않도록 scope 값을 타입까지 담아 인코딩한다."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -551,12 +550,11 @@ def _scope_key(scope: dict[str, str | None]) -> tuple[str, str]:
 
 
 class FTS5RetrievalAdapter:
-    """Scope-aware ``RetrievalPort`` adapter backed by one SQLite FTS5 DB.
+    """SQLite FTS5 DB 하나를 쓰는 scope 인지 ``RetrievalPort`` adapter.
 
-    The index is derived data. Canonical facts remain in Markdown and storage
-    notifications update only the addressed row. A deterministic composite
-    document id prevents equal fact ids in two user/agent scopes from
-    overwriting each other.
+    인덱스는 파생 데이터다. 정본 fact는 Markdown에 남고 storage 알림은 지정된 행만
+    갱신한다. 결정적인 복합 document id를 써서 서로 다른 user/agent scope의 동일한
+    fact id가 서로를 덮어쓰지 않게 한다.
     """
 
     def __init__(self, db_path: str | Path = ":memory:") -> None:
@@ -591,12 +589,12 @@ class FTS5RetrievalAdapter:
         }
 
     def upsert(self, fact: dict[str, Any], *, scope: dict[str, str | None], path: str) -> None:
-        del path  # Canonical location belongs to storage; the index is rebuildable.
+        del path  # 정본 위치는 storage 소관이고 인덱스는 언제든 다시 만들 수 있다.
         document = self._document(fact, scope)
         self._engine.index_fact(**document)
 
     def rebuild(self, records: list[tuple[dict[str, Any], dict[str, str | None], str]], *, scopes: list[dict[str, str | None]] | None) -> None:
-        """Atomically replace the records selected by a storage rebuild."""
+        """storage 재구축이 지정한 레코드를 원자적으로 교체한다."""
         documents = [self._document(fact, scope) for fact, scope, _path in records]
         encoded_scopes = None
         if scopes is not None:
@@ -669,11 +667,11 @@ class FTS5RetrievalAdapter:
 
 
 def create_fts5_retrieval(config: Any) -> FTS5RetrievalAdapter | None:
-    """Build DeerMem's bundled adapter, using a persistent derived index.
+    """영속 파생 인덱스를 쓰는 DeerMem 번들 adapter를 만든다.
 
-    Standalone ``DeerMem`` instances with no configured storage root use an
-    in-memory index. The host factory always injects an absolute storage root,
-    so normal Gateway instances persist the rebuildable index below it.
+    storage 루트가 설정되지 않은 단독 ``DeerMem`` 인스턴스는 in-memory 인덱스를 쓴다.
+    host factory는 항상 절대 storage 루트를 주입하므로, 일반 Gateway 인스턴스는 그
+    아래에 재구축 가능한 인덱스를 영속화한다.
     """
     storage_path = str(getattr(config, "storage_path", "") or "")
     if not storage_path:

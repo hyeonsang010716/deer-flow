@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _deep_merge_dicts(base: dict | None, override: dict) -> dict:
-    """Recursively merge two dictionaries without mutating the inputs."""
+    """입력을 변형하지 않고 두 dict를 재귀적으로 병합한다."""
     merged = dict(base or {})
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -23,7 +23,7 @@ def _deep_merge_dicts(base: dict | None, override: dict) -> dict:
 
 
 def _vllm_disable_chat_template_kwargs(chat_template_kwargs: dict) -> dict:
-    """Build the disable payload for vLLM/Qwen chat template kwargs."""
+    """vLLM/Qwen chat template kwargs용 비활성화 payload를 만든다."""
     disable_kwargs: dict[str, bool] = {}
     if "thinking" in chat_template_kwargs:
         disable_kwargs["thinking"] = False
@@ -33,39 +33,38 @@ def _vllm_disable_chat_template_kwargs(chat_template_kwargs: dict) -> dict:
 
 
 def _declares_api_base(model_class: type) -> bool:
-    """Whether *model_class* declares ``api_base`` as its own constructor field.
+    """*model_class*가 ``api_base``를 자체 생성자 필드로 선언하는지 여부.
 
-    ``langchain_deepseek:ChatDeepSeek`` (and therefore ``PatchedChatDeepSeek``) does, so for it
-    ``api_base`` is the canonical endpoint key and must be passed through untouched. Every other
-    ``BaseChatOpenAI`` subclass inherits only ``openai_api_base`` (alias ``base_url``).
+    ``langchain_deepseek:ChatDeepSeek``(따라서 ``PatchedChatDeepSeek``)가 그렇다. 이 경우
+    ``api_base``가 정식 endpoint 키이므로 손대지 않고 그대로 전달해야 한다. 그 외의
+    ``BaseChatOpenAI`` 하위 클래스는 ``openai_api_base``(별칭 ``base_url``)만 물려받는다.
     """
     return "api_base" in getattr(model_class, "model_fields", {})
 
 
 def _normalize_openai_base_url(model_class: type, model_settings_from_config: dict) -> None:
-    """Map the common ``api_base`` alias to ``base_url`` for OpenAI-compatible clients.
+    """OpenAI 호환 client를 위해 흔한 ``api_base`` 별칭을 ``base_url``로 매핑한다.
 
-    ``BaseChatOpenAI`` subclasses accept the OpenAI endpoint override as ``base_url`` (with
-    ``openai_api_base`` as a legacy alias). Several providers in ``config.example.yaml`` use
-    ``api_base`` for *other* model classes, so users frequently copy ``api_base`` onto such a model
-    by mistake. Because ``ModelConfig`` is ``extra="allow"``, the bad key is not caught at
-    config-load time — it is forwarded to the constructor, which does not reject it but transfers it
-    into ``model_kwargs``; that is then spread into every ``Completions.create()`` call and rejected
-    by the OpenAI SDK at *request* time with an opaque ``unexpected keyword argument 'api_base'``
-    error (and the endpoint override is silently dropped). Rename it here so the model works as the
-    user intended.
+    ``BaseChatOpenAI`` 하위 클래스는 OpenAI endpoint override를 ``base_url``로 받는다
+    (``openai_api_base``는 legacy 별칭). ``config.example.yaml``의 여러 provider가 *다른* model
+    클래스에 ``api_base``를 쓰기 때문에, 사용자가 실수로 그 키를 이런 model에 복사해 오는 일이
+    잦다. ``ModelConfig``가 ``extra="allow"``라서 잘못된 키는 config 로드 시점에 걸리지 않고
+    생성자로 전달되는데, 생성자는 이를 거부하지 않고 ``model_kwargs``로 옮긴다. 그 값은 모든
+    ``Completions.create()`` 호출에 펼쳐지고, OpenAI SDK가 *요청* 시점에 알아보기 힘든
+    ``unexpected keyword argument 'api_base'`` 에러로 거부한다(그리고 endpoint override는 조용히
+    사라진다). 사용자의 의도대로 동작하도록 여기서 이름을 바꾼다.
 
-    Gated on ``issubclass(model_class, BaseChatOpenAI)`` rather than a class-path allowlist, so any
-    OpenAI-compatible subclass is covered automatically — the divert-and-crash behaviour is a
-    property of the base class, not of the two paths that used to be listed. Classes that declare
-    ``api_base`` themselves are skipped: there the key is canonical, not a typo.
+    클래스 경로 allowlist가 아니라 ``issubclass(model_class, BaseChatOpenAI)``로 판단하므로
+    모든 OpenAI 호환 하위 클래스가 자동으로 적용된다 — 이 divert-and-crash 동작은 base class의
+    성질이지 예전에 나열되던 두 경로만의 문제가 아니다. ``api_base``를 직접 선언하는 클래스는
+    건너뛴다. 거기서는 그 키가 오타가 아니라 정식 키이기 때문이다.
     """
     if not issubclass(model_class, BaseChatOpenAI) or _declares_api_base(model_class):
         return
     if "api_base" not in model_settings_from_config:
         return
     if "base_url" in model_settings_from_config or "openai_api_base" in model_settings_from_config:
-        # Canonical key already present; drop the alias to avoid a duplicate-intent kwarg.
+        # 정식 키가 이미 있다. 의도가 중복되는 kwarg를 피하려고 별칭을 버린다.
         model_settings_from_config.pop("api_base", None)
         logger.warning("Model config sets both an endpoint key (base_url/openai_api_base) and 'api_base'; using the former and ignoring 'api_base'.")
         return
@@ -74,23 +73,23 @@ def _normalize_openai_base_url(model_class: type, model_settings_from_config: di
 
 
 def _warn_unknown_model_settings(model_class, model_name: str, model_settings_from_config: dict) -> None:
-    """Warn about config keys the OpenAI client will silently divert into ``model_kwargs``.
+    """OpenAI client가 조용히 ``model_kwargs``로 흘려보낼 config 키에 대해 경고한다.
 
-    ``ModelConfig`` is ``extra="allow"``, so a typo'd key (e.g. ``maxx_tokens``) is not caught at
-    config-load time. LangChain's OpenAI client does not reject an unknown constructor kwarg — it
-    emits a ``UserWarning`` and transfers the key into ``model_kwargs``, which is then spread into
-    every ``Completions.create()`` call and rejected by the OpenAI SDK at *request* time with an
-    opaque ``unexpected keyword argument`` error that is very hard to trace back to a config typo.
+    ``ModelConfig``는 ``extra="allow"``라서 오타 난 키(예: ``maxx_tokens``)가 config 로드
+    시점에 걸리지 않는다. LangChain의 OpenAI client는 알 수 없는 생성자 kwarg를 거부하지
+    않고 ``UserWarning``만 낸 뒤 그 키를 ``model_kwargs``로 옮긴다. 그 값은 모든
+    ``Completions.create()`` 호출에 펼쳐지고, OpenAI SDK가 *요청* 시점에 config 오타까지
+    거슬러 올라가기 매우 어려운 ``unexpected keyword argument`` 에러로 거부한다.
 
-    This turns that latent failure into an explicit, actionable log line at model-build time. It is
-    **scoped to the OpenAI-compatible family** — that is where the ``model_kwargs``
-    divert-and-crash behavior occurs and where the known field/alias set is accurate. The family is
-    ``issubclass(model_class, BaseChatOpenAI)``: the divert is implemented in that base class, so
-    every subclass inherits it. Other providers (e.g. ``ChatAnthropic``) route extra kwargs
-    differently and would false-positive against this allow-list, so they are intentionally left
-    alone. Best-effort and non-fatal: it only fires when the class exposes a pydantic
-    ``model_fields`` schema, treats both field names and their aliases as valid, and allow-lists the
-    standard passthrough kwargs the factory injects and the OpenAI client accepts.
+    이 함수는 잠복해 있던 그 실패를 model 생성 시점의 명시적이고 조치 가능한 로그로 바꾼다.
+    적용 범위는 **OpenAI 호환 계열로 한정**된다 — ``model_kwargs`` divert-and-crash 동작이
+    거기서 일어나고, 알려진 field/alias 집합도 그 계열에서만 정확하기 때문이다. 계열 판정은
+    ``issubclass(model_class, BaseChatOpenAI)``다. divert가 그 base class에 구현되어 있어
+    모든 하위 클래스가 물려받는다. 다른 provider(예: ``ChatAnthropic``)는 추가 kwarg를 다르게
+    라우팅해서 이 allow-list에 대해 false positive를 낼 것이므로 의도적으로 건드리지 않는다.
+    best-effort이고 치명적이지 않다. 클래스가 pydantic ``model_fields`` 스키마를 노출할 때만
+    동작하고, field 이름과 별칭을 모두 유효한 것으로 취급하며, factory가 주입하고 OpenAI
+    client가 받아들이는 표준 passthrough kwarg를 allow-list에 넣는다.
     """
     if not issubclass(model_class, BaseChatOpenAI):
         return
@@ -102,7 +101,7 @@ def _warn_unknown_model_settings(model_class, model_name: str, model_settings_fr
         alias = getattr(field, "alias", None)
         if alias:
             valid_names.add(alias)
-    # Standard kwargs the factory injects or the OpenAI client accepts beyond declared fields.
+    # 선언된 field 외에 factory가 주입하거나 OpenAI client가 받아들이는 표준 kwarg.
     valid_names |= {
         "model",
         "model_kwargs",
@@ -123,45 +122,42 @@ def _warn_unknown_model_settings(model_class, model_name: str, model_settings_fr
         )
 
 
-# Default chunk-gap budget for OpenAI-compatible streaming responses.
+# OpenAI 호환 streaming 응답의 기본 chunk 간격 예산.
 #
-# langchain-openai raises ``StreamChunkTimeoutError`` after this many seconds
-# without receiving a chunk. Its own default is 120s, which is too aggressive for
-# reasoning models (DeepSeek-R1, Doubao-thinking, GPT-5) whose first chunk can
-# legitimately take 90~150s. We default to 240s so the streaming layer rarely
-# trips on long thinking pauses; the LLMErrorHandlingMiddleware still retries
-# (budget=2) if a real stall happens. Users can override per-model in config.yaml.
+# langchain-openai는 이 초 수만큼 chunk를 받지 못하면 ``StreamChunkTimeoutError``를 던진다.
+# 자체 기본값은 120초인데, 첫 chunk가 정상적으로 90~150초 걸릴 수 있는 reasoning
+# model(DeepSeek-R1, Doubao-thinking, GPT-5)에는 너무 공격적이다. 그래서 240초를 기본값으로
+# 두어 streaming 레이어가 긴 thinking 정지에 잘 걸리지 않게 한다. 실제로 멈추면
+# LLMErrorHandlingMiddleware가 여전히 재시도한다(budget=2). 사용자는 config.yaml에서
+# model별로 override할 수 있다.
 _DEFAULT_STREAM_CHUNK_TIMEOUT_SECONDS: float = 240.0
 
 
 def _apply_stream_chunk_timeout_default(model_class: type, model_settings_from_config: dict) -> None:
-    """Inject a generous ``stream_chunk_timeout`` for OpenAI-compatible clients.
+    """OpenAI 호환 client에 넉넉한 ``stream_chunk_timeout``을 주입한다.
 
-    ``stream_chunk_timeout`` is a field of langchain-openai's ``BaseChatOpenAI``, so
-    it is accepted by ``ChatOpenAI`` and by every DeerFlow provider that subclasses
-    it: ``PatchedChatOpenAI`` plus the self-hosted / reasoning adapters
-    ``VllmChatModel``, ``MindIEChatModel``, ``PatchedChatDeepSeek``,
-    ``PatchedChatMiMo``, ``PatchedChatStepFun`` and ``PatchedChatMiniMax``. We gate on
-    ``issubclass(model_class, BaseChatOpenAI)`` rather than an explicit class-path
-    allowlist so any OpenAI-compatible subclass inherits the default (and honors an
-    explicit override) automatically. Issue #3189 was reported against ``mimo-v2.5``
-    (``PatchedChatMiMo``); the original fix (#3195) matched only ``ChatOpenAI`` /
-    ``PatchedChatOpenAI``, so those subclasses kept langchain-openai's aggressive
-    built-in chunk-gap timeout and — worse — silently discarded a user's explicit
-    ``stream_chunk_timeout``.
+    ``stream_chunk_timeout``은 langchain-openai ``BaseChatOpenAI``의 field이므로
+    ``ChatOpenAI``와 이를 상속하는 모든 DeerFlow provider가 받아들인다: ``PatchedChatOpenAI``와
+    self-hosted / reasoning 어댑터인 ``VllmChatModel``, ``MindIEChatModel``,
+    ``PatchedChatDeepSeek``, ``PatchedChatMiMo``, ``PatchedChatStepFun``,
+    ``PatchedChatMiniMax``. 명시적 클래스 경로 allowlist 대신
+    ``issubclass(model_class, BaseChatOpenAI)``로 판단해서, 모든 OpenAI 호환 하위 클래스가
+    기본값을 자동으로 물려받고 명시적 override도 존중하게 한다. 이슈 #3189는 ``mimo-v2.5``
+    (``PatchedChatMiMo``)에서 보고되었는데, 최초 수정(#3195)은 ``ChatOpenAI`` /
+    ``PatchedChatOpenAI``만 매칭해서 그 하위 클래스들은 langchain-openai의 공격적인 내장 chunk
+    간격 timeout을 그대로 쓰고, 더 나쁘게는 사용자가 명시한 ``stream_chunk_timeout``을 조용히
+    버렸다.
 
-    Behaviour:
+    동작:
 
-    * ``BaseChatOpenAI`` subclass: an explicit value in ``config.yaml`` is preserved.
-      An explicit ``null`` is dropped upstream by ``model_dump(exclude_none=True)``
-      and therefore treated as "unset", so the default is injected.
-    * Any other client (e.g. ``ChatAnthropic``): drop the key so it is never
-      forwarded to a constructor that does not declare it. The kwarg is not a
-      declared field of these clients: depending on the client it is either
-      silently dropped (``ChatAnthropic`` declares ``extra="ignore"``) or, for
-      other OpenAI-style clients, diverted into ``model_kwargs`` and rejected
-      at request time. Either way the user's intent is lost, so we drop it
-      proactively instead.
+    * ``BaseChatOpenAI`` 하위 클래스: ``config.yaml``의 명시적 값은 보존한다. 명시적
+      ``null``은 상위 단계의 ``model_dump(exclude_none=True)``에서 제거되어 "미설정"으로
+      취급되므로 기본값이 주입된다.
+    * 그 외의 client(예: ``ChatAnthropic``): 해당 키를 선언하지 않는 생성자로 전달되지
+      않도록 키를 버린다. 이 client들에서 이 kwarg는 선언된 field가 아니어서, client에 따라
+      조용히 버려지거나(``ChatAnthropic``은 ``extra="ignore"``를 선언한다) 다른 OpenAI 계열
+      client에서는 ``model_kwargs``로 흘러가 요청 시점에 거부된다. 어느 쪽이든 사용자의
+      의도는 사라지므로 선제적으로 버린다.
     """
     if not issubclass(model_class, BaseChatOpenAI):
         model_settings_from_config.pop("stream_chunk_timeout", None)
@@ -172,32 +168,29 @@ def _apply_stream_chunk_timeout_default(model_class: type, model_settings_from_c
 
 
 def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *, app_config: AppConfig | None = None, attach_tracing: bool = True, model_overrides: dict | None = None, **kwargs) -> BaseChatModel:
-    """Create a chat model instance from the config.
+    """config로부터 chat model 인스턴스를 생성한다.
 
     Args:
-        name: The name of the model to create. If None, the first model in the config will be used.
-        thinking_enabled: Enable the model's extended-thinking mode when supported.
-        app_config: Explicit application config; falls back to the cached global if omitted.
-        model_overrides: Optional per-caller sampling overrides (e.g. a custom
-            agent's ``temperature`` / ``max_tokens``) layered on top of the
-            model profile. ``None`` values are ignored so an unset override
-            never clobbers a profile value. Applied before the thinking / Codex
-            transforms so provider-specific normalization (e.g. Codex dropping
-            ``max_tokens``) still governs an overridden value.
-        attach_tracing: When True (default), attach tracing callbacks (Langfuse,
-            LangSmith) directly to the model instance. Standalone callers — anything
-            that invokes the model outside a LangGraph run that already wires tracing
-            at the invocation root (``MemoryUpdater``, ad-hoc utilities, etc.) — keep
-            this default so the model-level callback still produces traces. Callers
-            that already attach tracing at the graph root (``make_lead_agent``, the
-            in-graph ``TitleMiddleware``) MUST pass ``attach_tracing=False``; otherwise
-            the same LLM call emits duplicate spans (one rooted at the graph, one at
-            the model) and ``session_id`` / ``user_id`` metadata never reach the trace
-            because the model becomes a nested observation whose ``langfuse_*`` keys
-            get stripped.
+        name: 생성할 model 이름. None이면 config의 첫 번째 model을 사용한다.
+        thinking_enabled: 지원되는 경우 model의 extended-thinking 모드를 켠다.
+        app_config: 명시적 application config. 생략하면 캐시된 전역 config로 대체한다.
+        model_overrides: 호출자별 sampling override(예: custom agent의 ``temperature`` /
+            ``max_tokens``)를 model 프로필 위에 얹는다. ``None`` 값은 무시되므로 설정되지
+            않은 override가 프로필 값을 덮어쓰지 않는다. thinking / Codex 변환보다 먼저
+            적용되므로 provider별 정규화(예: Codex의 ``max_tokens`` 제거)가 override된
+            값에도 그대로 적용된다.
+        attach_tracing: True(기본값)이면 tracing callback(Langfuse, LangSmith)을 model
+            인스턴스에 직접 붙인다. standalone 호출자 — 이미 invocation root에서 tracing을
+            연결한 LangGraph 실행 밖에서 model을 호출하는 모든 것(``MemoryUpdater``,
+            임시 유틸리티 등) — 는 model 단위 callback으로 trace가 남도록 이 기본값을
+            유지한다. 이미 graph root에서 tracing을 붙이는 호출자(``make_lead_agent``,
+            graph 내부의 ``TitleMiddleware``)는 반드시 ``attach_tracing=False``를 넘겨야
+            한다. 그러지 않으면 같은 LLM 호출이 span을 중복 생성하고(graph 기준 하나,
+            model 기준 하나), model이 nested observation이 되면서 ``langfuse_*`` 키가
+            제거되어 ``session_id`` / ``user_id`` metadata가 trace에 도달하지 못한다.
 
     Returns:
-        A chat model instance.
+        chat model 인스턴스.
     """
     config = app_config or get_app_config()
     if name is None:
@@ -219,25 +212,24 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             "when_thinking_disabled",
             "thinking",
             "supports_vision",
-            # Runtime/UI metadata used to size the context indicator. Provider
-            # clients do not accept this as a model-constructor argument.
+            # context 표시기 크기를 잡는 데 쓰는 runtime/UI metadata. provider client는
+            # 이를 model 생성자 인자로 받지 않는다.
             "context_window",
-            # Presentation-only metadata (consumed by the console's cost
-            # display) — must never reach the provider client, which would
-            # forward unknown kwargs into the completion request payload.
+            # 표시 전용 metadata(console의 비용 표시가 사용한다) — provider client에는
+            # 절대 도달하면 안 된다. 알 수 없는 kwarg를 completion 요청 payload로
+            # 넘겨버리기 때문이다.
             "pricing",
         },
     )
-    # Layer per-caller sampling overrides (e.g. a custom agent's temperature /
-    # max_tokens) on top of the profile. Ignore None so an unset override never
-    # clobbers a configured profile value. Applied here — before the thinking
-    # and Codex transforms below — so provider-specific normalization (Codex
-    # dropping max_tokens, thinking disable-paths) still governs the merged
-    # value exactly as it would a profile-native one.
+    # 호출자별 sampling override(예: custom agent의 temperature / max_tokens)를 프로필
+    # 위에 얹는다. None은 무시해서 설정되지 않은 override가 구성된 프로필 값을 덮어쓰지
+    # 않게 한다. 아래의 thinking/Codex 변환보다 먼저 적용하므로, provider별 정규화(Codex의
+    # max_tokens 제거, thinking 비활성화 경로)가 프로필 원래 값과 똑같이 병합된 값에도
+    # 적용된다.
     if model_overrides:
         model_settings_from_config.update({key: value for key, value in model_overrides.items() if value is not None})
-    # Compute effective when_thinking_enabled by merging in the `thinking` shortcut field.
-    # The `thinking` shortcut is equivalent to setting when_thinking_enabled["thinking"].
+    # `thinking` 단축 field를 병합해 실효 when_thinking_enabled를 계산한다.
+    # `thinking` 단축은 when_thinking_enabled["thinking"]을 설정하는 것과 같다.
     has_thinking_settings = (model_config.when_thinking_enabled is not None) or (model_config.thinking is not None)
     effective_wte: dict = dict(model_config.when_thinking_enabled) if model_config.when_thinking_enabled else {}
     if model_config.thinking is not None:
@@ -250,41 +242,41 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             model_settings_from_config.update(effective_wte)
     if not thinking_enabled:
         if model_config.when_thinking_disabled is not None:
-            # User-provided disable settings take full precedence
+            # 사용자가 준 비활성화 설정이 전적으로 우선한다
             model_settings_from_config.update(model_config.when_thinking_disabled)
         elif has_thinking_settings and effective_wte.get("extra_body", {}).get("thinking", {}).get("type"):
-            # OpenAI-compatible gateway: thinking is nested under extra_body
+            # OpenAI 호환 gateway: thinking이 extra_body 아래에 중첩되어 있다
             model_settings_from_config["extra_body"] = _deep_merge_dicts(
                 model_settings_from_config.get("extra_body"),
                 {"thinking": {"type": "disabled"}},
             )
             model_settings_from_config["reasoning_effort"] = "minimal"
         elif has_thinking_settings and (disable_chat_template_kwargs := _vllm_disable_chat_template_kwargs(effective_wte.get("extra_body", {}).get("chat_template_kwargs") or {})):
-            # vLLM uses chat template kwargs to switch thinking on/off.
+            # vLLM은 chat template kwargs로 thinking을 켜고 끈다.
             model_settings_from_config["extra_body"] = _deep_merge_dicts(
                 model_settings_from_config.get("extra_body"),
                 {"chat_template_kwargs": disable_chat_template_kwargs},
             )
         elif has_thinking_settings and effective_wte.get("thinking", {}).get("type"):
-            # Native langchain_anthropic: thinking is a direct constructor parameter
+            # 네이티브 langchain_anthropic: thinking이 생성자 파라미터 그 자체다
             model_settings_from_config["thinking"] = {"type": "disabled"}
     if not model_config.supports_reasoning_effort:
         kwargs.pop("reasoning_effort", None)
         model_settings_from_config.pop("reasoning_effort", None)
 
-    # Normalize the api_base -> base_url alias FIRST, so the downstream OpenAI-compatible
-    # heuristics (stream_usage default below / stream_chunk_timeout) see the canonical endpoint key.
+    # api_base -> base_url 별칭을 먼저 정규화해서, 이후의 OpenAI 호환 휴리스틱(아래
+    # stream_usage 기본값 / stream_chunk_timeout)이 정식 endpoint 키를 보게 한다.
     _normalize_openai_base_url(model_class, model_settings_from_config)
     _apply_stream_chunk_timeout_default(model_class, model_settings_from_config)
 
-    # For Codex Responses API models: map thinking mode to reasoning_effort
+    # Codex Responses API model: thinking 모드를 reasoning_effort로 매핑한다
     from deerflow.models.openai_codex_provider import CodexChatModel
 
     if issubclass(model_class, CodexChatModel):
-        # The ChatGPT Codex endpoint currently rejects max_tokens/max_output_tokens.
+        # 현재 ChatGPT Codex endpoint는 max_tokens/max_output_tokens를 거부한다.
         model_settings_from_config.pop("max_tokens", None)
 
-        # Use explicit reasoning_effort from frontend if provided (low/medium/high)
+        # frontend가 명시적 reasoning_effort를 주면 그것을 사용한다(low/medium/high)
         explicit_effort = kwargs.pop("reasoning_effort", None)
         if not thinking_enabled:
             model_settings_from_config["reasoning_effort"] = "none"
@@ -293,17 +285,16 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         elif "reasoning_effort" not in model_settings_from_config:
             model_settings_from_config["reasoning_effort"] = "medium"
 
-    # For MindIE models: enforce conservative retry defaults.
-    # Timeout normalization is handled inside MindIEChatModel itself.
+    # MindIE model: 보수적인 retry 기본값을 강제한다.
+    # timeout 정규화는 MindIEChatModel 내부에서 처리한다.
     if getattr(model_class, "__name__", "") == "MindIEChatModel":
-        # Enforce max_retries constraint to prevent cascading timeouts.
+        # timeout이 연쇄적으로 번지지 않도록 max_retries 제약을 강제한다.
         model_settings_from_config["max_retries"] = model_settings_from_config.get("max_retries", 1)
 
-    # Ensure stream_usage is enabled so that token usage metadata is available
-    # in streaming responses.  LangChain's BaseChatOpenAI only defaults
-    # stream_usage=True when no custom base_url/api_base is set, so models
-    # hitting third-party endpoints (e.g. doubao, deepseek) silently lose
-    # usage data.  We default it to True unless explicitly configured.
+    # streaming 응답에서 token usage metadata를 얻을 수 있도록 stream_usage를 켠다.
+    # LangChain의 BaseChatOpenAI는 custom base_url/api_base가 없을 때만 stream_usage=True를
+    # 기본값으로 삼기 때문에, 서드파티 endpoint(예: doubao, deepseek)를 쓰는 model은 usage
+    # 데이터를 조용히 잃는다. 명시적으로 설정하지 않았다면 True를 기본값으로 둔다.
     if "stream_usage" not in model_settings_from_config and "stream_usage" not in kwargs:
         if "stream_usage" in getattr(model_class, "model_fields", {}):
             model_settings_from_config["stream_usage"] = True

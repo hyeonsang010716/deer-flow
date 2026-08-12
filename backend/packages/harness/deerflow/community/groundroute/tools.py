@@ -1,19 +1,17 @@
-"""GroundRoute community web search + fetch tools.
+"""GroundRoute community web search·fetch tool 모음.
 
-GroundRoute (https://groundroute.ai) is a meta search layer: one API in front of
-six search engines (Serper, Brave, Exa, Tavily, Firecrawl, Perplexity). It routes
-each query to the cheapest engine that clears a quality bar and caches repeats, so
-high-volume research runs keep working when one engine is down and pay no more than
-going to a single engine direct. Pricing is gain-share: the caller keeps about half
-of any cache savings.
+GroundRoute(https://groundroute.ai)는 meta search 레이어다. 검색 엔진 여섯 개(Serper, Brave,
+Exa, Tavily, Firecrawl, Perplexity) 앞에 API 하나를 둔다. 각 query를 품질 기준을 통과하는
+가장 저렴한 엔진으로 라우팅하고 반복 query는 cache하므로, 엔진 하나가 죽어도 대량 research
+run이 계속 동작하고 비용은 단일 엔진 직접 호출보다 더 들지 않는다. 요금은 gain-share 방식으로,
+cache 절감분의 절반가량을 호출자가 가져간다.
 
-This module is self-contained (httpx only, no GroundRoute SDK). The /v1/search
-request and response mapping mirrors the GroundRoute MCP server and the verified
-Langflow component:
+이 모듈은 자체 완결적이다(httpx만 쓰고 GroundRoute SDK는 쓰지 않는다). /v1/search 요청과 응답
+매핑은 GroundRoute MCP server 및 검증된 Langflow 컴포넌트와 동일하다:
   results[] = {url, title, snippet, content, source_engine, published_at}
 
-`web_search` returns a normalized JSON list of {title, url, snippet, source_engine}.
-`web_fetch` reads one URL via GroundRoute mode=page and returns its extracted text.
+`web_search`는 {title, url, snippet, source_engine}의 정규화된 JSON 목록을 반환한다.
+`web_fetch`는 GroundRoute mode=page로 URL 하나를 읽어 추출된 텍스트를 반환한다.
 """
 
 import json
@@ -29,20 +27,20 @@ logger = logging.getLogger(__name__)
 
 _GROUNDROUTE_ENDPOINT = "https://api.groundroute.ai/v1/search"
 _DEFAULT_MAX_RESULTS = 5
-# GroundRoute clamps max_results to 1-50 server-side; clamp here too to mirror it.
+# GroundRoute는 서버 쪽에서 max_results를 1-50으로 제한한다. 동일하게 맞추려고 여기서도 제한한다.
 _MAX_RESULTS_CAP = 50
 _TIMEOUT_S = 30.0
 _FETCH_SNIPPET_LIMIT = 4096
-# Warn at most once per tool ("web_search" / "web_fetch") about a missing key.
+# key 누락 경고는 tool("web_search" / "web_fetch")당 최대 한 번만 낸다.
 _api_key_warned: set[str] = set()
 
 
 def _get_api_key(tool_name: str) -> str | None:
-    """Resolve the GroundRoute key from a given tool's config block, then the env var.
+    """해당 tool의 config 블록에서 GroundRoute key를 찾고, 없으면 환경 변수를 본다.
 
-    `tool_name` is the config section to read (web_search vs web_fetch) so a flow that
-    runs GroundRoute for fetch but a different engine for search still reads the right
-    key. Mirrors serper/exa/firecrawl, which all take the tool name.
+    `tool_name`은 읽을 config 섹션(web_search 또는 web_fetch)이다. fetch는 GroundRoute를 쓰고
+    search는 다른 엔진을 쓰는 구성에서도 올바른 key를 읽게 한다. tool 이름을 받는
+    serper/exa/firecrawl과 같은 방식이다.
     """
     config = get_app_config().get_tool_config(tool_name)
     if config is not None:
@@ -84,16 +82,16 @@ def _post_search(api_key: str, body: dict) -> dict:
 
 @tool("web_search", parse_docstring=True)
 def web_search_tool(query: str, max_results: int | None = None) -> str:
-    """Search the web for information using GroundRoute.
+    """GroundRoute를 사용해 web에서 정보를 검색한다.
 
-    GroundRoute routes the query across six search engines and returns the result
-    set from the engine it selected, with failover if one engine is unavailable.
+    GroundRoute는 query를 검색 엔진 여섯 개에 라우팅해 선택된 엔진의 결과 집합을 반환하며,
+    엔진 하나를 쓸 수 없으면 다른 엔진으로 failover한다.
 
     Args:
-        query: Search keywords describing what you want to find. Be specific for better results.
-        max_results: Maximum number of search results to return. If omitted, uses the configured value (default 5). Clamped to 1-50.
+        query: 찾으려는 내용을 설명하는 검색 키워드. 구체적일수록 결과가 좋다.
+        max_results: 반환할 최대 검색 결과 수. 생략하면 설정값(기본 5)을 쓴다. 1-50으로 제한된다.
     """
-    # Honor the caller-supplied max_results; fall back to config only when omitted.
+    # 호출자가 준 max_results를 우선한다. 생략된 경우에만 config로 fallback한다.
     if max_results is None:
         config = get_app_config().get_tool_config("web_search")
         if config is not None:
@@ -134,14 +132,14 @@ def web_search_tool(query: str, max_results: int | None = None) -> str:
 
 @tool("web_fetch", parse_docstring=True)
 def web_fetch_tool(url: str) -> str:
-    """Fetch the contents of a web page at a given URL via GroundRoute.
-    Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
-    This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
-    Do NOT add www. to URLs that do NOT have them.
-    URLs must include the schema: https://example.com is a valid URL while example.com is an invalid URL.
+    """GroundRoute를 통해 주어진 URL의 web page 내용을 가져온다.
+    사용자가 직접 제공했거나 web_search와 web_fetch 도구의 결과로 반환된 URL만 정확히 그대로 가져와라.
+    이 도구는 비공개 Google Docs나 로그인 장벽 뒤의 page처럼 인증이 필요한 콘텐츠에는 접근할 수 없다.
+    www.가 없는 URL에 www.를 임의로 붙이지 마라.
+    URL에는 schema를 반드시 포함해야 한다. https://example.com은 유효하지만 example.com은 유효하지 않다.
 
     Args:
-        url: The URL to fetch the contents of.
+        url: 내용을 가져올 URL.
     """
     api_key = _get_api_key("web_fetch")
     if not api_key:

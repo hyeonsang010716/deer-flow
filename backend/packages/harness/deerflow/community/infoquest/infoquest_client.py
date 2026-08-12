@@ -1,6 +1,6 @@
-"""Util that calls InfoQuest Search And Fetch API.
+"""InfoQuest Search And Fetch API를 호출하는 유틸리티.
 
-In order to set this up, follow instructions at:
+설정 방법은 다음을 참고한다:
 https://docs.byteplus.com/en/docs/InfoQuest/What_is_Info_Quest
 """
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class InfoQuestClient:
-    """Client for interacting with the InfoQuest web search and fetch API."""
+    """InfoQuest web search 및 fetch API와 통신하는 client."""
 
     def __init__(self, fetch_time: int = -1, fetch_timeout: int = -1, fetch_navigation_timeout: int = -1, search_time_range: int = -1, image_search_time_range: int = -1, image_size: str = "i"):
         logger.info("\n============================================\n🚀 BytePlus InfoQuest Client Initialization 🚀\n============================================")
@@ -55,48 +55,48 @@ class InfoQuestClient:
                 f"request_type=sync"
             )
 
-        # Prepare headers
+        # header를 준비한다
         headers = self._prepare_headers()
 
-        # Prepare request data
+        # request data를 준비한다
         data = self._prepare_crawl_request_data(url, return_format)
 
         logger.debug("Sending crawl request to InfoQuest API")
         try:
             response = requests.post("https://reader.infoquest.bytepluses.com", headers=headers, json=data)
 
-            # Check if status code is not 200
+            # status code가 200이 아닌지 확인한다
             if response.status_code != 200:
                 error_message = f"fetch API returned status {response.status_code}: {response.text}"
                 logger.debug("InfoQuest Crawler fetch API return status %d: %s for URL: %s", response.status_code, response.text, url)
                 return f"Error: {error_message}"
 
-            # Check for empty response
+            # 빈 response인지 확인한다
             if not response.text or not response.text.strip():
                 error_message = "no result found"
                 logger.debug("InfoQuest Crawler returned empty response for URL: %s", url)
                 return f"Error: {error_message}"
 
-            # Try to parse response as JSON and extract reader_result
+            # response를 JSON으로 파싱해 reader_result를 추출한다
             try:
                 response_data = json.loads(response.text)
-                # Extract reader_result if it exists
+                # reader_result가 있으면 추출한다
                 if "reader_result" in response_data:
                     logger.debug("Successfully extracted reader_result from JSON response")
                     return response_data["reader_result"]
                 elif "content" in response_data:
-                    # Fallback to content field if reader_result is not available
+                    # reader_result가 없으면 content 필드로 fallback한다
                     logger.debug("reader_result missing in JSON response, falling back to content field: %s", response_data["content"])
                     return response_data["content"]
                 else:
-                    # If neither field exists, return the original response
+                    # 둘 다 없으면 원본 response를 반환한다
                     logger.warning("Neither reader_result nor content field found in JSON response")
             except json.JSONDecodeError:
-                # If response is not JSON, return the original text
+                # response가 JSON이 아니면 원본 텍스트를 반환한다
                 logger.debug("Response is not in JSON format, returning as-is")
                 return response.text
 
-            # Print partial response for debugging
+            # 디버깅용으로 response 일부를 출력한다
             if logger.isEnabledFor(logging.DEBUG):
                 response_sample = response.text[:200] + ("..." if len(response.text) > 200 else "")
                 logger.debug("Successfully received response, content length: %d bytes, first 200 chars: %s", len(response.text), response_sample)
@@ -108,12 +108,12 @@ class InfoQuestClient:
 
     @staticmethod
     def _prepare_headers() -> dict[str, str]:
-        """Prepare request headers."""
+        """request header를 준비한다."""
         headers = {
             "Content-Type": "application/json",
         }
 
-        # Add API key if available
+        # API key가 있으면 추가한다
         if os.getenv("INFOQUEST_API_KEY"):
             headers["Authorization"] = f"Bearer {os.getenv('INFOQUEST_API_KEY')}"
             logger.debug("API key added to request headers")
@@ -123,8 +123,8 @@ class InfoQuestClient:
         return headers
 
     def _prepare_crawl_request_data(self, url: str, return_format: str) -> dict[str, Any]:
-        """Prepare request data with formatted parameters."""
-        # Normalize return_format
+        """포맷된 파라미터로 request data를 준비한다."""
+        # return_format을 정규화한다
         if return_format and return_format.lower() == "html":
             normalized_format = "HTML"
         else:
@@ -132,7 +132,7 @@ class InfoQuestClient:
 
         data = {"url": url, "format": normalized_format}
 
-        # Add timeout parameters if set to positive values
+        # 양수로 설정된 timeout 파라미터를 추가한다
         timeout_params = {}
         if self.fetch_time > 0:
             timeout_params["fetch_time"] = self.fetch_time
@@ -141,7 +141,7 @@ class InfoQuestClient:
         if self.fetch_navigation_timeout > 0:
             timeout_params["navi_timeout"] = self.fetch_navigation_timeout
 
-        # Log applied timeout parameters
+        # 적용된 timeout 파라미터를 로깅한다
         if timeout_params:
             logger.debug("Applying timeout parameters: %s", timeout_params)
             data.update(timeout_params)
@@ -154,7 +154,7 @@ class InfoQuestClient:
         site: str,
         output_format: str = "JSON",
     ) -> dict:
-        """Get results from the InfoQuest Web-Search API synchronously."""
+        """InfoQuest Web-Search API에서 결과를 동기적으로 가져온다."""
         headers = self._prepare_headers()
 
         params = {"format": output_format, "query": query}
@@ -167,7 +167,7 @@ class InfoQuestClient:
         response = requests.post("https://search.infoquest.bytepluses.com", headers=headers, json=params)
         response.raise_for_status()
 
-        # Print partial response for debugging
+        # 디버깅용으로 response 일부를 출력한다
         response_json = response.json()
         if logger.isEnabledFor(logging.DEBUG):
             response_sample = json.dumps(response_json)[:200] + ("..." if len(json.dumps(response_json)) > 200 else "")
@@ -177,7 +177,7 @@ class InfoQuestClient:
 
     @staticmethod
     def clean_results(raw_results: list[dict[str, dict[str, dict[str, Any]]]]) -> list[dict]:
-        """Clean results from InfoQuest Web-Search API."""
+        """InfoQuest Web-Search API 결과를 정리한다."""
         logger.debug("Processing web-search results")
 
         seen_urls = set()
@@ -268,12 +268,12 @@ class InfoQuestClient:
                 return result_json
 
             elif "content" in raw_results:
-                # Fallback to content field if search_result is not available
+                # search_result가 없으면 content 필드로 fallback한다
                 error_message = "web search API return wrong format"
                 logger.error("web search API return wrong format, no search_result nor content field found in JSON response, content: %s", raw_results["content"])
                 return f"Error: {error_message}"
             else:
-                # If neither field exists, return the original response
+                # 둘 다 없으면 원본 response를 반환한다
                 logger.warning("InfoQuest Web-Search - Neither search_result nor content field found in JSON response")
                 return json.dumps(raw_results, indent=2, ensure_ascii=False)
 
@@ -284,7 +284,7 @@ class InfoQuestClient:
 
     @staticmethod
     def clean_results_with_image_search(raw_results: list[dict[str, dict[str, dict[str, Any]]]]) -> list[dict]:
-        """Clean results from InfoQuest Web-Search API."""
+        """InfoQuest Web-Search API 결과를 정리한다."""
         logger.debug("Processing web-search results")
 
         seen_urls = set()
@@ -318,22 +318,22 @@ class InfoQuestClient:
         site: str = "",
         output_format: str = "JSON",
     ) -> dict:
-        """Get image search results from the InfoQuest Web-Search API synchronously."""
+        """InfoQuest Web-Search API에서 image search 결과를 동기적으로 가져온다."""
         headers = self._prepare_headers()
 
         params = {"format": output_format, "query": query, "search_type": "Images"}
 
-        # Add time_range filter if specified (1-365)
+        # 지정된 경우 time_range 필터를 추가한다(1-365)
         if 1 <= self.image_search_time_range <= 365:
             params["time_range"] = self.image_search_time_range
         elif self.image_search_time_range > 0:
             logger.warning(f"time_range {self.image_search_time_range} is out of valid range (1-365), ignoring")
 
-        # Add site filter if specified
+        # 지정된 경우 site 필터를 추가한다
         if site:
             params["site"] = site
 
-        # Add image_size filter if specified
+        # 지정된 경우 image_size 필터를 추가한다
         if self.image_size and self.image_size in ["l", "m", "i"]:
             params["image_size"] = self.image_size
         elif self.image_size:
@@ -342,7 +342,7 @@ class InfoQuestClient:
         response = requests.post("https://search.infoquest.bytepluses.com", headers=headers, json=params)
         response.raise_for_status()
 
-        # Print partial response for debugging
+        # 디버깅용으로 response 일부를 출력한다
         response_json = response.json()
         if logger.isEnabledFor(logging.DEBUG):
             response_sample = json.dumps(response_json)[:200] + ("..." if len(json.dumps(response_json)) > 200 else "")
@@ -389,12 +389,12 @@ class InfoQuestClient:
                 return result_json
 
             elif "content" in raw_results:
-                # Fallback to content field if search_result is not available
+                # search_result가 없으면 content 필드로 fallback한다
                 error_message = "image search API return wrong format"
                 logger.error("image search API return wrong format, no search_result nor content field found in JSON response, content: %s", raw_results["content"])
                 return f"Error: {error_message}"
             else:
-                # If neither field exists, return the original response
+                # 둘 다 없으면 원본 response를 반환한다
                 logger.warning("InfoQuest Image Search - Neither search_result nor content field found in JSON response")
                 return json.dumps(raw_results, indent=2, ensure_ascii=False)
 

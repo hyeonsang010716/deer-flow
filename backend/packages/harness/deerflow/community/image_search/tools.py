@@ -1,5 +1,5 @@
 """
-Image Search Tool - Search images using DuckDuckGo for reference in image generation.
+Image Search Tool - 이미지 생성 시 참고할 이미지를 DuckDuckGo로 검색한다.
 """
 
 import json
@@ -24,21 +24,21 @@ def _search_images(
     license_image: str | None = None,
 ) -> list[dict]:
     """
-    Execute image search using DuckDuckGo.
+    DuckDuckGo로 이미지 검색을 실행한다.
 
     Args:
-        query: Search keywords
-        max_results: Maximum number of results
-        region: Search region
-        safesearch: Safe search level
-        size: Image size (Small/Medium/Large/Wallpaper)
-        color: Color filter
-        type_image: Image type (photo/clipart/gif/transparent/line)
-        layout: Layout (Square/Tall/Wide)
-        license_image: License filter
+        query: 검색 키워드
+        max_results: 최대 결과 수
+        region: 검색 지역
+        safesearch: safe search 수준
+        size: 이미지 크기(Small/Medium/Large/Wallpaper)
+        color: 색상 필터
+        type_image: 이미지 타입(photo/clipart/gif/transparent/line)
+        layout: 레이아웃(Square/Tall/Wide)
+        license_image: 라이선스 필터
 
     Returns:
-        List of search results
+        검색 결과 list
     """
     try:
         from ddgs import DDGS
@@ -82,26 +82,26 @@ def image_search_tool(
     type_image: str | None = None,
     layout: str | None = None,
 ) -> str:
-    """Search for images online. Use this tool BEFORE image generation to find reference images for characters, portraits, objects, scenes, or any content requiring visual accuracy.
+    """온라인에서 이미지를 검색한다. 인물, 초상, 사물, 장면 등 시각적 정확도가 필요한 대상의 참고 이미지를 찾으려면 이미지 생성 전에 이 도구를 사용하라.
 
-    **When to use:**
-    - Before generating character/portrait images: search for similar poses, expressions, styles
-    - Before generating specific objects/products: search for accurate visual references
-    - Before generating scenes/locations: search for architectural or environmental references
-    - Before generating fashion/clothing: search for style and detail references
+    **사용 시점:**
+    - 캐릭터/인물 이미지 생성 전: 비슷한 포즈, 표정, 스타일을 검색한다
+    - 특정 사물/제품 이미지 생성 전: 정확한 시각적 레퍼런스를 검색한다
+    - 장면/장소 이미지 생성 전: 건축이나 환경 레퍼런스를 검색한다
+    - 패션/의상 이미지 생성 전: 스타일과 디테일 레퍼런스를 검색한다
 
-    The returned image URLs can be used as reference images in image generation to significantly improve quality.
+    반환된 이미지 URL을 이미지 생성의 참고 이미지로 사용하면 품질이 크게 향상된다.
 
     Args:
-        query: Search keywords describing the images you want to find. Be specific for better results (e.g., "Japanese woman street photography 1990s" instead of just "woman").
-        max_results: Maximum number of images to return. Default is 5.
-        size: Image size filter. Options: "Small", "Medium", "Large", "Wallpaper". Use "Large" for reference images.
-        type_image: Image type filter. Options: "photo", "clipart", "gif", "transparent", "line". Use "photo" for realistic references.
-        layout: Layout filter. Options: "Square", "Tall", "Wide". Choose based on your generation needs.
+        query: 찾으려는 이미지를 설명하는 검색 키워드. 구체적일수록 결과가 좋다(예: 그냥 "woman" 대신 "Japanese woman street photography 1990s").
+        max_results: 반환할 최대 이미지 수. 기본값은 5.
+        size: 이미지 크기 필터. 옵션: "Small", "Medium", "Large", "Wallpaper". 참고 이미지에는 "Large"를 쓰라.
+        type_image: 이미지 타입 필터. 옵션: "photo", "clipart", "gif", "transparent", "line". 사실적인 레퍼런스에는 "photo"를 쓰라.
+        layout: 레이아웃 필터. 옵션: "Square", "Tall", "Wide". 생성 목적에 맞춰 고르라.
     """
     config = get_app_config().get_tool_config("image_search")
 
-    # Override max_results from config if set
+    # config에 설정되어 있으면 max_results를 덮어쓴다
     if config is not None and "max_results" in config.model_extra:
         max_results = config.model_extra.get("max_results", max_results)
 

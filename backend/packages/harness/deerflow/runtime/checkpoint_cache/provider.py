@@ -1,4 +1,4 @@
-"""Cache factory. Mirrors make_stream_bridge: config -> env fallback -> memory."""
+"""cache factory. make_stream_bridge와 같은 방식이다: config -> env fallback -> memory."""
 
 from __future__ import annotations
 
@@ -23,12 +23,11 @@ def _resolve_redis_url(config: Any) -> str:
 
 
 def _stable_postgres_identity(postgres_url: str) -> str:
-    """Credential-free database identity: host/port/database.
+    """자격 증명을 뺀 데이터베이스 identity: host/port/database.
 
-    Hashing the raw URL would change the cache namespace on every credential
-    rotation (cold cache + orphaned keys until TTL) even though the database
-    — and thus every cached checkpoint history — is unchanged. Unparseable
-    URLs fall back to the raw string (still stable per deployment).
+    raw URL을 해싱하면 자격 증명을 교체할 때마다 cache namespace가 바뀐다(cold cache에 더해
+    TTL까지 고아 키가 남는다). 데이터베이스는, 따라서 캐시된 모든 checkpoint history도 그대로인데
+    말이다. 파싱할 수 없는 URL은 raw 문자열로 대체한다(배포 단위로는 여전히 안정적이다).
     """
     if not postgres_url:
         return ""
@@ -36,13 +35,13 @@ def _stable_postgres_identity(postgres_url: str) -> str:
         from sqlalchemy.engine.url import make_url
 
         parsed = make_url(postgres_url)
-    except Exception:  # noqa: BLE001 - identity must never fail config load
+    except Exception:  # noqa: BLE001 - identity 계산 때문에 config 로드가 실패해서는 안 된다
         return postgres_url
     return f"{parsed.host or 'localhost'}:{parsed.port or 5432}/{parsed.database or ''}"
 
 
 def checkpoint_cache_db_hash(db_config: Any) -> str:
-    """Deployment-identity hash so two deployments sharing one Redis never collide."""
+    """배포 identity 해시. 하나의 Redis를 공유하는 두 배포가 충돌하지 않게 한다."""
     backend = getattr(db_config, "backend", "memory")
     if backend == "postgres":
         identity = f"postgres:{_stable_postgres_identity(getattr(db_config, 'postgres_url', ''))}:{getattr(db_config, 'postgres_schema', '')}"
@@ -66,10 +65,10 @@ async def make_checkpoint_cache(
     *,
     serde: Any,
 ) -> AsyncIterator[CheckpointHistoryCache]:
-    """Yield a history cache for the caller's lifetime.
+    """호출자의 수명 동안 쓸 history cache를 yield한다.
 
-    ``max_entries == 0`` disables the cache uniformly (both types) via a
-    disabled memory backend, so the wrapper never needs a None check.
+    ``max_entries == 0``이면 비활성화된 memory backend를 통해 두 타입 모두 cache가 균일하게
+    꺼지므로, wrapper에서 None 검사를 할 필요가 없다.
     """
     config = app_config.database.checkpoint_cache if app_config is not None else None
 

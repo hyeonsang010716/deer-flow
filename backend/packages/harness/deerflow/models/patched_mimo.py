@@ -1,10 +1,9 @@
-"""Patched ChatOpenAI adapter for Xiaomi MiMo reasoning_content replay.
+"""Xiaomi MiMo의 reasoning_content 재전송을 위한 ChatOpenAI 패치 adapter.
 
-MiMo's OpenAI-compatible API returns ``reasoning_content`` in thinking mode and
-requires that value to be replayed on historical assistant messages in
-multi-turn agent conversations. Standard ``langchain_openai.ChatOpenAI`` drops
-that provider-specific field, which can cause HTTP 400 errors once tool calls
-enter the conversation history.
+MiMo의 OpenAI 호환 API는 thinking mode에서 ``reasoning_content``를 반환하며, 멀티턴 agent
+대화에서는 그 값을 과거 assistant 메시지에 다시 실어 보내야 한다. 기본
+``langchain_openai.ChatOpenAI``는 이 provider 전용 필드를 버리므로, tool call이 대화 히스토리에
+들어오면 HTTP 400 오류가 날 수 있다.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ _MISSING = object()
 
 
 def _extract_reasoning_content(value: Any) -> str | object:
-    """Return reasoning_content from a dict/Pydantic object, preserving empty strings."""
+    """dict나 Pydantic 객체에서 reasoning_content를 꺼낸다. 빈 문자열도 보존한다."""
     if isinstance(value, Mapping):
         if "reasoning_content" in value and value["reasoning_content"] is not None:
             return value["reasoning_content"]
@@ -58,7 +57,7 @@ def _get_typed_choice_message(response: Any, index: int) -> Any:
 
 
 class PatchedChatMiMo(ChatOpenAI):
-    """ChatOpenAI with ``reasoning_content`` preservation for MiMo thinking mode."""
+    """MiMo thinking mode를 위해 ``reasoning_content``를 보존하는 ChatOpenAI."""
 
     @classmethod
     def is_lc_serializable(cls) -> bool:

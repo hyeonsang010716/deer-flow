@@ -1,4 +1,4 @@
-"""Configuration for the subagent system loaded from config.yaml."""
+"""config.yaml에서 읽어들이는 subagent 시스템 설정."""
 
 import logging
 
@@ -16,47 +16,42 @@ MAX_CONCURRENT_SUBAGENT_CALLS = 4
 
 
 def clamp_subagent_concurrency(value: int) -> int:
-    """Clamp per-response task call concurrency to the enforced middleware range."""
+    """응답 단위 task 호출 동시성을 middleware가 강제하는 범위로 클램프한다."""
     return max(MIN_CONCURRENT_SUBAGENT_CALLS, min(MAX_CONCURRENT_SUBAGENT_CALLS, value))
 
 
 def clamp_total_subagents_per_run(value: int) -> int:
-    """Clamp per-run task delegation totals to the enforced middleware range."""
+    """run 단위 task 위임 총량을 middleware가 강제하는 범위로 클램프한다."""
     return max(MIN_TOTAL_SUBAGENTS_PER_RUN, min(MAX_TOTAL_SUBAGENTS_PER_RUN, value))
 
 
 def default_subagent_token_budget(*, summarization_enabled: bool = False) -> TokenBudgetConfig:
-    """Default per-run token budget for subagents (#3875 Phase 2 → Phase 3 coupling).
+    """subagent의 run 단위 기본 token budget(#3875 Phase 2 → Phase 3 연동).
 
-    Enabled by default so the pathological-token-burn backstop actually
-    engages (per umbrella #3857 point 4 — backstops must engage, not just
-    exist). ``max_tokens`` is **coupled to whether subagent summarization is
-    on** (#3875 Phase 3 review point):
+    비정상적인 token 소모를 막는 backstop이 실제로 작동하도록 기본 활성화한다(umbrella
+    #3857 4번: backstop은 존재만 해서는 안 되고 작동해야 한다). ``max_tokens``는 **subagent
+    summarization 활성 여부와 연동된다**(#3875 Phase 3 리뷰 지적).
 
-    - ``summarization_enabled=True`` (Phase 3 compacts the running context
-      before it reaches pathological size): **1M** — tighter ceiling still
-      covers legitimate deep research while catching degenerate runs earlier.
-    - ``summarization_enabled=False``: **2M** — the Phase 2 ceiling. Phase 2's
-      own docstring noted legitimate deep-research runs (``max_turns=150``,
-      no summarization) "can genuinely accumulate >1M cumulative input," so a
-      1M ceiling without compaction would prematurely cap them. Keeping 2M
-      here preserves that headroom; the tighter 1M only applies when the
-      compaction that justifies it is actually running.
+    - ``summarization_enabled=True``(Phase 3가 컨텍스트가 비정상적으로 커지기 전에 압축):
+      **1M**. 더 빡빡한 상한이지만 정상적인 심층 조사는 여전히 커버하면서 비정상 run은
+      더 일찍 잡는다.
+    - ``summarization_enabled=False``: **2M**(Phase 2의 상한). Phase 2 docstring이 지적했듯
+      summarization 없이 ``max_turns=150``으로 도는 정상적인 심층 조사 run은 누적 입력이
+      1M을 넘길 수 있어, 압축 없이 1M 상한을 두면 조기에 잘린다. 여기서 2M을 유지해 여유를
+      남기고, 더 빡빡한 1M은 그것을 정당화하는 압축이 실제로 돌 때만 적용한다.
 
-    The model-level ``default_factory`` (``SubagentsAppConfig.token_budget``)
-    cannot read ``summarization.enabled`` (a sibling top-level field), so it
-    falls back to the 2M no-compaction default; the builder
-    (``build_subagent_runtime_middlewares``) recomputes via
-    ``get_token_budget_for(..., summarization_enabled=...)`` so the live value
-    reflects the actual switch. A user-set ``token_budget`` (global or
-    per-agent) always wins regardless of the switch. Flagged tunable.
+    모델 수준 ``default_factory``(``SubagentsAppConfig.token_budget``)는 형제 최상위 필드인
+    ``summarization.enabled``를 읽을 수 없어 압축 없음 기준인 2M을 쓴다. 빌더
+    (``build_subagent_runtime_middlewares``)가 ``get_token_budget_for(...,
+    summarization_enabled=...)``로 다시 계산해 실제 스위치를 반영한다. 사용자가 지정한
+    ``token_budget``(전역이든 agent별이든)은 스위치와 무관하게 항상 우선한다. 튜닝 가능 항목.
     """
     max_tokens = 1_000_000 if summarization_enabled else 2_000_000
     return TokenBudgetConfig(enabled=True, max_tokens=max_tokens, warn_threshold=0.7)
 
 
 class SubagentOverrideConfig(BaseModel):
-    """Per-agent configuration overrides."""
+    """agent 단위 설정 override."""
 
     timeout_seconds: int | None = Field(
         default=None,
@@ -84,7 +79,7 @@ class SubagentOverrideConfig(BaseModel):
 
 
 class CustomSubagentConfig(BaseModel):
-    """User-defined subagent type declared in config.yaml."""
+    """config.yaml에 선언한 사용자 정의 subagent 타입."""
 
     description: str = Field(
         description="When the lead agent should delegate to this subagent",
@@ -121,7 +116,7 @@ class CustomSubagentConfig(BaseModel):
 
 
 class SubagentsAppConfig(BaseModel):
-    """Configuration for the subagent system."""
+    """subagent 시스템 설정."""
 
     timeout_seconds: int = Field(
         default=1800,
@@ -152,14 +147,12 @@ class SubagentsAppConfig(BaseModel):
         description="User-defined subagent types keyed by agent name",
     )
 
-    # True when ``token_budget`` was NOT explicitly provided by the user, i.e.
-    # the field fell back to its default_factory. ``get_token_budget_for`` uses
-    # this to decide whether the ceiling may be re-coupled to
-    # ``summarization.enabled`` (#3875 Phase 3): a user-set budget is always
-    # respected as-is. Set by ``__init__`` from ``model_fields_set`` and
-    # preserved across the app-config reload path (which drops a default
-    # ``token_budget`` before re-constructing — see
-    # ``load_subagents_config_from_dict``).
+    # 사용자가 ``token_budget``을 명시하지 않아 default_factory로 채워졌을 때 True.
+    # ``get_token_budget_for``가 상한을 ``summarization.enabled``에 다시 연동해도 되는지
+    # 판단하는 데 쓴다(#3875 Phase 3). 사용자가 지정한 budget은 항상 그대로 존중한다.
+    # ``__init__``이 ``model_fields_set``으로 설정하며, app-config reload 경로에서도
+    # 유지된다(재구성 전에 기본값 ``token_budget``을 제거한다 —
+    # ``load_subagents_config_from_dict`` 참고).
     _token_budget_is_default: bool = True
 
     def __init__(self, **data):
@@ -167,13 +160,13 @@ class SubagentsAppConfig(BaseModel):
         self._token_budget_is_default = "token_budget" not in self.model_fields_set
 
     def get_timeout_for(self, agent_name: str) -> int:
-        """Get the effective timeout for a specific agent.
+        """특정 agent의 실효 timeout을 반환한다.
 
         Args:
-            agent_name: The name of the subagent.
+            agent_name: subagent 이름.
 
         Returns:
-            The timeout in seconds, using per-agent override if set, otherwise global default.
+            초 단위 timeout. agent별 override가 있으면 그것을, 없으면 전역 기본값을 쓴다.
         """
         override = self.agents.get(agent_name)
         if override is not None and override.timeout_seconds is not None:
@@ -181,13 +174,13 @@ class SubagentsAppConfig(BaseModel):
         return self.timeout_seconds
 
     def get_model_for(self, agent_name: str) -> str | None:
-        """Get the model override for a specific agent.
+        """특정 agent의 model override를 반환한다.
 
         Args:
-            agent_name: The name of the subagent.
+            agent_name: subagent 이름.
 
         Returns:
-            Model name if overridden, None otherwise (subagent will inherit parent model).
+            override된 model 이름, 없으면 None(subagent가 부모의 model을 상속한다).
         """
         override = self.agents.get(agent_name)
         if override is not None and override.model is not None:
@@ -195,7 +188,7 @@ class SubagentsAppConfig(BaseModel):
         return None
 
     def get_max_turns_for(self, agent_name: str, builtin_default: int) -> int:
-        """Get the effective max_turns for a specific agent."""
+        """특정 agent의 실효 max_turns를 반환한다."""
         override = self.agents.get(agent_name)
         if override is not None and override.max_turns is not None:
             return override.max_turns
@@ -204,13 +197,14 @@ class SubagentsAppConfig(BaseModel):
         return builtin_default
 
     def get_skills_for(self, agent_name: str) -> list[str] | None:
-        """Get the skills override for a specific agent.
+        """특정 agent의 skills override를 반환한다.
 
         Args:
-            agent_name: The name of the subagent.
+            agent_name: subagent 이름.
 
         Returns:
-            Skill names whitelist if overridden, None otherwise (subagent will inherit all enabled skills).
+            override된 skill 이름 whitelist, 없으면 None(subagent가 활성화된 모든 skill을
+            상속한다).
         """
         override = self.agents.get(agent_name)
         if override is not None and override.skills is not None:
@@ -223,26 +217,23 @@ class SubagentsAppConfig(BaseModel):
         *,
         summarization_enabled: bool = False,
     ) -> TokenBudgetConfig:
-        """Get the effective token-budget config for a specific agent.
+        """특정 agent의 실효 token-budget 설정을 반환한다.
 
-        Unlike ``max_turns``/``timeout_seconds`` (which keep a custom agent's
-        own value), the token budget is a safety backstop that must engage for
-        every subagent unless explicitly disabled — so the per-agent override
-        wins when set, otherwise the global default applies to built-in AND
-        custom agents alike (#3875 Phase 2 / umbrella #3857 point 4).
+        custom agent 자신의 값을 유지하는 ``max_turns``/``timeout_seconds``와 달리, token
+        budget은 명시적으로 끄지 않는 한 모든 subagent에 걸려야 하는 안전 backstop이다. 따라서
+        agent별 override가 있으면 그것이 이기고, 없으면 전역 기본값이 built-in과 custom agent에
+        똑같이 적용된다(#3875 Phase 2 / umbrella #3857 4번).
 
-        ``summarization_enabled`` couples the DEFAULT ceiling to whether
-        subagent summarization is on (#3875 Phase 3 review): 1M when
-        compaction is running, 2M otherwise. It ONLY affects the default —
-        any explicitly configured ``token_budget`` (global or per-agent)
-        wins regardless, so a deployment that pinned a value is never
-        silently changed by flipping the summarization switch.
+        ``summarization_enabled``는 **기본** 상한을 subagent summarization 활성 여부와
+        연동한다(#3875 Phase 3 리뷰): 압축이 돌면 1M, 아니면 2M. 오직 기본값에만 영향을 준다 —
+        명시적으로 설정된 ``token_budget``(전역이든 agent별이든)이 항상 우선하므로, 값을 고정한
+        배포가 summarization 스위치를 바꿨다고 조용히 달라지지 않는다.
         """
         override = self.agents.get(agent_name)
         if override is not None and override.token_budget is not None:
             return override.token_budget
-        # Only recompute when the caller is using the default (no explicit
-        # global token_budget was set). A user-set global is respected as-is.
+        # 호출자가 기본값을 쓰는 경우(전역 token_budget을 명시하지 않은 경우)에만 다시 계산한다.
+        # 사용자가 지정한 전역 값은 그대로 존중한다.
         if self._token_budget_is_default:
             return default_subagent_token_budget(summarization_enabled=summarization_enabled)
         return self.token_budget
@@ -252,22 +243,19 @@ _subagents_config: SubagentsAppConfig = SubagentsAppConfig()
 
 
 def get_subagents_app_config() -> SubagentsAppConfig:
-    """Get the current subagents configuration."""
+    """현재 subagents 설정을 반환한다."""
     return _subagents_config
 
 
 def load_subagents_config_from_dict(config_dict: dict) -> None:
-    """Load subagents configuration from a dictionary."""
+    """dict에서 subagents 설정을 읽어들인다."""
     global _subagents_config
-    # The app-config reload path (app_config.py) round-trips via
-    # ``config.subagents.model_dump()``, which serializes a default
-    # ``token_budget`` into the dict. Re-constructing from that dict would make
-    # ``model_fields_set`` contain ``token_budget`` and flip
-    # ``_token_budget_is_default`` to False — breaking the
-    # summarization-coupled recompute in ``get_token_budget_for`` (#3875 Phase
-    # 3). Drop the key when its value still equals the no-compaction default so
-    # the default_factory fires on reconstruction and the "user did not set
-    # this" signal is preserved.
+    # app-config reload 경로(app_config.py)는 ``config.subagents.model_dump()``로 왕복하는데,
+    # 이때 기본값 ``token_budget``도 dict에 직렬화된다. 그 dict로 재구성하면
+    # ``model_fields_set``에 ``token_budget``이 들어가 ``_token_budget_is_default``가 False가
+    # 되고, ``get_token_budget_for``의 summarization 연동 재계산이 깨진다(#3875 Phase 3).
+    # 값이 여전히 압축 없음 기준 기본값과 같으면 키를 제거해, 재구성 시 default_factory가
+    # 동작하고 "사용자가 설정하지 않았다"는 신호가 보존되게 한다.
     tb = config_dict.get("token_budget")
     if tb is not None and tb == default_subagent_token_budget(summarization_enabled=False).model_dump():
         config_dict = {k: v for k, v in config_dict.items() if k != "token_budget"}

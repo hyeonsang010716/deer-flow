@@ -1,4 +1,4 @@
-"""In-memory run registry with optional persistent RunStore backing."""
+"""in-memory run registry. 선택적으로 영속 RunStore를 백엔드로 둔다."""
 
 from __future__ import annotations
 
@@ -45,32 +45,31 @@ _RETRYABLE_SQLITE_ERROR_CODES = {
     sqlite3.SQLITE_LOCKED,
 }
 
-# Driver-native unique-constraint signals. These are stable across driver and
-# SQLAlchemy versions — message text is not (SQLite says "UNIQUE constraint
-# failed", Postgres says "duplicate key value violates unique constraint").
+# driver 고유의 unique-constraint 신호. driver와 SQLAlchemy 버전이 바뀌어도 안정적이다 —
+# 메시지 텍스트는 그렇지 않다(SQLite는 "UNIQUE constraint failed", Postgres는
+# "duplicate key value violates unique constraint"라고 한다).
 _UNIQUE_PGCODE = "23505"
 _SQLITE_UNIQUE_ERRORCODE = sqlite3.SQLITE_CONSTRAINT_UNIQUE
 
 
 def _generate_worker_id() -> str:
-    """Generate a unique worker identifier: ``hostname:hex_uuid``."""
+    """고유한 worker 식별자 ``hostname:hex_uuid``를 생성한다."""
     return f"{socket.gethostname()}:{uuid.uuid4().hex}"
 
 
 def _is_unique_violation(exc: BaseException) -> bool:
-    """Return True when *exc* (or its cause chain) is a unique-constraint violation.
+    """*exc*(또는 그 cause chain)가 unique-constraint 위반이면 True를 반환한다.
 
-    SQLAlchemy wraps the driver's IntegrityError; the wrapped driver exception is
-    reachable via ``exc.orig`` (and ``__cause__`` / ``__context__``). Prefer
-    driver-native signals — psycopg ``pgcode`` / ``sqlcode`` = "23505" and
-    sqlite3 ``sqlite_errorcode`` = ``SQLITE_CONSTRAINT_UNIQUE`` — over message
-    matching, then fall back to message substrings for cases where the driver
-    exception isn't reachable through the chain.
+    SQLAlchemy는 driver의 IntegrityError를 감싸며, 감싸인 driver 예외는 ``exc.orig``
+    (그리고 ``__cause__`` / ``__context__``)로 접근할 수 있다. 메시지 매칭보다
+    driver 고유 신호 — psycopg ``pgcode`` / ``sqlcode`` = "23505", sqlite3
+    ``sqlite_errorcode`` = ``SQLITE_CONSTRAINT_UNIQUE`` — 를 우선하고, chain으로
+    driver 예외에 닿을 수 없는 경우에만 메시지 부분 문자열로 fallback한다.
 
-    Message text drifts across drivers and locales (SQLite raises
-    ``UNIQUE constraint failed: <table>.<index>``; Postgres raises
-    ``duplicate key value violates unique constraint``), so the code/attribute
-    checks are the load-bearing path.
+    메시지 텍스트는 driver와 로케일에 따라 달라지므로(SQLite는
+    ``UNIQUE constraint failed: <table>.<index>``, Postgres는
+    ``duplicate key value violates unique constraint``를 낸다) 코드/속성 검사가
+    핵심 경로다.
     """
     pending: list[BaseException] = [exc]
     seen: set[int] = set()
@@ -89,13 +88,11 @@ def _is_unique_violation(exc: BaseException) -> bool:
         if getattr(current, "sqlite_errorcode", None) == _SQLITE_UNIQUE_ERRORCODE:
             return True
 
-        # Message fallbacks are belt-and-suspenders for drivers whose
-        # native code attribute isn't reachable through the chain. Gate on
-        # an IntegrityError-typed node so an unrelated application
-        # exception whose ``str()`` happens to contain "duplicate key" /
-        # "unique" + "violat" (CHECK constraint message, validation error,
-        # arbitrary subsystem string) cannot be misclassified as a unique
-        # violation and silently surface as HTTP 409 instead of 500.
+        # 메시지 fallback은 chain으로 고유 코드 속성에 닿을 수 없는 driver를 위한
+        # 이중 안전장치다. IntegrityError 타입 노드로 제한해서, ``str()``에 우연히
+        # "duplicate key" / "unique" + "violat"이 들어간 무관한 애플리케이션 예외
+        # (CHECK constraint 메시지, 검증 오류, 임의의 서브시스템 문자열)가 unique
+        # 위반으로 오분류되어 500 대신 HTTP 409로 조용히 나가지 않게 한다.
         if isinstance(current, (SAIntegrityError, sqlite3.IntegrityError)):
             message = str(current).lower()
             if "unique constraint failed" in message:
@@ -113,12 +110,11 @@ def _is_unique_violation(exc: BaseException) -> bool:
 
 
 def _is_retryable_persistence_error(exc: BaseException) -> bool:
-    """Return True for transient SQLite persistence failures.
+    """일시적인 SQLite 영속화 실패면 True를 반환한다.
 
-    SQLite lock contention normally surfaces through either sqlite3 exceptions
-    or SQLAlchemy wrappers.  The short bounded retry here protects run status
-    finalization from transient writer pressure without hiding permanent
-    failures forever.
+    SQLite lock 경합은 보통 sqlite3 예외나 SQLAlchemy wrapper로 드러난다. 여기의
+    짧은 bounded retry는 영구적 실패를 영원히 감추지 않으면서 run status 확정을
+    일시적인 writer 부하로부터 보호한다.
     """
 
     pending: list[BaseException] = [exc]
@@ -144,7 +140,7 @@ def _is_retryable_persistence_error(exc: BaseException) -> bool:
 
 @dataclass(frozen=True)
 class PersistenceRetryPolicy:
-    """Bounded retry policy for short run-store writes."""
+    """짧은 run-store 쓰기에 적용하는 bounded retry 정책."""
 
     max_attempts: int = 5
     initial_delay: float = 0.05
@@ -154,7 +150,7 @@ class PersistenceRetryPolicy:
 
 @dataclass
 class RunRecord:
-    """Mutable record for a single run."""
+    """단일 run에 대한 변경 가능한 record."""
 
     run_id: str
     thread_id: str
@@ -169,7 +165,7 @@ class RunRecord:
     created_at: str = ""
     updated_at: str = ""
     task: asyncio.Task | None = field(default=None, repr=False)
-    # Serializes startup if an admitted run is ever handed to more than one worker path.
+    # 승인된 run이 둘 이상의 worker 경로로 넘어가는 경우 startup을 직렬화한다.
     start_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     abort_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     abort_action: str = "interrupt"
@@ -183,7 +179,7 @@ class RunRecord:
     lead_agent_tokens: int = 0
     subagent_tokens: int = 0
     middleware_tokens: int = 0
-    # Per-model token breakdown
+    # 모델별 token 사용량 분해
     token_usage_by_model: dict[str, dict[str, int]] = field(default_factory=dict)
     message_count: int = 0
     last_ai_message: str | None = None
@@ -191,33 +187,32 @@ class RunRecord:
     finalizing: bool = False
     owner_worker_id: str | None = None
     lease_expires_at: str | None = None
-    # Process-local fencing signal. Once set, this worker must not perform
-    # further durable run/thread finalization because its lease ownership is
-    # either known to be lost or could not be confirmed before expiry.
+    # 프로세스 로컬 fencing 신호. 한 번 설정되면 이 worker는 더 이상 durable한
+    # run/thread 확정을 수행하면 안 된다. lease 소유권을 잃은 것이 확인됐거나
+    # 만료 전에 확인하지 못했기 때문이다.
     ownership_lost: bool = False
     stop_reason: str | None = None
 
 
 class RunStartOutcome(StrEnum):
-    """Result of the pending-to-running startup barrier."""
+    """pending에서 running으로 넘어가는 startup barrier의 결과."""
 
     started = "started"
     cancelled = "cancelled"
 
 
 class RunStartupError(RuntimeError):
-    """Raised when durable startup cannot be resolved safely."""
+    """durable한 startup을 안전하게 결정할 수 없을 때 발생한다."""
 
 
 OrphanRecoveryCallback = Callable[[list[RunRecord]], Awaitable[None]]
 
 
 class RunManager:
-    """In-memory run registry with optional persistent RunStore backing.
+    """in-memory run registry. 선택적으로 영속 RunStore를 백엔드로 둔다.
 
-    All mutations are protected by an asyncio lock. When a ``store`` is
-    provided, serializable metadata is also persisted to the store so
-    that run history survives process restarts.
+    모든 변경은 asyncio lock으로 보호된다. ``store``가 주어지면 직렬화 가능한
+    metadata도 store에 영속화되어 run history가 프로세스 재시작을 견딘다.
     """
 
     def __init__(
@@ -231,10 +226,10 @@ class RunManager:
         on_orphans_recovered: OrphanRecoveryCallback | None = None,
     ) -> None:
         self._runs: dict[str, RunRecord] = {}
-        # Secondary index: thread_id -> insertion-ordered run_id set (a dict is
-        # used as an ordered set), maintained in lockstep with ``_runs`` so
-        # per-thread queries avoid O(total in-memory runs) full scans while
-        # preserving ``_runs`` iteration order (see ``_thread_records_locked``).
+        # 보조 index: thread_id -> 삽입 순서를 유지하는 run_id 집합(dict를 ordered
+        # set으로 사용). ``_runs``와 lockstep으로 갱신되므로 thread 단위 조회가
+        # O(전체 in-memory run) 전체 스캔을 피하면서도 ``_runs``의 순회 순서를
+        # 유지한다(``_thread_records_locked`` 참고).
         self._runs_by_thread: dict[str, dict[str, None]] = {}
         self._lock = asyncio.Lock()
         self._store = store
@@ -248,11 +243,11 @@ class RunManager:
         self._orphan_recovery_task: asyncio.Task[None] | None = None
 
     def _index_run_locked(self, record: RunRecord) -> None:
-        """Register *record* in the thread index. Caller must hold ``self._lock``."""
+        """*record*를 thread index에 등록한다. 호출자가 ``self._lock``을 잡고 있어야 한다."""
         self._runs_by_thread.setdefault(record.thread_id, {})[record.run_id] = None
 
     def _unindex_run_locked(self, run_id: str, thread_id: str) -> None:
-        """Drop *run_id* from the thread index. Caller must hold ``self._lock``."""
+        """thread index에서 *run_id*를 제거한다. 호출자가 ``self._lock``을 잡고 있어야 한다."""
         bucket = self._runs_by_thread.get(thread_id)
         if bucket is not None:
             bucket.pop(run_id, None)
@@ -260,17 +255,16 @@ class RunManager:
                 self._runs_by_thread.pop(thread_id, None)
 
     def _thread_records_locked(self, thread_id: str) -> list[RunRecord]:
-        """Return live in-memory records for *thread_id*. Caller must hold ``self._lock``.
+        """*thread_id*의 살아 있는 in-memory record를 반환한다. 호출자가 ``self._lock``을 잡아야 한다.
 
-        Uses the ``_runs_by_thread`` index for O(runs-in-thread) lookup instead of
-        scanning every in-memory run. Correctness rests on the index and ``_runs``
-        being mutated in lockstep under ``self._lock`` (no ``await`` between the two
-        writes), so any holder of the lock sees them agree. The ``self._runs.get``
-        filter is defense-in-depth, not reconciliation: it drops a stale id still in
-        the index but already gone from ``_runs``, yet it cannot recover a run that is
-        in ``_runs`` but missing from the index (such a run would be silently
-        omitted). It guards only that one direction, should a future refactor ever
-        break the lockstep invariant.
+        모든 in-memory run을 스캔하는 대신 ``_runs_by_thread`` index로 O(thread 내 run)
+        조회를 한다. 정확성은 index와 ``_runs``가 ``self._lock`` 아래에서 lockstep으로
+        갱신된다는 점(두 쓰기 사이에 ``await``가 없다)에 기대므로, lock을 잡은 쪽은
+        항상 둘이 일치하는 상태를 본다. ``self._runs.get`` 필터는 정합성 복구가 아니라
+        이중 안전장치다. index에는 남아 있지만 ``_runs``에서 이미 사라진 낡은 id는
+        걸러내지만, ``_runs``에 있는데 index에 없는 run은 복구하지 못한다(그런 run은
+        조용히 누락된다). 향후 리팩터링이 lockstep 불변식을 깨뜨릴 경우를 대비해 한쪽
+        방향만 보호한다.
         """
         run_ids = self._runs_by_thread.get(thread_id)
         if not run_ids:
@@ -305,7 +299,7 @@ class RunManager:
         run_id: str,
         operation: Callable[[], Awaitable[Any]],
     ) -> Any:
-        """Run a short store operation with bounded retries for SQLite pressure."""
+        """SQLite 부하를 대비해 bounded retry를 붙여 짧은 store 연산을 실행한다."""
         policy = self._persistence_retry_policy
         attempt = 1
         delay = policy.initial_delay
@@ -330,7 +324,7 @@ class RunManager:
                 attempt += 1
 
     async def _persist_snapshot_to_store(self, run_id: str, payload: dict[str, Any]) -> bool:
-        """Best-effort persist a previously captured run snapshot."""
+        """앞서 캡처해 둔 run snapshot을 best-effort로 영속화한다."""
         if self._store is None:
             return True
         try:
@@ -345,13 +339,12 @@ class RunManager:
             return False
 
     async def _persist_new_run_to_store(self, record: RunRecord) -> None:
-        """Persist a newly created run record to the backing store.
+        """새로 생성된 run record를 backing store에 영속화한다.
 
-        Initial run creation is part of the run visibility boundary: callers
-        should not observe a run in memory unless its backing store row exists.
-        Unlike follow-up status/model updates, failures are propagated so the
-        caller can treat creation as failed. Rollback is the caller's
-        responsibility after inserting the record into ``_runs``.
+        최초 run 생성은 run 가시성 경계의 일부다. backing store row가 없으면
+        호출자가 메모리에서 그 run을 관측해서는 안 된다. 이후의 status/model 업데이트와
+        달리 실패는 그대로 전파되므로 호출자가 생성 실패로 처리할 수 있다. record를
+        ``_runs``에 넣은 뒤의 rollback은 호출자 책임이다.
         """
         if self._store is None:
             return
@@ -362,14 +355,14 @@ class RunManager:
         )
 
     async def _persist_to_store(self, record: RunRecord, *, error: str | None = None) -> bool:
-        """Best-effort persist run record to backing store."""
+        """run record를 backing store에 best-effort로 영속화한다."""
         return await self._persist_snapshot_to_store(
             record.run_id,
             self._store_put_payload(record, error=error),
         )
 
     async def _persist_status(self, record: RunRecord, status: RunStatus, *, error: str | None = None, stop_reason: str | None = None) -> bool:
-        """Best-effort persist a status transition to the backing store."""
+        """status 전이를 backing store에 best-effort로 영속화한다."""
         if record.ownership_lost:
             logger.warning(
                 "Skipped status update to %s for run %s after lease ownership was lost",
@@ -387,12 +380,12 @@ class RunManager:
                 lambda: self._store.update_status(record.run_id, status.value, error=error, stop_reason=stop_reason),
             )
             if updated is False:
-                # ``update_status`` is now guarded by ``status IN ('pending','running')``.
-                # False can mean either:
-                #   (a) the row was never persisted (initial ``put()`` failed) → recreate.
-                #   (b) the row is terminal — either a peer takeover (``error``)
-                #       or a local cancel/completion race (``interrupted`` /
-                #       ``success``). The log severity branches on which.
+                # 이제 ``update_status``는 ``status IN ('pending','running')``으로 보호된다.
+                # False가 뜻하는 경우는 둘 중 하나다:
+                #   (a) row가 애초에 영속화되지 않았다(최초 ``put()`` 실패) → 다시 만든다.
+                #   (b) row가 terminal이다 — peer takeover(``error``)이거나 로컬
+                #       cancel/completion 경쟁(``interrupted`` / ``success``).
+                #       어느 쪽인지에 따라 로그 심각도가 갈린다.
                 existing = await self._store.get(record.run_id)
                 if existing is not None:
                     existing_status = existing.get("status")
@@ -431,10 +424,10 @@ class RunManager:
 
     @staticmethod
     def _record_from_store(row: dict[str, Any]) -> RunRecord:
-        """Build a read-only runtime record from a serialized store row.
+        """직렬화된 store row로부터 읽기 전용 runtime record를 만든다.
 
-        NULL status/on_disconnect columns (e.g. from rows written before those
-        columns were added) default to ``pending`` and ``cancel`` respectively.
+        NULL인 status/on_disconnect 컬럼(예: 해당 컬럼 추가 이전에 기록된 row)은 각각
+        ``pending``과 ``cancel``을 기본값으로 쓴다.
         """
         return RunRecord(
             run_id=row["run_id"],
@@ -469,7 +462,7 @@ class RunManager:
         )
 
     async def update_run_completion(self, run_id: str, **kwargs) -> None:
-        """Persist token usage and completion data to the backing store."""
+        """token 사용량과 완료 데이터를 backing store에 영속화한다."""
         row_recovery_payload: dict[str, Any] | None = None
         record: RunRecord | None = None
         async with self._lock:
@@ -526,7 +519,7 @@ class RunManager:
             logger.warning("Failed to persist run completion for %s", run_id, exc_info=True)
 
     async def update_run_progress(self, run_id: str, **kwargs) -> None:
-        """Persist a running token/message snapshot without changing status."""
+        """status는 바꾸지 않고 진행 중인 token/message snapshot을 영속화한다."""
         should_persist = True
         async with self._lock:
             record = self._runs.get(run_id)
@@ -554,14 +547,13 @@ class RunManager:
         multitask_strategy: str = "reject",
         user_id: str | None = None,
     ) -> RunRecord:
-        """Create a new pending run and register it.
+        """새 pending run을 만들어 등록한다.
 
-        Note: this method assumes no active run exists for the thread. It
-        persists via ``store.put`` (upsert) rather than the atomic
-        ``create_thread_operation_atomic`` primitive, so a concurrent insert for the
-        same thread will hit the partial unique index and surface as a
-        raw ``IntegrityError`` instead of a ``ConflictError``. Production
-        callers should use :meth:`create_or_reject`.
+        주의: 이 메서드는 해당 thread에 active run이 없다고 가정한다. 원자적
+        ``create_thread_operation_atomic`` 대신 ``store.put``(upsert)으로 영속화하므로,
+        같은 thread에 대한 동시 insert는 partial unique index에 걸려
+        ``ConflictError``가 아니라 raw ``IntegrityError``로 드러난다. 프로덕션
+        호출자는 :meth:`create_or_reject`를 써야 한다.
         """
         run_id = str(uuid.uuid4())
         now = _now_iso()
@@ -592,7 +584,7 @@ class RunManager:
                 logger.warning("Failed to persist run %s; rolled back in-memory record", run_id, exc_info=True)
                 raise
             finally:
-                # Also covers cancellation, which bypasses ``except Exception``.
+                # ``except Exception``을 우회하는 cancellation까지 함께 처리한다.
                 if not persisted:
                     self._runs.pop(run_id, None)
                     self._unindex_run_locked(run_id, record.thread_id)
@@ -600,11 +592,11 @@ class RunManager:
         return record
 
     async def get(self, run_id: str, *, user_id: str | None = None) -> RunRecord | None:
-        """Return a run record by ID, or ``None``.
+        """ID로 run record를 반환하거나 ``None``을 반환한다.
 
         Args:
-            run_id: The run ID to look up.
-            user_id: Optional user ID for permission filtering when hydrating from store.
+            run_id: 조회할 run ID.
+            user_id: store에서 hydrate할 때 권한 필터링에 쓰는 선택적 user ID.
         """
         async with self._lock:
             record = self._runs.get(run_id)
@@ -617,8 +609,8 @@ class RunManager:
         except Exception:
             logger.warning("Failed to hydrate run %s from store", run_id, exc_info=True)
             return None
-        # Re-check after store await: a concurrent create() may have inserted the
-        # in-memory record while the store call was in flight.
+        # store await 이후 재확인: store 호출이 진행되는 동안 동시 create()가
+        # in-memory record를 넣었을 수 있다.
         async with self._lock:
             record = self._runs.get(run_id)
         if record is not None:
@@ -632,34 +624,33 @@ class RunManager:
             return None
 
     async def aget(self, run_id: str, *, user_id: str | None = None) -> RunRecord | None:
-        """Return a run record by ID, checking the persistent store as fallback.
+        """ID로 run record를 반환하며, 없으면 영속 store를 fallback으로 확인한다.
 
-        Alias for :meth:`get` for backward compatibility.
+        하위 호환을 위한 :meth:`get`의 별칭이다.
         """
         return await self.get(run_id, user_id=user_id)
 
     async def list_by_thread(self, thread_id: str, *, user_id: str | None = None, limit: int = 100) -> list[RunRecord]:
-        """Return runs for a given thread, newest first, at most ``limit`` records.
+        """주어진 thread의 run을 최신순으로 최대 ``limit``개 반환한다.
 
-        In-memory runs take precedence only when the same ``run_id`` exists in both
-        memory and the backing store. The merged result is then sorted newest-first
-        by ``created_at`` and trimmed to ``limit`` (default 100).
+        같은 ``run_id``가 메모리와 backing store 양쪽에 있을 때만 in-memory run이
+        우선한다. 병합된 결과는 ``created_at`` 기준 최신순으로 정렬한 뒤 ``limit``
+        (기본 100)까지 잘라낸다.
 
         Args:
-            thread_id: The thread ID to filter by.
-            user_id: Optional user ID for permission filtering when hydrating from store.
-            limit: Maximum number of runs to return.
+            thread_id: 필터링할 thread ID.
+            user_id: store에서 hydrate할 때 권한 필터링에 쓰는 선택적 user ID.
+            limit: 반환할 run의 최대 개수.
         """
         async with self._lock:
             memory_records = [record for record in self._thread_records_locked(thread_id) if record.operation_kind == ThreadOperationKind.run]
         if self._store is None:
             return sorted(memory_records, key=lambda r: r.created_at, reverse=True)[:limit]
         records_by_id = {record.run_id: record for record in memory_records}
-        # Query enough rows to cover both the requested page and every possible
-        # in-memory/store duplicate. Local records can be older than persisted
-        # rows, so subtracting them from the store limit can hide the actual
-        # newest run before the merge; querying only ``limit`` can still lose a
-        # distinct row when that page is occupied by duplicate local records.
+        # 요청한 페이지와 가능한 모든 in-memory/store 중복을 함께 덮을 만큼 row를
+        # 조회한다. 로컬 record가 영속 row보다 오래됐을 수 있으므로 store limit에서
+        # 그만큼 빼면 병합 전에 실제 최신 run이 가려질 수 있고, ``limit``만 조회하면
+        # 그 페이지가 중복된 로컬 record로 채워졌을 때 별개의 row를 놓칠 수 있다.
         store_limit = limit + len(memory_records)
         try:
             rows = await self._store.list_by_thread(thread_id, user_id=user_id, limit=store_limit)
@@ -681,23 +672,21 @@ class RunManager:
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> set[str]:
-        """Return all source runs superseded by successful regenerations.
+        """성공한 regeneration으로 대체된 모든 source run을 반환한다.
 
-        Unlike :meth:`list_by_thread`, this query is intentionally unbounded.
-        Current-process records override matching persisted status: a latest
-        in-memory failure must not inherit an older successful store snapshot.
-        Store failures propagate because supersession filtering is required for
-        correct pagination.
+        :meth:`list_by_thread`와 달리 이 조회는 의도적으로 개수 제한이 없다. 현재
+        프로세스의 record가 영속된 status를 덮어쓴다. 최신 in-memory 실패가 더 오래된
+        성공 store snapshot을 물려받아서는 안 되기 때문이다. 대체 여부 필터링은
+        올바른 pagination에 필수이므로 store 실패는 그대로 전파한다.
         """
         resolved_user_id = resolve_user_id(user_id, method_name="RunManager.list_successful_regenerate_sources")
         async with self._lock:
             memory_records = [record for record in self._thread_records_locked(thread_id) if record.operation_kind == ThreadOperationKind.run and (resolved_user_id is None or record.user_id == resolved_user_id)]
 
         sources = set(await self._store.list_successful_regenerate_sources(thread_id, user_id=resolved_user_id)) if self._store is not None else set()
-        # _thread_records_locked preserves the insertion order of the thread
-        # index. Applying records oldest-to-newest makes the latest in-memory
-        # regeneration attempt authoritative when several attempts reference
-        # the same source run (for example, a failed retry after a success).
+        # _thread_records_locked는 thread index의 삽입 순서를 유지한다. record를
+        # 오래된 것부터 적용하면 여러 시도가 같은 source run을 참조할 때(예: 성공 후
+        # 실패한 재시도) 최신 in-memory regeneration 시도가 최종 권위를 갖는다.
         for record in memory_records:
             source = record.metadata.get("regenerate_from_run_id")
             if not isinstance(source, str) or not source:
@@ -743,11 +732,11 @@ class RunManager:
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> EditReplayVisibility:
-        """Return run-id visibility rules for edit-and-rerun attempts.
+        """edit-and-rerun 시도에 대한 run-id 가시성 규칙을 반환한다.
 
-        Store rows cover reload/multi-worker history. Current-process records
-        override the same run ids because they may have newer terminal status
-        than the persisted snapshot visible when this query started.
+        store row는 reload / multi-worker 이력을 덮는다. 현재 프로세스의 record가
+        같은 run id를 덮어쓰는데, 이 조회를 시작한 시점의 영속 snapshot보다 더 최신의
+        terminal status를 가질 수 있기 때문이다.
         """
         resolved_user_id = resolve_user_id(user_id, method_name="RunManager.list_edit_replay_visibility")
         records_by_id: dict[str, RunRecord] = {}
@@ -769,7 +758,7 @@ class RunManager:
         return self._compute_edit_replay_visibility(list(records_by_id.values()))
 
     async def try_start(self, run_id: str) -> RunStartOutcome:
-        """Transition an uncancelled pending run to running before building the agent."""
+        """agent를 만들기 전에 취소되지 않은 pending run을 running으로 전이시킨다."""
         async with self._lock:
             record = self._runs.get(run_id)
         if record is None:
@@ -818,7 +807,7 @@ class RunManager:
             return RunStartOutcome.cancelled
 
     async def fail_start_if_pending(self, run_id: str, *, error: str) -> bool:
-        """Mark an admitted run as failed if its worker task could not be attached."""
+        """승인된 run에 worker task를 붙이지 못했으면 실패로 표시한다."""
         async with self._lock:
             record = self._runs.get(run_id)
             if record is None or record.status != RunStatus.pending:
@@ -838,7 +827,7 @@ class RunManager:
         *,
         user_id: str | None | _AutoSentinel = AUTO,
     ) -> dict[str, RunRecord]:
-        """Batch-load selected thread runs with in-memory records preferred."""
+        """지정한 thread run들을 일괄 로드하며 in-memory record를 우선한다."""
         if not run_ids:
             return {}
         resolved_user_id = resolve_user_id(user_id, method_name="RunManager.get_many_by_thread")
@@ -875,7 +864,7 @@ class RunManager:
         stop_reason: str | None = None,
         persist: bool = True,
     ) -> None:
-        """Transition a run to a new status."""
+        """run을 새로운 status로 전이시킨다."""
         async with self._lock:
             record = self._runs.get(run_id)
             if record is None:
@@ -907,7 +896,7 @@ class RunManager:
         logger.info("Run %s -> %s", run_id, status.value)
 
     async def persist_current_status(self, run_id: str) -> bool:
-        """Persist the status already staged on the in-memory run record."""
+        """in-memory run record에 이미 반영된 status를 영속화한다."""
         async with self._lock:
             record = self._runs.get(run_id)
             if record is None:
@@ -934,7 +923,7 @@ class RunManager:
         stop_reason: str | None = None,
         persist: bool = True,
     ) -> str | None:
-        """Set a terminal status unless a durable cancellation won first."""
+        """durable한 cancellation이 먼저 이기지 않았다면 terminal status를 설정한다."""
         if not persist or not self.heartbeat_enabled or self._store is None:
             await self.set_status(
                 run_id,
@@ -985,7 +974,7 @@ class RunManager:
         return None
 
     async def _ensure_delivery_receipt(self, record: RunRecord) -> bool:
-        """Idempotently persist a zero-delivery receipt during recovery."""
+        """recovery 도중 zero-delivery receipt를 멱등하게 영속화한다."""
         if self._event_store is None:
             return True
         try:
@@ -1006,7 +995,7 @@ class RunManager:
             return False
 
     async def set_finalizing(self, run_id: str, finalizing: bool) -> None:
-        """Mark whether a run is performing post-cancel cleanup."""
+        """run이 취소 후 cleanup을 수행 중인지 여부를 표시한다."""
         async with self._lock:
             record = self._runs.get(run_id)
             if record is None:
@@ -1023,7 +1012,7 @@ class RunManager:
         poll_interval: float = 0.01,
         abort_event: asyncio.Event | None = None,
     ) -> None:
-        """Wait until older same-thread runs have finished post-cancel cleanup."""
+        """같은 thread의 더 오래된 run들이 취소 후 cleanup을 끝낼 때까지 기다린다."""
         while True:
             async with self._lock:
                 found_current = False
@@ -1048,7 +1037,7 @@ class RunManager:
             return
 
     async def has_later_run(self, thread_id: str, run_id: str) -> bool:
-        """Return whether a newer in-memory run has been admitted for the thread."""
+        """해당 thread에 더 새로운 in-memory run이 승인됐는지 여부를 반환한다."""
         async with self._lock:
             seen_current = False
             for record in self._thread_records_locked(thread_id):
@@ -1060,7 +1049,7 @@ class RunManager:
         return False
 
     async def has_later_started_run(self, thread_id: str, run_id: str) -> bool:
-        """Return whether a newer same-thread run may have already advanced state."""
+        """같은 thread의 더 새로운 run이 이미 state를 진행시켰을 수 있는지 반환한다."""
         async with self._lock:
             seen_current = False
             for record in self._thread_records_locked(thread_id):
@@ -1072,7 +1061,7 @@ class RunManager:
         return False
 
     async def _persist_model_name(self, run_id: str, model_name: str | None) -> None:
-        """Best-effort persist model_name update to the backing store."""
+        """model_name 갱신을 backing store에 best-effort로 영속화한다."""
         if self._store is None:
             return
         try:
@@ -1085,7 +1074,7 @@ class RunManager:
             logger.warning("Failed to persist model_name update for run %s", run_id, exc_info=True)
 
     async def update_model_name(self, run_id: str, model_name: str | None) -> None:
-        """Update the model name for a run."""
+        """run의 model name을 갱신한다."""
         async with self._lock:
             record = self._runs.get(run_id)
             if record is None:
@@ -1102,7 +1091,7 @@ class RunManager:
         *,
         action: str,
     ) -> tuple[CancelOutcome, str | None]:
-        """Record cancellation and return the first action that won."""
+        """cancellation을 기록하고 먼저 이긴 action을 반환한다."""
         if self._store is None:
             return CancelOutcome.unknown, None
         try:
@@ -1112,8 +1101,8 @@ class RunManager:
                 lambda: self._store.request_cancel(run_id, action=action),
             )
         except NotImplementedError:
-            # Keep third-party stores that predate durable cancellation on the
-            # old safe behavior instead of pretending the owner was notified.
+            # durable cancellation 이전의 서드파티 store는 owner에게 알렸다고
+            # 속이지 말고 예전의 안전한 동작을 그대로 유지한다.
             logger.info(
                 "Run store does not support cross-worker cancellation for run %s",
                 run_id,
@@ -1136,9 +1125,9 @@ class RunManager:
             )
             return CancelOutcome.requested, winning_action
 
-        # Completion may have won the race between the caller's read and the
-        # guarded cancellation UPDATE. Re-read so the API reports that precise
-        # terminal result rather than claiming the request was accepted.
+        # 호출자의 read와 보호된 cancellation UPDATE 사이의 경쟁에서 completion이
+        # 이겼을 수 있다. 요청이 수락됐다고 주장하는 대신 정확한 terminal 결과를
+        # API가 보고하도록 다시 읽는다.
         try:
             fresh = await self._store.get(run_id)
         except Exception:
@@ -1147,8 +1136,8 @@ class RunManager:
             return CancelOutcome.unknown, None
         if fresh.get("status") not in ("pending", "running"):
             return CancelOutcome.not_cancellable, None
-        # A legacy/partial store implementation may decline the request while
-        # the owner is still live. Preserve the former lease-conflict signal.
+        # legacy/부분 구현 store는 owner가 살아 있는 상태에서도 요청을 거절할 수
+        # 있다. 기존의 lease-conflict 신호를 그대로 유지한다.
         return CancelOutcome.lease_valid_elsewhere, None
 
     async def _request_remote_cancel(
@@ -1157,7 +1146,7 @@ class RunManager:
         *,
         action: str,
     ) -> CancelOutcome:
-        """Record cancellation for a run whose task belongs to another worker."""
+        """task가 다른 worker에 속한 run의 cancellation을 기록한다."""
         outcome, _ = await self._request_durable_cancel(
             run_id,
             action=action,
@@ -1170,7 +1159,7 @@ class RunManager:
         *,
         action: str,
     ) -> None:
-        """Set process-local abort state without status persistence or cleanup."""
+        """status 영속화나 cleanup 없이 프로세스 로컬 abort 상태만 설정한다."""
         async with self._lock:
             record = self._runs.get(run_id)
             if record is None or record.status not in (RunStatus.pending, RunStatus.running) or record.abort_event.is_set():
@@ -1185,43 +1174,41 @@ class RunManager:
         logger.info("Run %s cancellation signalled locally (action=%s)", run_id, action)
 
     async def cancel(self, run_id: str, *, action: str = "interrupt") -> CancelOutcome:
-        """Request cancellation of a run.
+        """run의 cancellation을 요청한다.
 
-        When the call lands on the owning worker the run is cancelled
-        locally as before (in-memory abort + status persisted to store).
+        호출이 소유 worker에 도달하면 기존과 동일하게 로컬에서 취소한다(in-memory
+        abort + status를 store에 영속화).
 
-        When the call lands on a non-owning worker in a multi-worker
-        deployment with heartbeat enabled:
+        heartbeat가 켜진 multi-worker 배포에서 호출이 비소유 worker에 도달한 경우:
 
-        - **Lease expired** — the run's lease has passed the grace
-          threshold, so this worker takes ownership and marks it as
-          ``error``.  The owning worker is assumed dead (its heartbeat
-          stopped renewing).
+        - **lease 만료** — run의 lease가 grace 임계를 넘었으므로 이 worker가
+          소유권을 가져와 ``error``로 표시한다. 소유 worker는 죽은 것으로
+          간주한다(heartbeat 갱신이 멈췄다).
 
-        - **Lease still valid** — durably records the cancellation action.
-          The owner observes it on its next heartbeat and performs the same
-          local abort/finalization path as a directly-routed request.
+        - **lease 유효** — cancellation action을 durable하게 기록한다. owner는
+          다음 heartbeat에서 이를 관측하고, 직접 라우팅된 요청과 동일한 로컬
+          abort/확정 경로를 수행한다.
 
-        In single-worker mode (``heartbeat_enabled=False``) store-only
-        hydrated runs that aren't in-memory return ``not_active_locally``,
-        preserving the original 409 behaviour.
+        single-worker 모드(``heartbeat_enabled=False``)에서는 메모리에 없는
+        store-only hydrate run이 ``not_active_locally``를 반환해 기존 409 동작을
+        유지한다.
 
         Args:
-            run_id: The run ID to cancel.
-            action: ``"interrupt"`` keeps checkpoint, ``"rollback"``
-                    reverts to pre-run state.
+            run_id: 취소할 run ID.
+            action: ``"interrupt"``는 checkpoint를 유지하고, ``"rollback"``은
+                    run 이전 state로 되돌린다.
 
         Returns:
-            A :class:`CancelOutcome` enum describing what happened.
+            무슨 일이 일어났는지 나타내는 :class:`CancelOutcome` enum.
         """
         # ------------------------------------------------------------------
-        # Local path — this worker owns the run in-memory.
+        # 로컬 경로 — 이 worker가 메모리에서 해당 run을 소유한다.
         # ------------------------------------------------------------------
         async with self._lock:
             record = self._runs.get(run_id)
             if record is not None:
                 if record.status == RunStatus.interrupted:
-                    return CancelOutcome.cancelled  # idempotent
+                    return CancelOutcome.cancelled  # 멱등
                 if record.status not in (RunStatus.pending, RunStatus.running) and (not self.heartbeat_enabled or self._store is None):
                     return CancelOutcome.not_cancellable
 
@@ -1258,26 +1245,24 @@ class RunManager:
                 record.status = RunStatus.interrupted
                 record.updated_at = _now_iso()
 
-        # Persist outside the lock so store calls don't block other mutations.
+        # store 호출이 다른 변경을 막지 않도록 lock 바깥에서 영속화한다.
         if record is not None:
             persisted = await self._persist_status(record, RunStatus.interrupted)
             if not persisted and self._store is not None:
-                # ``_persist_status`` already fetched ``existing`` internally;
-                # re-check the store to see if a peer takeover flipped the
-                # row to ``error`` between our in-memory cancel and the
-                # guarded ``update_status``. If so, surface ``taken_over``
-                # so the client sees a status consistent with the store.
+                # ``_persist_status``는 내부적으로 이미 ``existing``을 조회했다.
+                # in-memory cancel과 보호된 ``update_status`` 사이에 peer takeover가
+                # row를 ``error``로 바꿨는지 store를 다시 확인한다. 그렇다면
+                # ``taken_over``를 반환해 클라이언트가 store와 일관된 status를 보게 한다.
                 try:
                     existing = await self._store.get(run_id)
                 except Exception:
                     existing = None
                 if existing is not None and existing.get("status") == "error":
-                    # The in-memory ``record.status`` is still ``interrupted``
-                    # (set under the lock above) while the store row is now
-                    # ``error``.  This transient staleness is harmless: the
-                    # ``_persist_status`` guard prevents the late finalisation
-                    # write from overwriting the takeover, and the store is the
-                    # authoritative source for subsequent reads.
+                    # in-memory ``record.status``는 여전히 ``interrupted``(위 lock
+                    # 아래에서 설정)인 반면 store row는 이제 ``error``다. 이 일시적인
+                    # 불일치는 무해하다. ``_persist_status``의 guard가 뒤늦은 확정
+                    # 쓰기가 takeover를 덮어쓰는 것을 막고, 이후 읽기에서는 store가
+                    # 권위 있는 출처다.
                     logger.info("Run %s local cancel superseded by peer takeover", run_id)
                     return CancelOutcome.taken_over
             logger.info("Run %s cancelled (action=%s)", run_id, action)
@@ -1287,7 +1272,7 @@ class RunManager:
             return CancelOutcome.cancelled
 
         # ------------------------------------------------------------------
-        # Non-local path — no in-memory record, must consult the store.
+        # 비로컬 경로 — in-memory record가 없으므로 store를 조회해야 한다.
         # ------------------------------------------------------------------
 
         if not self.heartbeat_enabled:
@@ -1336,12 +1321,11 @@ class RunManager:
             logger.warning("Run %s taken over by worker %s (action=%s)", run_id, self._worker_id, action)
             return CancelOutcome.taken_over
 
-        # The conditional UPDATE matched 0 rows. Two causes:
-        #   (a) the owner renewed the lease → persist a cancellation request.
-        #   (b) the row went terminal between our read and the claim
-        #       (run finished, or another worker already took it over)
-        #       → not_cancellable or taken_over.
-        # Re-read to distinguish.
+        # 조건부 UPDATE가 0개 row에 매칭됐다. 원인은 둘이다:
+        #   (a) owner가 lease를 갱신했다 → cancellation 요청을 영속화한다.
+        #   (b) 우리의 read와 claim 사이에 row가 terminal이 됐다(run이 끝났거나
+        #       다른 worker가 이미 가져갔다) → not_cancellable 또는 taken_over.
+        # 둘을 구분하려고 다시 읽는다.
         try:
             fresh = await self._store.get(run_id)
         except Exception:
@@ -1354,17 +1338,17 @@ class RunManager:
                 logger.info("Run %s takeover lost to another worker already at error", run_id)
                 return CancelOutcome.taken_over
             return CancelOutcome.not_cancellable
-        # Row is still active — lease was renewed by the owner while the
-        # takeover raced. Notify that owner instead of exposing routing as 409.
+        # row가 아직 active다 — takeover가 경쟁하는 동안 owner가 lease를 갱신했다.
+        # 라우팅 문제를 409로 드러내는 대신 그 owner에게 알린다.
         return await self._request_remote_cancel(run_id, action=action)
 
     def _compute_lease_expires_at(self) -> str | None:
-        """Return the lease expiry ISO timestamp for a freshly created run.
+        """새로 만든 run의 lease 만료 ISO timestamp를 반환한다.
 
-        Returns ``None`` when heartbeat is disabled (single-worker mode) so
-        reconciliation treats crashed runs as orphans (NULL lease) and
-        reclaims them immediately, preserving pre-ownership behaviour.
-        Multi-worker deployments enable heartbeat, which opts in to leases.
+        heartbeat가 꺼져 있으면(single-worker 모드) ``None``을 반환하므로,
+        reconciliation이 죽은 run을 orphan(NULL lease)으로 보고 즉시 회수해
+        ownership 도입 이전 동작을 유지한다. multi-worker 배포는 heartbeat를 켜서
+        lease를 사용한다.
         """
         if self._run_ownership_config is None:
             return None
@@ -1385,7 +1369,7 @@ class RunManager:
         model_name: str | None = None,
         user_id: str | None = None,
     ) -> RunRecord:
-        """Atomically admit a normal agent run for a thread."""
+        """thread에 대한 일반 agent run을 원자적으로 승인한다."""
         return await self._admit_thread_operation(
             thread_id,
             assistant_id,
@@ -1399,7 +1383,7 @@ class RunManager:
         )
 
     async def _close_cancelled_admission(self, record: RunRecord) -> None:
-        """Terminalize an unseen replacement and confirm its durable state."""
+        """호출자에게 전달되지 않은 대체 run을 terminal로 만들고 durable 상태를 확인한다."""
         await self.cancel(record.run_id)
         if self._store is None:
             return
@@ -1411,10 +1395,10 @@ class RunManager:
         )
         active_statuses = (RunStatus.pending.value, RunStatus.running.value)
         if stored is not None and stored.get("status") in active_statuses:
-            # `_persist_status` is deliberately best-effort. This compensation
-            # path needs a strict second CAS attempt because the caller never
-            # receives the record and no worker can attach after it returns.
-            # A peer terminal transition wins the CAS and is preserved below.
+            # `_persist_status`는 의도적으로 best-effort다. 이 보상 경로는 엄격한
+            # 두 번째 CAS 시도가 필요하다. 호출자가 record를 결코 받지 못하고,
+            # 반환 이후에는 어떤 worker도 붙을 수 없기 때문이다. peer의 terminal
+            # 전이가 CAS에서 이기면 아래에서 그대로 보존된다.
             await self._call_store_with_retry(
                 "terminalize cancelled admission",
                 record.run_id,
@@ -1456,19 +1440,17 @@ class RunManager:
         model_name: str | None = None,
         user_id: str | None = None,
     ) -> RunRecord:
-        """Atomically check for inflight runs and create a new one.
+        """진행 중인 run을 원자적으로 확인하고 새 run을 만든다.
 
-        For ``reject`` strategy, raises ``ConflictError`` if thread
-        already has a pending/running run.  For ``interrupt``/``rollback``,
-        cancels inflight runs before creating.
+        ``reject`` 전략에서는 thread에 이미 pending/running run이 있으면
+        ``ConflictError``를 발생시킨다. ``interrupt``/``rollback``에서는 생성 전에
+        진행 중인 run을 취소한다.
 
-        Lock ordering invariant: the local ``self._lock`` is held across
-        the local check, the store insert, and the local register, so the
-        store insert can never succeed while a same-worker ConflictError
-        is about to fire (which would leak a pending row in the store).
-        Cross-process contention is resolved at the store level via a
-        partial unique index on ``(thread_id) WHERE status IN
-        ('pending','running')``.
+        lock 순서 불변식: 로컬 확인, store insert, 로컬 등록 전체에 걸쳐 로컬
+        ``self._lock``을 잡고 있으므로, 같은 worker에서 ConflictError가 발생하려는
+        상황에 store insert가 성공하는 일(= store에 pending row가 새는 일)은 없다.
+        프로세스 간 경합은 ``(thread_id) WHERE status IN ('pending','running')``에
+        대한 partial unique index로 store 레벨에서 해소된다.
         """
         run_id = str(uuid.uuid4())
         now = _now_iso()
@@ -1500,8 +1482,8 @@ class RunManager:
         )
 
         async with self._lock:
-            # 1) Local inflight check (same-worker guard; cross-worker is the
-            #    store's partial unique index below).
+            # 1) 로컬 진행 중 run 확인(같은 worker용 guard. worker 간에는 아래
+            #    store의 partial unique index가 담당한다).
             local_inflight = [r for r in self._thread_records_locked(thread_id) if r.status in (RunStatus.pending, RunStatus.running) or r.finalizing]
 
             if multitask_strategy in ("interrupt", "rollback") and any(record.operation_kind != ThreadOperationKind.run for record in local_inflight):
@@ -1518,8 +1500,8 @@ class RunManager:
                     multitask_strategy,
                 )
 
-            # 2) Persist to store while still holding the local lock. The
-            #    store is the source of truth for cross-process atomicity.
+            # 2) 로컬 lock을 잡은 채로 store에 영속화한다. 프로세스 간 원자성의
+            #    source of truth는 store다.
             if self._store is not None:
                 if multitask_strategy == "reject":
                     try:
@@ -1549,9 +1531,9 @@ class RunManager:
                             raise ConflictError(f"Thread {thread_id} already has an active run") from exc
                         raise
                 else:
-                    # Interrupt / rollback: store-side claim + insert in one
-                    # transaction. Retry on IntegrityError in case another
-                    # worker races us between our SELECT FOR UPDATE and INSERT.
+                    # Interrupt / rollback: store 쪽 claim + insert를 한 transaction
+                    # 안에서 처리한다. SELECT FOR UPDATE와 INSERT 사이에 다른 worker가
+                    # 끼어들 수 있으므로 IntegrityError에는 재시도한다.
                     max_retries = 3
                     for attempt in range(max_retries):
                         try:
@@ -1580,22 +1562,22 @@ class RunManager:
                             if is_unique and attempt + 1 < max_retries:
                                 continue
                             if is_unique:
-                                # Exhausted retries on unique violation — surface
-                                # as ConflictError to match the reject branch's
-                                # contract (409, not 500). Same root cause: another
-                                # worker won the race for this thread.
+                                # unique 위반으로 재시도를 모두 소진했다 — reject
+                                # 분기의 계약(500이 아니라 409)에 맞추어
+                                # ConflictError로 드러낸다. 근본 원인은 같다:
+                                # 다른 worker가 이 thread의 경쟁에서 이겼다.
                                 raise ConflictError(f"Thread {thread_id} already has an active run") from exc
                             raise
-                    # ``create_thread_operation_atomic`` already marked any claimed store
-                    # rows as interrupted in the same transaction; no extra
-                    # store write is needed for them.
+                    # ``create_thread_operation_atomic``이 같은 transaction 안에서
+                    # 선점한 store row를 이미 interrupted로 표시했으므로, 그것들에
+                    # 대한 추가 store 쓰기는 필요 없다.
 
-            # 3) Only now safe to register locally — store insert succeeded.
+            # 3) store insert가 성공했으니 이제서야 로컬 등록이 안전하다.
             self._runs[run_id] = record
             self._index_run_locked(record)
 
-            # 4) Cancel local in-memory inflight (interrupt/rollback). The
-            #    store-side counterparts were already cancelled in step 2.
+            # 4) 로컬 in-memory 진행 중 run을 취소한다(interrupt/rollback). store 쪽
+            #    대응 row는 2단계에서 이미 취소됐다.
             if multitask_strategy in ("interrupt", "rollback"):
                 for r in local_inflight:
                     if r.finalizing:
@@ -1610,10 +1592,9 @@ class RunManager:
                     r.updated_at = now
                     interrupted_records.append(r)
 
-        # Outside the lock: persist interrupted status for locally-cancelled
-        # runs. Store-side claimed rows are already finalised. Cancellation at
-        # this point happens after the replacement was admitted, so close that
-        # new run before propagating cancellation to the caller.
+        # lock 바깥: 로컬에서 취소된 run의 interrupted status를 영속화한다. store 쪽
+        # 선점 row는 이미 확정됐다. 이 시점의 cancellation은 대체 run이 승인된 뒤에
+        # 발생하므로, 호출자에게 cancellation을 전파하기 전에 그 새 run을 닫는다.
         try:
             for interrupted_record in interrupted_records:
                 await self._persist_status(interrupted_record, RunStatus.interrupted)
@@ -1646,11 +1627,10 @@ class RunManager:
         kind: ThreadOperationKind,
         user_id: str | None = None,
     ) -> AsyncIterator[None]:
-        """Hold exclusive durable admission for a non-run thread operation.
+        """run이 아닌 thread operation에 대해 durable한 배타적 승인을 유지한다.
 
-        The reservation is a short-lived pending row, so the same durable
-        uniqueness constraint used by ``create_or_reject`` closes both sides of
-        the race across Gateway workers.
+        예약은 수명이 짧은 pending row이므로, ``create_or_reject``가 쓰는 것과 같은
+        durable uniqueness constraint가 Gateway worker 간 경쟁의 양쪽을 모두 막는다.
         """
         if kind == ThreadOperationKind.run:
             raise ValueError("Normal runs must be admitted with create_or_reject()")
@@ -1704,19 +1684,17 @@ class RunManager:
         before: str | None = None,
         stop_reason: str | None = None,
     ) -> list[RunRecord]:
-        """Mark persisted active runs as failed when their lease has expired.
+        """lease가 만료된 영속 active run을 실패로 표시한다.
 
-        In multi-worker deployments (Postgres), a run owned by Worker A that
-        still shows ``pending`` / ``running`` after its lease expired means
-        Worker A crashed or was partitioned. This worker (B) can safely claim
-        and error it out because the lease was not renewed.
+        multi-worker 배포(Postgres)에서 Worker A가 소유한 run이 lease 만료 후에도
+        ``pending`` / ``running``으로 남아 있다면 Worker A가 죽었거나 네트워크가
+        분리된 것이다. lease가 갱신되지 않았으므로 이 worker(B)가 안전하게 선점해
+        error 처리할 수 있다.
 
-        Rows with a still-valid lease are skipped — they belong to another live
-        worker. Rows with a NULL lease (pre-ownership data) are reclaimed as
-        well, matching the original single-worker recovery behaviour. The
-        candidate scan is only an optimization: each row is claimed with a
-        lease-aware conditional update so a heartbeat renewal after the scan
-        always wins over reconciliation.
+        lease가 아직 유효한 row는 건너뛴다 — 살아 있는 다른 worker의 것이다. lease가
+        NULL인 row(ownership 도입 이전 데이터)도 회수해서 기존 single-worker 복구
+        동작과 맞춘다. 후보 스캔은 최적화일 뿐이다. 각 row는 lease를 고려한 조건부
+        update로 선점하므로, 스캔 이후의 heartbeat 갱신이 항상 reconciliation을 이긴다.
         """
         if self._store is None:
             return []
@@ -1743,7 +1721,7 @@ class RunManager:
             async with self._lock:
                 live_record = self._runs.get(record.run_id)
                 if live_record is not None and live_record.status in (RunStatus.pending, RunStatus.running):
-                    # Still owned by a local task — skip
+                    # 아직 로컬 task가 소유 중이므로 건너뛴다
                     continue
 
             try:
@@ -1771,11 +1749,11 @@ class RunManager:
             record.stop_reason = stop_reason
             record.updated_at = now
             if record.operation_kind == ThreadOperationKind.run:
-                # The atomic takeover above must win before writing a zero-delivery
-                # receipt; otherwise a stale scan could race a heartbeat renewal and
-                # permanently overwrite a live run's later detailed receipt. The
-                # receipt remains best-effort, matching normal terminal delivery
-                # when its event store is unavailable.
+                # zero-delivery receipt를 쓰기 전에 위의 원자적 takeover가 먼저
+                # 이겨야 한다. 그렇지 않으면 낡은 스캔이 heartbeat 갱신과 경쟁해
+                # 살아 있는 run의 이후 상세 receipt를 영구히 덮어쓸 수 있다.
+                # receipt 자체는 best-effort로, event store를 쓸 수 없을 때의 일반
+                # terminal delivery와 동일하게 동작한다.
                 await self._ensure_delivery_receipt(record)
                 recovered.append(record)
 
@@ -1784,12 +1762,12 @@ class RunManager:
         return recovered
 
     async def has_inflight(self, thread_id: str) -> bool:
-        """Return ``True`` if *thread_id* has a pending or running run."""
+        """*thread_id*에 pending 또는 running run이 있으면 ``True``를 반환한다."""
         async with self._lock:
             return any(r.operation_kind == ThreadOperationKind.run and (r.status in (RunStatus.pending, RunStatus.running) or r.finalizing) for r in self._thread_records_locked(thread_id))
 
     async def cleanup(self, run_id: str, *, delay: float = 300) -> None:
-        """Remove a run record after an optional delay."""
+        """선택적인 지연 후 run record를 제거한다."""
         if delay > 0:
             await asyncio.sleep(delay)
         async with self._lock:
@@ -1804,33 +1782,33 @@ class RunManager:
 
     @property
     def worker_id(self) -> str:
-        """Return this worker's unique identifier."""
+        """이 worker의 고유 식별자를 반환한다."""
         return self._worker_id
 
     @property
     def heartbeat_enabled(self) -> bool:
-        """Return ``True`` when the heartbeat background task should run."""
+        """heartbeat 백그라운드 task를 돌려야 하면 ``True``를 반환한다."""
         if self._run_ownership_config is None:
             return False
         return self._run_ownership_config.heartbeat_enabled
 
     @property
     def grace_seconds(self) -> int:
-        """Return the configured grace seconds.
+        """설정된 grace seconds를 반환한다.
 
-        All current callers are downstream of ``heartbeat_enabled``, which
-        is False whenever ``_run_ownership_config`` is None.  The fallback
-        matches the Pydantic model default and is defensive against future
-        callers that might reach this property without that guard.
+        현재 모든 호출자는 ``heartbeat_enabled`` 아래에 있고, 이 값은
+        ``_run_ownership_config``가 None이면 항상 False다. fallback 값은 Pydantic
+        모델 기본값과 같으며, 그 guard 없이 이 property에 도달할 수 있는 미래의
+        호출자를 대비한 방어책이다.
         """
         return self._run_ownership_config.grace_seconds if self._run_ownership_config else 10
 
     @staticmethod
     def _parse_lease_deadline(lease_expires_at: str | None) -> datetime | None:
-        """Parse the last durably confirmed lease expiry.
+        """마지막으로 durable하게 확인된 lease 만료 시각을 파싱한다.
 
-        Missing or malformed deadlines are unsafe in heartbeat mode: the local
-        worker has no bounded interval during which it can prove ownership.
+        heartbeat 모드에서 deadline이 없거나 형식이 잘못된 것은 안전하지 않다.
+        로컬 worker가 소유권을 증명할 수 있는 유한한 구간이 없기 때문이다.
         """
         if lease_expires_at is None:
             return None
@@ -1849,11 +1827,11 @@ class RunManager:
         reason: str,
         require_active: bool = True,
     ) -> bool:
-        """Fence one local run and cancel its execution task.
+        """로컬 run 하나를 fencing하고 실행 task를 취소한다.
 
-        No store write is attempted here: once the last confirmed lease has
-        expired, this worker is no longer authorized to publish a terminal
-        outcome. A peer reconciler owns durable terminalization.
+        여기서는 store 쓰기를 시도하지 않는다. 마지막으로 확인된 lease가 만료되면
+        이 worker는 더 이상 terminal 결과를 발행할 권한이 없다. durable한 terminal
+        처리는 peer reconciler가 담당한다.
         """
         task_to_cancel: asyncio.Task | None = None
         async with self._lock:
@@ -1881,9 +1859,9 @@ class RunManager:
         return True
 
     async def start_heartbeat(self) -> None:
-        """Start the background lease-renewal task.
+        """백그라운드 lease 갱신 task를 시작한다.
 
-        No-op when ``heartbeat_enabled`` is ``False`` or the task is already running.
+        ``heartbeat_enabled``가 ``False``이거나 task가 이미 돌고 있으면 아무것도 하지 않는다.
         """
         if not self.heartbeat_enabled:
             return
@@ -1896,7 +1874,7 @@ class RunManager:
         logger.info("Run lease heartbeat started for worker %s", self._worker_id)
 
     async def stop_heartbeat(self, *, timeout: float = 5.0) -> None:
-        """Stop the background heartbeat task within ``timeout`` seconds."""
+        """``timeout``초 안에 백그라운드 heartbeat task를 중지한다."""
         if self._heartbeat_stop is not None:
             self._heartbeat_stop.set()
         if self._heartbeat_task is not None and not self._heartbeat_task.done():
@@ -1915,16 +1893,15 @@ class RunManager:
         logger.info("Run lease heartbeat stopped for worker %s", self._worker_id)
 
     async def _heartbeat_loop(self) -> None:
-        """Periodically renew leases and reclaim orphaned runs from dead peers.
+        """주기적으로 lease를 갱신하고 죽은 peer가 남긴 orphan run을 회수한다.
 
-        Lease renewal runs every ``lease_seconds / 3``. Reconciliation
-        (sweeping for expired leases owned by dead workers) runs every
-        ``lease_seconds`` (every 3rd cycle) so orphaned runs are recovered
-        without waiting for a pod restart.
+        lease 갱신은 ``lease_seconds / 3``마다 실행한다. reconciliation(죽은 worker가
+        소유한 만료 lease 청소)은 ``lease_seconds``마다(3번째 cycle마다) 실행해
+        pod 재시작을 기다리지 않고 orphan run을 복구한다.
 
-        Both operations are guarded so a transient failure cannot take the
-        heartbeat task down — a dead heartbeat means no lease is renewed
-        again, and every active run eventually looks orphaned to peers.
+        두 연산 모두 예외로부터 보호된다. 일시적 실패가 heartbeat task를 죽이면
+        어떤 lease도 다시 갱신되지 않고, 결국 모든 active run이 peer에게 orphan으로
+        보이기 때문이다.
         """
         if self._run_ownership_config is None or self._heartbeat_stop is None:
             return
@@ -1936,9 +1913,9 @@ class RunManager:
         while not stop.is_set():
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
-                break  # stop event was set
+                break  # stop event가 설정됐다
             except TimeoutError:
-                pass  # interval elapsed
+                pass  # interval이 경과했다
 
             cycle += 1
             try:
@@ -1946,22 +1923,21 @@ class RunManager:
             except Exception:
                 logger.warning("Heartbeat renewal cycle failed", exc_info=True)
 
-            # Reconcile every 3rd cycle (= every lease_seconds). Startup
-            # reconciliation (in langgraph_runtime) covers the initial
-            # sweep; this periodic pass catches orphans whose lease
-            # expires between restarts — e.g. Worker A crashes, its
-            # replacement starts before the lease expires, and the
-            # startup pass skips the still-valid lease.
+            # 3번째 cycle마다(= lease_seconds마다) reconcile한다. 최초 스윕은
+            # startup reconciliation(langgraph_runtime)이 담당하고, 이 주기적
+            # pass는 재시작 사이에 lease가 만료되는 orphan을 잡는다 — 예를 들어
+            # Worker A가 죽고 lease 만료 전에 대체 worker가 시작되면 startup
+            # pass는 아직 유효한 lease를 건너뛴다.
             if cycle % 3 == 0:
                 self._schedule_orphan_reconciliation()
 
     async def _renew_leases(self) -> None:
-        """Renew locally-owned leases, failing closed at their deadlines.
+        """로컬이 소유한 lease를 갱신하고, deadline에서는 fail-closed로 동작한다.
 
-        ``RunRecord.lease_expires_at`` advances only after a successful durable
-        renewal, so it is the last confirmed ownership deadline. Transient
-        exceptions are tolerated before that deadline; a call that blocks or
-        keeps failing through it fences the local run.
+        ``RunRecord.lease_expires_at``은 durable 갱신에 성공한 뒤에만 전진하므로
+        마지막으로 확인된 소유권 deadline이다. 그 deadline 이전의 일시적 예외는
+        허용하지만, deadline을 넘길 때까지 블록되거나 계속 실패하는 호출은 로컬
+        run을 fencing한다.
         """
         if self._store is None or self._run_ownership_config is None:
             return
@@ -1969,16 +1945,15 @@ class RunManager:
         cancellations: list[tuple[str, str]] = []
 
         async with self._lock:
-            # Renew any pending/running run owned by this worker unless its
-            # background task has already completed. A pending run whose task
-            # has not been spawned yet (``task is None``) is still live from
-            # this worker's perspective — between ``create_thread_operation_atomic``
-            # inserting the row and the worker layer spawning the agent task
-            # there is a brief window. If we drop those records here and the
-            # window stretches past ``lease_seconds`` (e.g. event-loop
-            # saturation, slow checkpoint hydrate on a fresh worker), peer
-            # reconciliation will reclaim the run as an orphan and mark it
-            # ``error`` even though this worker still intends to execute it.
+            # 백그라운드 task가 이미 끝난 경우를 빼고, 이 worker가 소유한 모든
+            # pending/running run을 갱신한다. task가 아직 생성되지 않은
+            # (``task is None``) pending run도 이 worker 관점에서는 여전히 살아
+            # 있다 — ``create_thread_operation_atomic``이 row를 넣는 시점과 worker
+            # 계층이 agent task를 띄우는 시점 사이에는 짧은 구간이 있다. 여기서
+            # 그런 record를 제외했는데 그 구간이 ``lease_seconds``를 넘기면(예:
+            # event loop 포화, 새 worker에서의 느린 checkpoint hydrate) 이 worker가
+            # 여전히 실행할 의도가 있는데도 peer reconciliation이 run을 orphan으로
+            # 회수해 ``error``로 표시한다.
             active_runs = [(rid, record) for rid, record in self._runs.items() if record.status in (RunStatus.pending, RunStatus.running) and record.owner_worker_id == self._worker_id and (record.task is None or not record.task.done())]
 
         for run_id, record in active_runs:
@@ -2010,12 +1985,11 @@ class RunManager:
                             reason="Lease renewal completed after the last confirmed lease had already expired.",
                         )
                         continue
-                    # Unsynced write is benign: ``lease_expires_at`` is the
-                    # only field on an existing record this path mutates, so
-                    # there is no concurrent writer to race against
-                    # (``set_status`` / ``_persist_status`` touch other
-                    # fields). Re-acquiring ``self._lock`` here would
-                    # serialise against unrelated run mutations for no gain.
+                    # lock 없이 쓰는 것은 무해하다. 이 경로가 기존 record에서
+                    # 변경하는 필드는 ``lease_expires_at``뿐이라 경쟁할 동시 writer가
+                    # 없다(``set_status`` / ``_persist_status``는 다른 필드를 건드린다).
+                    # 여기서 ``self._lock``을 다시 잡으면 아무 이득 없이 무관한 run
+                    # 변경들과 직렬화될 뿐이다.
                     record.lease_expires_at = new_expiry
                     if renewal.cancel_action is not None:
                         action = renewal.cancel_action
@@ -2028,11 +2002,10 @@ class RunManager:
                             action = "interrupt"
                         cancellations.append((run_id, action))
                 else:
-                    # ``renew_lease`` returned False — the row was claimed
-                    # by another worker (status is no longer pending/running,
-                    # or ``owner_worker_id`` changed). Stop the local task so
-                    # we don't waste CPU or overwrite the takeover status on
-                    # finalisation.
+                    # ``renew_lease``가 False를 반환했다 — 다른 worker가 row를
+                    # 선점했다(status가 더 이상 pending/running이 아니거나
+                    # ``owner_worker_id``가 바뀌었다). CPU를 낭비하거나 확정 시점에
+                    # takeover status를 덮어쓰지 않도록 로컬 task를 멈춘다.
                     async with self._lock:
                         still_active = self._runs.get(run_id) is record and record.status in (RunStatus.pending, RunStatus.running) and record.owner_worker_id == self._worker_id and (record.task is None or not record.task.done())
                     if still_active:
@@ -2059,9 +2032,9 @@ class RunManager:
                         exc_info=True,
                     )
 
-        # Keep cancellation status writes and cleanup out of the sole renewal
-        # loop. After every local lease has had a chance to renew, only signal
-        # the owning worker task; that task performs normal terminal handling.
+        # cancellation status 쓰기와 cleanup은 단 하나뿐인 갱신 loop 바깥에 둔다.
+        # 모든 로컬 lease가 갱신 기회를 가진 뒤에는 소유 worker task에 신호만 보내고,
+        # 그 task가 정상적인 terminal 처리를 수행한다.
         for run_id, action in cancellations:
             await self._signal_local_cancel(
                 run_id,
@@ -2069,13 +2042,12 @@ class RunManager:
             )
 
     async def _reconcile_orphans_periodic(self) -> None:
-        """Sweep for expired leases owned by dead peers.
+        """죽은 peer가 소유한 만료 lease를 청소한다.
 
-        Scheduled as a single-flight background task by ``_heartbeat_loop``.
-        This keeps both the store scan/status writes and the Gateway callback
-        off the lease-renewal loop. Startup reconciliation handles the initial
-        sweep; this periodic pass catches orphans whose lease expires between
-        restarts.
+        ``_heartbeat_loop``이 single-flight 백그라운드 task로 스케줄한다. 덕분에
+        store 스캔/status 쓰기와 Gateway callback 모두 lease 갱신 loop 바깥에서
+        돈다. 최초 스윕은 startup reconciliation이 처리하고, 이 주기적 pass는
+        재시작 사이에 lease가 만료되는 orphan을 잡는다.
         """
         recovered = await self.reconcile_orphaned_inflight_runs(
             error=LEASE_ORPHAN_RECOVERY_ERROR,
@@ -2098,7 +2070,7 @@ class RunManager:
                     )
 
     def _schedule_orphan_reconciliation(self) -> None:
-        """Start one supervised recovery pass unless one is already running."""
+        """이미 실행 중인 pass가 없으면 감독되는 recovery pass를 하나 시작한다."""
         task = self._orphan_recovery_task
         if task is not None and not task.done():
             logger.debug("Skipping periodic orphan reconciliation: previous pass is still running")
@@ -2109,7 +2081,7 @@ class RunManager:
         task.add_done_callback(self._orphan_reconciliation_done)
 
     def _orphan_reconciliation_done(self, task: asyncio.Task[None]) -> None:
-        """Clear and inspect the supervised single-flight recovery task."""
+        """감독되는 single-flight recovery task를 정리하고 결과를 확인한다."""
         if self._orphan_recovery_task is task:
             self._orphan_recovery_task = None
         if task.cancelled():
@@ -2120,7 +2092,7 @@ class RunManager:
             logger.warning("Periodic orphan reconciliation failed", exc_info=True)
 
     async def _drain_orphan_recovery_task(self, *, timeout: float) -> None:
-        """Boundedly await the supervised recovery pass during shutdown."""
+        """shutdown 중 감독되는 recovery pass를 제한된 시간 안에서 기다린다."""
         task = self._orphan_recovery_task
         if task is None or task.done():
             return
@@ -2134,35 +2106,31 @@ class RunManager:
             )
 
     async def shutdown(self, *, timeout: float = 5.0) -> None:
-        """Cancel and bounded-await all in-flight runs on process shutdown.
+        """프로세스 shutdown 시 진행 중인 모든 run을 취소하고 제한된 시간 동안 기다린다.
 
-        Signals active runs first so their cancellation/cleanup can overlap a
-        bounded heartbeat stop. The heartbeat may perform one final benign
-        lease renewal before it observes the stop event.
+        active run에 먼저 신호를 보내서 그들의 취소/cleanup이 제한된 heartbeat
+        중지와 겹쳐 진행되게 한다. heartbeat는 stop event를 관측하기 전에 무해한
+        마지막 lease 갱신을 한 번 수행할 수 있다.
 
-        Chat runs execute in fire-and-forget background ``asyncio`` tasks that
-        write checkpoints through a shared checkpointer. On shutdown the
-        checkpointer's resources (e.g. the postgres connection pool owned by the
-        gateway's ``AsyncExitStack``) are torn down; if a run task is still
-        mid-graph at that point, langgraph's
-        ``AsyncPregelLoop._checkpointer_put_after_previous`` runs its
-        ``finally: await checkpointer.aput(...)`` against the closed pool. Because
-        that put runs in a langgraph-internal task (not on ``run_agent``'s call
-        stack), the resulting ``psycopg_pool.PoolClosed`` is not catchable by the
-        worker and surfaces as an unhandled exception during ``asyncio.run()``
-        shutdown (bytedance/deer-flow issue #3373).
+        chat run은 fire-and-forget 백그라운드 ``asyncio`` task로 실행되며 공유
+        checkpointer를 통해 checkpoint를 쓴다. shutdown 시 checkpointer의 자원(예:
+        gateway ``AsyncExitStack``이 소유한 postgres connection pool)이 해제되는데,
+        그 시점에 run task가 아직 graph 중간이면 langgraph의
+        ``AsyncPregelLoop._checkpointer_put_after_previous``가 닫힌 pool을 상대로
+        ``finally: await checkpointer.aput(...)``을 실행한다. 그 put은
+        langgraph 내부 task에서 돌기 때문에(``run_agent``의 호출 스택이 아니다)
+        발생한 ``psycopg_pool.PoolClosed``를 worker가 잡을 수 없고, ``asyncio.run()``
+        shutdown 중 처리되지 않은 예외로 드러난다(bytedance/deer-flow issue #3373).
 
-        Draining in-flight runs *before* the checkpointer is closed lets each
-        run that settles within ``timeout`` flush its final checkpoint while
-        resources are still open. Only runs that do **not** settle on their own
-        are marked ``interrupted`` — a run that completes (e.g. ``success``)
-        during the drain keeps its real terminal status instead of being
-        blanket-overwritten. The whole drain, including the trailing status
-        persistence, is bounded by ``timeout`` so a run stuck in cleanup (or a
-        slow store under DB pressure) cannot hang worker shutdown — the
-        precondition for the signal-reentrancy deadlock guarded by
-        ``app.gateway.app._SHUTDOWN_HOOK_TIMEOUT_SECONDS``. Runs still active
-        after ``timeout`` are logged and may still race teardown.
+        checkpointer가 닫히기 *전에* 진행 중인 run을 배출하면, ``timeout`` 안에
+        정리되는 run은 자원이 아직 열려 있는 동안 마지막 checkpoint를 flush할 수
+        있다. 스스로 정리되지 **않은** run만 ``interrupted``로 표시하므로, 배출 중
+        완료된(예: ``success``) run은 일괄로 덮어써지지 않고 실제 terminal status를
+        유지한다. 마지막 status 영속화를 포함한 배출 전체는 ``timeout``으로
+        제한된다. cleanup에 걸린 run이나 DB 부하로 느려진 store가 worker shutdown을
+        멈추게 하면 ``app.gateway.app._SHUTDOWN_HOOK_TIMEOUT_SECONDS``가 막고 있는
+        signal 재진입 deadlock의 전제 조건이 되기 때문이다. ``timeout`` 이후에도
+        active인 run은 로그로 남으며 teardown과 경쟁할 수 있다.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -2173,8 +2141,8 @@ class RunManager:
                 record.abort_action = "interrupt"
                 record.abort_event.set()
                 record.task.cancel()  # type: ignore[union-attr]  # filtered above
-                # Status is decided AFTER the drain (below), not here: a run that
-                # completes on its own during the drain must keep its real status.
+                # status는 여기가 아니라 배출 이후(아래)에 정한다. 배출 중 스스로
+                # 완료된 run은 실제 status를 유지해야 하기 때문이다.
 
         await self.stop_heartbeat(timeout=max(0.0, deadline - loop.time()))
 
@@ -2185,16 +2153,16 @@ class RunManager:
         tasks = [record.task for record in inflight]
         _, pending = await asyncio.wait(tasks, timeout=max(0.0, deadline - loop.time()))
 
-        # Only mark/persist ``interrupted`` for runs that did not settle on their
-        # own (still pending after the timeout, or ended cancelled). A run that
-        # finished normally during the drain keeps the status it set for itself.
+        # 스스로 정리되지 않은 run(timeout 후에도 pending이거나 cancelled로 끝난 run)에
+        # 대해서만 ``interrupted``를 표시/영속화한다. 배출 중 정상적으로 끝난 run은
+        # 스스로 설정한 status를 유지한다.
         to_persist: list[RunRecord] = []
         async with self._lock:
             for record in inflight:
                 task = record.task
                 if task not in pending and not task.cancelled():
-                    # Completed on its own — retrieve any surfaced exception so it
-                    # is not reported as "never retrieved", and keep its status.
+                    # 스스로 완료됐다 — 발생한 예외를 꺼내 "never retrieved"로
+                    # 보고되지 않게 하고, status는 그대로 유지한다.
                     task.exception()  # type: ignore[union-attr]  # done & not cancelled
                     continue
                 if record.status in (RunStatus.pending, RunStatus.running):
@@ -2202,9 +2170,9 @@ class RunManager:
                     record.updated_at = _now_iso()
                 to_persist.append(record)
 
-        # Bound the trailing status persistence within the remaining budget so a
-        # slow store (``_call_store_with_retry`` can back off under DB pressure)
-        # cannot push shutdown past ``timeout``.
+        # 느린 store(``_call_store_with_retry``는 DB 부하에서 backoff할 수 있다)가
+        # shutdown을 ``timeout`` 너머로 밀지 못하도록, 마지막 status 영속화를 남은
+        # 예산 안으로 제한한다.
         if to_persist:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -2218,10 +2186,10 @@ class RunManager:
                 except TimeoutError:
                     logger.warning("Run drain status persistence exceeded the %.1fs budget; %d record(s) may not be persisted", timeout, len(to_persist))
                 else:
-                    # ``_persist_status`` is best-effort: it catches and logs its
-                    # own failures, returning ``False``. Inspect the aggregate so a
-                    # partial failure is surfaced at shutdown level (with the
-                    # run_id) instead of being silently swallowed by the gather.
+                    # ``_persist_status``는 best-effort다. 자체 실패를 잡아 로그로
+                    # 남기고 ``False``를 반환한다. 부분 실패가 gather에 조용히
+                    # 삼켜지지 않고 shutdown 수준에서 run_id와 함께 드러나도록
+                    # 집계 결과를 확인한다.
                     for record, result in zip(to_persist, results):
                         if isinstance(result, Exception):
                             logger.warning("Unexpected error persisting interrupted status for run %s during shutdown: %r", record.run_id, result)
@@ -2235,7 +2203,7 @@ class RunManager:
 
 
 class CancelOutcome(StrEnum):
-    """Result of a :meth:`RunManager.cancel` call."""
+    """:meth:`RunManager.cancel` 호출의 결과."""
 
     cancelled = "cancelled"
     requested = "requested"
@@ -2247,8 +2215,8 @@ class CancelOutcome(StrEnum):
 
 
 class ConflictError(Exception):
-    """Raised when multitask_strategy=reject and thread has inflight runs."""
+    """multitask_strategy=reject인데 thread에 진행 중인 run이 있을 때 발생한다."""
 
 
 class UnsupportedStrategyError(Exception):
-    """Raised when a multitask_strategy value is not yet implemented."""
+    """아직 구현되지 않은 multitask_strategy 값일 때 발생한다."""

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_tool_config(tool_name: str) -> dict | None:
-    """Get tool config extras safely, returning None if not configured."""
+    """도구 설정의 extras를 안전하게 가져온다. 설정이 없으면 None을 반환한다."""
     config = get_app_config().get_tool_config(tool_name)
     if config is None:
         return None
@@ -29,10 +29,10 @@ def _get_searxng_client() -> SearxngClient:
 
 @tool("web_search", parse_docstring=True)
 async def web_search_tool(query: str) -> str:
-    """Search the web using SearXNG.
+    """SearXNG로 웹을 검색한다.
 
     Args:
-        query: The query to search for.
+        query: 검색할 질의.
     """
     try:
         cfg = _get_tool_config("web_search")

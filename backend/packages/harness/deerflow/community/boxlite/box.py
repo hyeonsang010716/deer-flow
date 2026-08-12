@@ -1,16 +1,14 @@
-"""``BoxliteBox`` — DeerFlow :class:`Sandbox` backed by a BoxLite micro-VM.
+"""``BoxliteBox`` — BoxLite micro-VM 기반 DeerFlow :class:`Sandbox`.
 
-DeerFlow's ``Sandbox`` contract is synchronous; BoxLite's SDK is async-native and
-its box handles are event-loop-affine. The provider (:mod:`.provider`) owns one
-private asyncio loop on a daemon thread and injects a ``run`` callable that
-marshals each coroutine onto it via ``run_coroutine_threadsafe`` — so every op
-runs on the loop the box was started on, and stays safe no matter which
-``asyncio.to_thread`` worker DeerFlow invokes us from.
+DeerFlow의 ``Sandbox`` 계약은 동기지만 BoxLite SDK는 async 네이티브이고 box handle은
+event loop에 종속된다. provider(:mod:`.provider`)가 daemon thread 위에 전용 asyncio loop를
+하나 두고, 각 coroutine을 ``run_coroutine_threadsafe``로 그 loop에 넘기는 ``run`` callable을
+주입한다. 덕분에 모든 연산이 box를 시작한 loop에서 실행되며, DeerFlow가 어떤
+``asyncio.to_thread`` worker에서 호출하든 안전하다.
 
-Every operation is a shell command run inside the box (``cat`` / ``find`` /
-``grep`` / chunked ``base64``), parsed with the shared ``deerflow.sandbox.search``
-helpers — the same exec-driven approach as ``community/e2b_sandbox``. Commands
-use only busybox-portable flags so any OCI image works.
+모든 연산은 box 안에서 실행되는 shell 명령(``cat`` / ``find`` / ``grep`` / 분할 ``base64``)이며,
+공용 ``deerflow.sandbox.search`` 헬퍼로 파싱한다. ``community/e2b_sandbox``와 같은 exec 기반
+방식이다. 어떤 OCI 이미지에서도 동작하도록 busybox 호환 플래그만 쓴다.
 """
 
 from __future__ import annotations
@@ -38,23 +36,23 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
-# One base64 chunk stays well under Linux MAX_ARG_STRLEN (128 KiB per argv entry),
-# and 60000 is a multiple of 4 so each chunk is a self-contained base64 unit whose
-# decoded bytes concatenate losslessly.
+# base64 chunk 하나는 Linux MAX_ARG_STRLEN(argv 항목당 128 KiB)보다 충분히 작아야 한다.
+# 60000은 4의 배수라 각 chunk가 자체 완결된 base64 단위가 되고, 디코딩된 바이트를
+# 이어 붙여도 손실이 없다.
 _B64_CHUNK = 60000
 
 
 class BoxliteBox(Sandbox):
-    """Adapter that delegates to a running BoxLite ``SimpleBox``.
+    """실행 중인 BoxLite ``SimpleBox``에 위임하는 adapter.
 
     Args:
-        id: DeerFlow-side sandbox id (the BoxLite box id).
-        box: A started async ``SimpleBox``. The provider owns its lifecycle; this
-            adapter stops it on :meth:`close`.
-        run: Runs a coroutine on the provider's private loop, returning its result
-            (blocking the caller thread).
-        default_env: Static environment merged into every command, overridden by
-            per-call ``env`` (request-scoped secrets).
+        id: DeerFlow 쪽 sandbox id(BoxLite box id와 동일).
+        box: 이미 시작된 async ``SimpleBox``. lifecycle은 provider가 소유하고, 이
+            adapter는 :meth:`close`에서 중지시킨다.
+        run: provider의 전용 loop에서 coroutine을 실행하고 결과를 반환한다
+            (호출 thread를 block한다).
+        default_env: 모든 명령에 병합되는 정적 환경 변수. 호출별 ``env``
+            (request 범위 secret)가 우선한다.
     """
 
     TERMINAL_ERROR_MARKERS = (
@@ -102,7 +100,7 @@ class BoxliteBox(Sandbox):
             return False
         return any(marker in msg for marker in cls.TERMINAL_ERROR_MARKERS)
 
-    # ── bridge helpers ──────────────────────────────────────────────────
+    # ── bridge 헬퍼 ─────────────────────────────────────────────────────
 
     def _exec(
         self,
@@ -147,7 +145,7 @@ class BoxliteBox(Sandbox):
         with self._lock:
             return self._closed
 
-    # ── path safety (mirrors community/e2b_sandbox) ─────────────────────
+    # ── 경로 안전성 검사 (community/e2b_sandbox와 동일) ──────────────────
 
     @staticmethod
     def _guard_traversal(path: str) -> str:
@@ -160,11 +158,11 @@ class BoxliteBox(Sandbox):
         return normalized
 
     def _resolve_path(self, path: str) -> str:
-        # The provider materialises the /mnt/user-data prefix on the box rootfs,
-        # so DeerFlow's virtual paths are used as-is; we only reject traversal.
+        # provider가 box rootfs에 /mnt/user-data prefix를 미리 만들어 두므로
+        # DeerFlow의 virtual path를 그대로 쓴다. 여기서는 traversal만 막는다.
         return self._guard_traversal(path)
 
-    # ── command execution ───────────────────────────────────────────────
+    # ── 명령 실행 ───────────────────────────────────────────────────────
 
     def execute_command(
         self,
@@ -172,18 +170,18 @@ class BoxliteBox(Sandbox):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Run ``command`` through a shell in the box and return its output.
+        """box 안의 shell로 ``command``를 실행하고 출력을 반환한다.
 
-        DeerFlow passes a bash command *string*; BoxLite's ``exec`` takes argv, so
-        it runs through ``sh -lc``. Per-call ``env`` is layered over the static
-        config environment and scoped to this command only.
+        DeerFlow는 bash 명령을 *문자열*로 넘기지만 BoxLite ``exec``은 argv를 받으므로
+        ``sh -lc``를 거쳐 실행한다. 호출별 ``env``는 정적 config 환경 위에 덮이며 이
+        명령에만 적용된다.
 
-        *timeout* bounds both layers: BoxLite's SDK ``exec(timeout=...)`` handles
-        command timeout inside the VM, and the event-loop bridge receives the
-        same value so ``run_coroutine_threadsafe(...).result(timeout)`` cannot
-        block the caller forever if the SDK future itself never resolves.
+        *timeout*은 두 계층 모두를 제한한다. BoxLite SDK의 ``exec(timeout=...)``이 VM 안의
+        명령 timeout을 처리하고, event loop bridge도 같은 값을 받아
+        ``run_coroutine_threadsafe(...).result(timeout)``이 SDK future가 끝내 완료되지 않아도
+        호출자를 영원히 block하지 않게 한다.
         """
-        _validate_extra_env(env)  # POSIX env-var key rule; raises ValueError on a bad key
+        _validate_extra_env(env)  # POSIX 환경 변수 키 규칙. 잘못된 키면 ValueError를 던진다.
         if self.is_closed:
             return "Error: sandbox has been closed"
         merged_env = {**self._default_env, **(env or {})} or None
@@ -203,7 +201,7 @@ class BoxliteBox(Sandbox):
             output = f"Command exited with code {result.exit_code}"
         return output if output else "(no output)"
 
-    # ── file operations ─────────────────────────────────────────────────
+    # ── 파일 연산 ───────────────────────────────────────────────────────
 
     def read_file(
         self,
@@ -241,7 +239,7 @@ class BoxliteBox(Sandbox):
                 raise OSError(f"cannot create parent of '{resolved}': {(mk.stderr or '').strip()}")
 
         b64 = base64.b64encode(data).decode("ascii")
-        if not b64:  # empty file — create/truncate without piping
+        if not b64:  # 빈 파일이면 파이프 없이 생성/비우기만 한다
             r = self._sh(f": {'>>' if append else '>'} {shlex.quote(resolved)}")
             if r.exit_code not in (0, None):
                 raise OSError(f"write '{resolved}' failed: {(r.stderr or '').strip()}")
@@ -263,7 +261,7 @@ class BoxliteBox(Sandbox):
         if stripped != allowed and not stripped.startswith(f"{allowed}/"):
             raise PermissionError(f"Access denied: path must be under '{VIRTUAL_PATH_PREFIX}': '{path}'")
 
-        # Enforce the size cap before buffering the whole payload.
+        # 전체 payload를 버퍼링하기 전에 크기 상한을 먼저 확인한다.
         size_r = self._sh(f"wc -c < {shlex.quote(normalized)}")
         if size_r.exit_code not in (0, None):
             raise OSError(f"cannot read '{path}' from box: {(size_r.stderr or '').strip() or 'not found'}")
@@ -329,17 +327,17 @@ class BoxliteBox(Sandbox):
         case_sensitive: bool = False,
         max_results: int = 100,
     ) -> tuple[list[GrepMatch], bool]:
-        # Sanity-check a regex pattern as a Python regex at the boundary (grep uses
-        # POSIX ERE, but this catches gross errors); a literal needs no validation.
-        # grep receives the RAW pattern: -F matches it literally, -E as a regex.
+        # 경계에서 regex pattern을 Python regex로 한 번 검사한다(grep은 POSIX ERE를 쓰지만
+        # 명백한 오류는 이걸로 걸린다). literal은 검증할 필요가 없다.
+        # grep에는 원본 pattern을 그대로 넘긴다. -F는 literal로, -E는 regex로 매칭한다.
         if not literal:
             re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
 
         resolved = self._resolve_path(path)
-        # busybox+GNU-portable flags: -r recursive, -H always print the filename
-        # (including when path is a single file), -n line numbers, -I skip
-        # binary, -E/-F regex vs fixed. --include and -m are omitted for busybox
-        # portability; glob-scoping and the result cap are applied in Python.
+        # busybox+GNU 양쪽에서 통하는 플래그만 쓴다. -r 재귀, -H 항상 파일명 출력
+        # (path가 단일 파일일 때도), -n 줄 번호, -I 바이너리 건너뛰기, -E/-F regex 대 고정 문자열.
+        # --include와 -m은 busybox 호환성 때문에 빼고, glob 범위 제한과 결과 상한은
+        # Python 쪽에서 적용한다.
         flags = ["-r", "-H", "-n", "-I"]
         if not case_sensitive:
             flags.append("-i")

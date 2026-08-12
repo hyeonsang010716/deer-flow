@@ -1,20 +1,18 @@
-"""PostgreSQL schema helpers (Issue #3380).
+"""PostgreSQL schema 헬퍼 (Issue #3380).
 
-Centralizes the driver-specific ways of pinning a connection's
-``search_path`` to a target schema. The two PostgreSQL drivers DeerFlow
-uses expect different mechanisms:
+connection의 ``search_path``를 대상 schema로 고정하는 driver별 방식을 한곳에 모은다.
+DeerFlow가 쓰는 두 PostgreSQL driver는 서로 다른 메커니즘을 기대한다:
 
-- **asyncpg** (app ORM engine): only honours ``server_settings`` passed
-  via SQLAlchemy ``connect_args``. It does not understand libpq's
-  ``options=-c ...`` syntax.
-- **psycopg** (LangGraph checkpointer/store): uses the libpq
-  ``options=-c search_path=...`` connection parameter, either as a pool
-  kwarg or encoded into the DSN query string.
+- **asyncpg** (app ORM engine): SQLAlchemy ``connect_args``로 전달된
+  ``server_settings``만 인식한다. libpq의 ``options=-c ...`` 문법은 이해하지 못한다.
+- **psycopg** (LangGraph checkpointer/store): libpq의
+  ``options=-c search_path=...`` connection 파라미터를 pool kwarg로 주거나
+  DSN query string에 인코딩해서 쓴다.
 
-Schema names are validated upstream by
-:class:`deerflow.config.database_config.DatabaseConfig` to be plain
-identifiers. SQL-emitting helpers re-validate at the boundary as
-defense-in-depth; connection-argument helpers only assemble driver payloads.
+schema 이름은 상위의
+:class:`deerflow.config.database_config.DatabaseConfig`에서 평범한 식별자인지
+검증된다. SQL을 만드는 헬퍼는 defense-in-depth로 경계에서 한 번 더 검증하고,
+connection 인자 헬퍼는 driver payload를 조립하기만 한다.
 """
 
 from __future__ import annotations
@@ -24,9 +22,9 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 
 def build_asyncpg_connect_args(schema: str) -> dict:
-    """Return SQLAlchemy ``connect_args`` that pin asyncpg's search_path.
+    """asyncpg의 search_path를 고정하는 SQLAlchemy ``connect_args``를 반환한다.
 
-    Empty *schema* yields ``{}`` so the engine keeps the server default.
+    *schema*가 비어 있으면 ``{}``를 반환해 engine이 서버 기본값을 그대로 쓰게 한다.
     """
     if not schema:
         return {}
@@ -34,9 +32,9 @@ def build_asyncpg_connect_args(schema: str) -> dict:
 
 
 def build_psycopg_options(schema: str) -> str | None:
-    """Return the libpq ``options`` value for psycopg pool kwargs.
+    """psycopg pool kwarg에 쓸 libpq ``options`` 값을 반환한다.
 
-    Empty *schema* yields ``None`` so callers can skip setting the kwarg.
+    *schema*가 비어 있으면 ``None``을 반환해 호출자가 kwarg 설정을 건너뛸 수 있게 한다.
     """
     if not schema:
         return None
@@ -44,11 +42,11 @@ def build_psycopg_options(schema: str) -> str | None:
 
 
 def _split_libpq_options(options: str) -> list[str]:
-    """Tokenize a libpq ``options`` string.
+    """libpq ``options`` 문자열을 토큰으로 나눈다.
 
-    libpq splits on unescaped whitespace; a backslash escapes the next
-    character (so ``\\ `` is a literal space and ``\\\\`` a literal backslash).
-    This is NOT POSIX shell quoting -- single/double quotes are literal here.
+    libpq는 escape되지 않은 공백에서 나누며, backslash는 다음 문자를 escape한다
+    (즉 ``\\ ``는 리터럴 공백, ``\\\\``는 리터럴 backslash). POSIX shell quoting이
+    아니다 -- 여기서 작은/큰따옴표는 리터럴 문자다.
     """
     tokens: list[str] = []
     current: list[str] = []
@@ -78,23 +76,22 @@ def _split_libpq_options(options: str) -> list[str]:
 
 
 def _join_libpq_options(tokens: list[str]) -> str:
-    """Join tokens into a libpq ``options`` string.
+    """토큰들을 libpq ``options`` 문자열로 합친다.
 
-    Whitespace and backslashes inside a token are backslash-escaped so libpq
-    keeps each token intact. ``shlex.join`` cannot be used: it emits POSIX
-    shell quoting (single quotes), which libpq treats as literal characters.
+    토큰 안의 공백과 backslash는 backslash로 escape해서 libpq가 각 토큰을 온전히
+    유지하게 한다. ``shlex.join``은 쓸 수 없다: POSIX shell quoting(작은따옴표)을
+    내보내는데 libpq는 그것을 리터럴 문자로 취급한다.
 
-    All whitespace bytes are escaped, not just spaces: ``_split_libpq_options``
-    preserves a backslash-escaped TAB/CR/LF as part of one token, so re-joining
-    with a bare whitespace byte would let libpq re-tokenize on it and corrupt a
-    caller's pre-existing ``options`` value.
+    공백 문자 전부를 escape한다. ``_split_libpq_options``가 backslash로 escape된
+    TAB/CR/LF를 한 토큰의 일부로 보존하므로, 그냥 공백 바이트로 다시 합치면 libpq가
+    그 지점에서 재토큰화해 호출자가 원래 갖고 있던 ``options`` 값을 깨뜨린다.
     """
     escaped = [re.sub(r"([\\\s])", r"\\\1", token) for token in tokens]
     return " ".join(escaped)
 
 
 def _merge_search_path_option(existing_options: str, schema: str) -> str:
-    """Return libpq options with search_path replaced while preserving others."""
+    """다른 옵션은 보존한 채 search_path만 교체한 libpq options를 반환한다."""
     new_option = build_psycopg_options(schema)
     if not new_option:
         return existing_options
@@ -127,13 +124,12 @@ def _merge_search_path_option(existing_options: str, schema: str) -> str:
 
 
 def create_schema_sql(schema: str) -> str | None:
-    """Return a safe CREATE SCHEMA statement for a validated plain identifier.
+    """검증된 평범한 식별자에 대해 안전한 CREATE SCHEMA 문을 반환한다.
 
-    Defense-in-depth: the identifier is re-validated here rather than trusting
-    the distant pydantic validator. ``create_schema_sql`` is publicly exported
-    and psycopg accepts multiple ``;``-separated statements, so a future caller
-    that bypasses ``DatabaseConfig``/``CheckpointerConfig`` (e.g. a test helper)
-    must not be able to inject SQL through this f-string boundary.
+    defense-in-depth: 멀리 떨어진 pydantic validator를 믿지 않고 여기서 식별자를
+    다시 검증한다. ``create_schema_sql``은 공개 export이고 psycopg는 ``;``로
+    구분된 여러 문을 받으므로, ``DatabaseConfig``/``CheckpointerConfig``를 우회하는
+    미래의 호출자(예: 테스트 헬퍼)가 이 f-string 경계로 SQL을 주입할 수 없어야 한다.
     """
     if not schema:
         return None
@@ -144,15 +140,15 @@ def create_schema_sql(schema: str) -> str | None:
 
 
 def normalize_libpq_dsn(dsn: str) -> str:
-    """Return *dsn* with any SQLAlchemy ``+driver`` suffix dropped.
+    """SQLAlchemy ``+driver`` suffix를 제거한 *dsn*을 반환한다.
 
-    ``DatabaseConfig.postgres_url`` may carry a SQLAlchemy driver suffix such
-    as ``postgresql+asyncpg://``. psycopg's libpq only understands the bare
-    ``postgres``/``postgresql`` scheme, so a raw ``+asyncpg`` DSN handed to
-    ``psycopg.connect`` raises an opaque parse error. Keyword/DSN strings
-    without a URL scheme (``host=... dbname=...``) are returned unchanged.
+    ``DatabaseConfig.postgres_url``에는 ``postgresql+asyncpg://`` 같은 SQLAlchemy
+    driver suffix가 붙어 있을 수 있다. psycopg의 libpq는 순수한
+    ``postgres``/``postgresql`` scheme만 이해하므로 ``+asyncpg``가 붙은 DSN을 그대로
+    ``psycopg.connect``에 넘기면 알아보기 힘든 파싱 에러가 난다. URL scheme이 없는
+    keyword/DSN 문자열(``host=... dbname=...``)은 그대로 반환한다.
 
-    Raises ``ValueError`` for URL schemes that are not a PostgreSQL variant.
+    PostgreSQL 계열이 아닌 URL scheme에는 ``ValueError``를 던진다.
     """
     parts = urlsplit(dsn)
     if not parts.scheme:
@@ -166,18 +162,17 @@ def normalize_libpq_dsn(dsn: str) -> str:
 
 
 def dsn_with_search_path(dsn: str, schema: str) -> str:
-    """Return *dsn* with an ``options=-c search_path=<schema>`` query param.
+    """``options=-c search_path=<schema>`` query 파라미터를 붙인 *dsn*을 반환한다.
 
-    Used for psycopg ``from_conn_string`` call sites that take a DSN
-    string rather than pool kwargs. The value contains a space and ``=``;
-    both are percent-encoded so libpq parses the URL correctly.
+    pool kwarg 대신 DSN 문자열을 받는 psycopg ``from_conn_string`` 호출부에서 쓴다.
+    값에 공백과 ``=``가 들어 있어 둘 다 percent-encoding 해야 libpq가 URL을 올바로
+    파싱한다.
 
-    libpq only recognizes ``%XX`` percent-encoding in URI query values; it
-    does NOT treat ``+`` as a space (that is an HTML-form convention). So
-    the space MUST be encoded as ``%20`` rather than ``+``, otherwise libpq
-    sees a single broken token ``-c+search_path=...`` and the search_path is
-    never applied. Existing query parameters are preserved. Empty *schema*
-    returns *dsn* unchanged.
+    libpq는 URI query 값에서 ``%XX`` percent-encoding만 인식하고 ``+``를 공백으로
+    취급하지 않는다(그건 HTML form 관례다). 따라서 공백은 반드시 ``+``가 아닌
+    ``%20``으로 인코딩해야 한다. 아니면 libpq는 ``-c+search_path=...``라는 깨진 토큰
+    하나로 보고 search_path가 아예 적용되지 않는다. 기존 query 파라미터는 보존한다.
+    *schema*가 비어 있으면 *dsn*을 그대로 반환한다.
     """
     if not schema:
         return dsn
@@ -190,10 +185,10 @@ def dsn_with_search_path(dsn: str, schema: str) -> str:
         params["options"] = _merge_search_path_option(params.get("options", ""), schema)
         return make_conninfo(**params)
 
-    # DatabaseConfig.postgres_url may carry a SQLAlchemy driver suffix such as
-    # ``postgresql+asyncpg://``. psycopg's libpq only understands the bare
-    # ``postgres``/``postgresql`` scheme, so accept the compound form but emit
-    # a psycopg-consumable DSN by dropping the ``+driver`` part.
+    # DatabaseConfig.postgres_url에는 ``postgresql+asyncpg://`` 같은 SQLAlchemy driver
+    # suffix가 붙을 수 있다. psycopg의 libpq는 순수한 ``postgres``/``postgresql``
+    # scheme만 이해하므로, 복합 형태는 받아들이되 ``+driver`` 부분을 떼어 psycopg가
+    # 소비할 수 있는 DSN을 내보낸다.
     scheme_base = parts.scheme.split("+", 1)[0]
     if scheme_base not in {"postgres", "postgresql"}:
         raise ValueError(f"Unsupported PostgreSQL DSN scheme for schema injection: {parts.scheme!r}")
@@ -208,18 +203,18 @@ def dsn_with_search_path(dsn: str, schema: str) -> str:
 
     options = _merge_search_path_option(" ".join(options_values), schema)
     query_pairs.append(("options", options))
-    # quote_via=quote encodes space as %20 (libpq-safe), not + (form-style).
+    # quote_via=quote는 공백을 +(form 방식)가 아니라 %20(libpq에 안전)으로 인코딩한다.
     query = urlencode(query_pairs, quote_via=quote)
     return urlunsplit((scheme_base, parts.netloc, parts.path, query, parts.fragment))
 
 
 def ensure_postgres_schema(conn_string: str, schema: str, *, install_hint: str) -> None:
-    """Create *schema* over a fresh sync psycopg connection.
+    """새 동기 psycopg connection으로 *schema*를 생성한다.
 
-    No-op when *schema* is empty. A missing ``psycopg`` dependency is mapped to
-    *install_hint* so callers surface the same actionable message they use for
-    the rest of the backend. The DSN is normalized so a SQLAlchemy ``+driver``
-    suffix does not reach libpq.
+    *schema*가 비어 있으면 아무것도 하지 않는다. ``psycopg`` 의존성이 없으면
+    *install_hint*로 매핑해서, 호출자가 backend의 나머지 부분과 동일한 조치 가능한
+    메시지를 노출하게 한다. DSN은 SQLAlchemy ``+driver`` suffix가 libpq에 닿지 않도록
+    정규화한다.
     """
     statement = create_schema_sql(schema)
     if statement is None:
@@ -229,10 +224,9 @@ def ensure_postgres_schema(conn_string: str, schema: str, *, install_hint: str) 
     except ImportError as exc:
         raise ImportError(install_hint) from exc
 
-    # psycopg 3's ``Connection.__exit__`` only commits/rolls back -- it does NOT
-    # close the connection (a documented psycopg2->3 change). Use try/finally so
-    # the libpq connection is released deterministically, mirroring the async
-    # counterpart, instead of leaking it until GC.
+    # psycopg 3의 ``Connection.__exit__``는 commit/rollback만 하고 connection을 닫지
+    # 않는다(psycopg2->3에서 문서화된 변경). GC까지 새게 두지 말고 async 쪽과 똑같이
+    # try/finally로 libpq connection을 확정적으로 반환한다.
     conn = psycopg.connect(normalize_libpq_dsn(conn_string), autocommit=True)
     try:
         conn.execute(statement)
@@ -241,7 +235,7 @@ def ensure_postgres_schema(conn_string: str, schema: str, *, install_hint: str) 
 
 
 async def ensure_postgres_schema_async(conn_string: str, schema: str, *, install_hint: str) -> None:
-    """Async counterpart of :func:`ensure_postgres_schema`."""
+    """:func:`ensure_postgres_schema`의 async 버전."""
     statement = create_schema_sql(schema)
     if statement is None:
         return

@@ -1,4 +1,4 @@
-"""Deterministic summaries for oversized tool output previews."""
+"""큰 도구 출력 preview를 위한 결정적 요약."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any, Literal
 try:
     from defusedxml import ElementTree as SafeET  # type: ignore[import-not-found]
 except ImportError:
-    SafeET = None  # Fall back to stdlib; risk is limited (agent-requested output).
+    SafeET = None  # stdlib로 fallback한다. 에이전트가 요청한 출력이라 위험이 제한적이다.
 
 import yaml
 
@@ -32,25 +32,24 @@ _JSON_SHAPE_MAX_DEPTH = 2
 _JSON_STRUCTURE_LIMIT = 24
 _JSON_STRUCTURE_DEPTH = 4
 
-# Hard cap on the synopsis input size. Beyond this threshold the full parse
-# is skipped and only a raw head/tail sample is emitted. This bounds the
-# worst-case memory/CPU when externalized tool output is pathologically large
-# (e.g. 50+ MB log dumps) and prevents DoS via XML/YAML entity-expansion.
+# synopsis 입력 크기의 상한. 이 임계값을 넘으면 전체 파싱을 건너뛰고 raw head/tail
+# 샘플만 낸다. 외부화된 도구 출력이 병적으로 큰 경우(예: 50MB 이상 로그 덤프) 최악의
+# 메모리/CPU를 제한하고 XML/YAML entity-expansion을 통한 DoS를 막는다.
 _MAX_SYNOPSIS_INPUT_BYTES = 5_000_000
 
 _CODE_HINTS = (
     re.compile(r"^\s*(?:from\s+\S+\s+import|import\s+\S+)", re.MULTILINE),
     re.compile(r"^\s*(?:class|def|async\s+def|function|export\s+function)\s+[A-Za-z_]\w*", re.MULTILINE),
-    # Require stronger signals for Rust/Java: `use ...;` (trailing semicolon),
-    # `fn ...(` (parenthesised), `pub fn ...(`, `public class ...`.  Bare
-    # `use <word>` or `fn <word>` misclassifies prose (e.g. "use the following …").
+    # Rust/Java는 더 강한 신호를 요구한다: `use ...;`(끝에 세미콜론),
+    # `fn ...(`(괄호), `pub fn ...(`, `public class ...`. 맨 `use <word>`나
+    # `fn <word>`는 일반 산문을 오분류한다(예: "use the following …").
     re.compile(r"^\s*(?:package\s+[A-Za-z_][\w.]*|use\s+[A-Za-z_][\w:]*\s*;|pub\s+fn\s+[A-Za-z_]\w*\s*\(|fn\s+[A-Za-z_]\w*\s*\(|public\s+class\s+[A-Za-z_]\w*)", re.MULTILINE),
 )
 
 
 @dataclass(frozen=True)
 class ToolOutputSynopsis:
-    """Structured preview data for an oversized tool output."""
+    """큰 도구 출력의 구조화된 preview 데이터."""
 
     kind: ToolOutputKind
     title: str
@@ -61,7 +60,7 @@ class ToolOutputSynopsis:
 
 
 def build_tool_output_synopsis(content: str, *, tool_name: str = "") -> ToolOutputSynopsis:
-    """Return a typed synopsis for *content* without using an LLM."""
+    """LLM 없이 *content*의 typed synopsis를 만든다."""
     if content == "":
         return ToolOutputSynopsis(
             kind="unknown",
@@ -71,9 +70,9 @@ def build_tool_output_synopsis(content: str, *, tool_name: str = "") -> ToolOutp
             notable_items=[],
         )
 
-    # Size guard: parsing the full content above the threshold is a DoS risk
-    # (XML entity expansion, YAML alias bombs, memory/CPU from raw text).
-    # Fall back to a raw head/tail sample to bound the worst case.
+    # 크기 가드: 임계값을 넘는 콘텐츠를 전부 파싱하는 것은 DoS 위험이다
+    # (XML entity expansion, YAML alias bomb, 원문 텍스트로 인한 메모리/CPU).
+    # 최악의 경우를 제한하기 위해 raw head/tail 샘플로 fallback한다.
     if len(content.encode("utf-8")) > _MAX_SYNOPSIS_INPUT_BYTES:
         return ToolOutputSynopsis(
             kind="unknown",
@@ -133,21 +132,19 @@ def render_tool_output_preview(
     head_chars: int,
     tail_chars: int,
 ) -> str:
-    """Render a file-backed preview as a typed synopsis plus a raw head/tail sample.
+    """파일 기반 preview를 typed synopsis + raw head/tail 샘플로 렌더링한다.
 
-    The synopsis is the primary signal; the raw sample restores the
-    inline head/tail bytes that operators used to get from
-    preview_head_chars / preview_tail_chars before the synopsis was
-    added. For binary-like output the synopsis already carries a raw
-    sample; for everything else we slice head_chars from the start and
-    tail_chars from the end of *content*.
+    synopsis가 주된 신호다. raw 샘플은 synopsis 도입 전에 운영자가
+    preview_head_chars / preview_tail_chars로 받던 inline head/tail 바이트를 복원한다.
+    binary 성격의 출력은 synopsis가 이미 raw 샘플을 들고 있고, 그 외에는 *content*의
+    앞에서 head_chars, 뒤에서 tail_chars만큼 잘라 쓴다.
     """
     total = len(content)
     synopsis = build_tool_output_synopsis(content, tool_name=tool_name)
     head_budget = max(0, head_chars)
     tail_budget = max(0, tail_chars)
-    # For text kind, skip excerpts in the synopsis when a raw sample will be
-    # appended (avoids duplicating head/tail bytes in both places).
+    # text 종류는 raw 샘플이 덧붙을 예정이면 synopsis의 발췌를 생략한다
+    # (head/tail 바이트가 두 곳에 중복되는 것을 피한다).
     if synopsis.kind == "text" and head_budget + tail_budget > 0 and len(content) > head_budget + tail_budget:
         synopsis = _summarize_text(content, tool_name=tool_name, include_excerpts=False)
     lines = [
@@ -189,13 +186,11 @@ def _clip(value: str, limit: int) -> str:
 
 
 def _build_raw_sample(content: str, *, head_budget: int, tail_budget: int, existing: str) -> str:
-    """Compose the inline head/tail raw sample.
+    """inline head/tail raw 샘플을 구성한다.
 
-    If the synopsis already provides a sample (binary-like output), use
-    it directly. Otherwise slice head_budget bytes from the start and
-    tail_budget bytes from the end, snapping to line boundaries so
-    previews end on clean line breaks. Avoids duplicate bytes when the
-    two slices would overlap.
+    synopsis가 이미 샘플을 제공하면(binary 성격 출력) 그대로 쓴다. 아니면 앞에서
+    head_budget, 뒤에서 tail_budget만큼 잘라내되 줄 경계에 맞춰 preview가 깔끔한 줄바꿈에서
+    끝나게 한다. 두 조각이 겹칠 경우 바이트가 중복되지 않게 한다.
     """
     if existing:
         return existing
@@ -206,14 +201,14 @@ def _build_raw_sample(content: str, *, head_budget: int, tail_budget: int, exist
     parts: list[str] = []
     if head_budget > 0:
         head = content[:head_budget]
-        # Snap to the last newline within the budget for clean truncation.
+        # 깔끔하게 자르기 위해 예산 안의 마지막 개행에 맞춘다.
         snap = head.rfind("\n")
         if snap > 0:
             head = head[:snap]
         parts.append(head)
     if tail_budget > 0 and head_budget + tail_budget < len(content):
         tail = content[-tail_budget:]
-        # Snap to the first newline within the tail for clean truncation.
+        # 깔끔하게 자르기 위해 tail 안의 첫 개행에 맞춘다.
         snap = tail.find("\n")
         if snap >= 0 and snap < len(tail) - 1:
             tail = tail[snap + 1 :]
@@ -299,14 +294,12 @@ def _json_container_description(value: Any) -> str:
 
 
 def _json_container_paths(value: Any, *, limit: int = _JSON_STRUCTURE_LIMIT) -> list[str]:
-    """Summarize nested JSON container paths.
+    """중첩된 JSON container 경로를 요약한다.
 
-    Locations are intentionally omitted: an approximate '(line N, byte
-    offset M)' anchor based on string search is wrong whenever a key
-    string also appears as a value earlier in the document, or when
-    the same key occurs at multiple depths. The path itself is already
-    useful navigation; the agent uses read_file with start_line from
-    its own judgement of where the relevant slice is.
+    위치 정보는 의도적으로 뺀다. 문자열 검색 기반의 '(line N, byte offset M)' 근사 앵커는
+    키 문자열이 문서 앞쪽에 값으로도 등장하거나 같은 키가 여러 깊이에 나타나면 틀린다.
+    경로 자체만으로도 탐색에 충분하고, 에이전트는 어느 구간이 필요한지 스스로 판단해
+    read_file의 start_line을 정한다.
     """
     paths: list[str] = []
 
@@ -370,11 +363,10 @@ def _try_json(content: str) -> ToolOutputSynopsis | None:
     structure: list[str] = [f"shape: {_json_shape(value)}"]
     structure.extend(_json_container_paths(value))
     notable = _scalar_examples(value)
-    # NOTE: scalar examples may surface values from anywhere in the parsed
-    # structure (not just head/tail bytes). This is expected behaviour — the
-    # synopsis is a structural summary, not a confidentiality filter. Operators
-    # who relied on the old preview to only expose head/tail snippets should
-    # review their tool outputs for sensitive mid-document values.
+    # NOTE: scalar 예시는 파싱된 구조 어디서든 값을 노출할 수 있다(head/tail 바이트로
+    # 한정되지 않는다). 의도된 동작이며, synopsis는 구조 요약이지 기밀 필터가 아니다.
+    # 예전 preview가 head/tail 조각만 노출한다고 믿던 운영자는 문서 중간의 민감한 값을
+    # 도구 출력에서 점검해야 한다.
     if isinstance(value, dict):
         keys = [str(key) for key in value.keys()]
         summary.append(f"JSON object with {len(keys)} top-level keys.")
@@ -401,7 +393,7 @@ def _try_json(content: str) -> ToolOutputSynopsis | None:
 def _try_xml(stripped: str) -> ToolOutputSynopsis | None:
     if not stripped.startswith("<"):
         return None
-    if SafeET is None:  # defusedxml not available; skip XML parsing to avoid entity-expansion DoS
+    if SafeET is None:  # defusedxml이 없으면 entity-expansion DoS를 피하려고 XML 파싱을 건너뛴다
         return None
     try:
         root = (SafeET or ET).fromstring(stripped)
@@ -437,16 +429,14 @@ def _try_table(content: str, *, delimiter: str, kind: Literal["csv", "tsv"]) -> 
 
     width = len(rows[0])
     consistent = [row for row in rows[1:11] if len(row) == width]
-    # Require >= _TABLE_MIN_DATA_ROWS same-width data rows for both TSV and CSV.
-    # TSV sees a lot of false positives (indented bash, ls -l listings, tree
-    # dumps). CSV is rarer but prose with a comma in the first line also slips
-    # through without this gate.
+    # TSV와 CSV 모두 같은 폭의 데이터 행이 _TABLE_MIN_DATA_ROWS개 이상이어야 한다.
+    # TSV는 오탐이 많다(들여쓴 bash, ls -l 목록, tree 덤프). CSV는 드물지만 첫 줄에
+    # 쉼표가 있는 산문도 이 gate가 없으면 통과한다.
     if len(consistent) < _TABLE_MIN_DATA_ROWS:
         return None
 
-    # Header row must look like identifiers (no whitespace, no leading ws).
-    # Refuses tab-indented bash output, ls -l listings, and tree dumps that
-    # happen to be tab-delimited.
+    # 헤더 행은 식별자처럼 보여야 한다(공백 없음, 선행 공백 없음).
+    # 탭으로 들여쓴 bash 출력, ls -l 목록, 우연히 탭 구분인 tree 덤프를 거른다.
     raw_header = rows[0]
     if any(not _TABLE_HEADER_IDENT_RE.match(cell.strip()) for cell in raw_header):
         return None
@@ -456,9 +446,8 @@ def _try_table(content: str, *, delimiter: str, kind: Literal["csv", "tsv"]) -> 
     columns = [cell.strip() or f"column_{idx + 1}" for idx, cell in enumerate(raw_header)]
     total_nonempty_lines = sum(1 for line in content.splitlines() if line.strip())
     data_rows = max(0, total_nonempty_lines - 1)
-    # Render the first data row as a key=value list so quoted cells that
-    # contain the delimiter do not get rejoined into a comma-separated
-    # string that misleads the model about column count.
+    # 첫 데이터 행을 key=value 목록으로 렌더링한다. 구분자를 포함한 인용 셀이 쉼표로
+    # 다시 이어져 모델이 컬럼 수를 오해하는 일을 막는다.
     first_data_pairs: list[str] = []
     if len(rows) > 1:
         for col_name, cell in list(zip(columns, rows[1]))[:_TABLE_COLUMN_LIMIT]:
@@ -481,13 +470,11 @@ _YAML_KEY_LINE_RE = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_.\-]*:\s*\S.*$")
 
 
 def _looks_yaml(content: str) -> bool:
-    """Heuristic detector for YAML-shaped content.
+    """YAML 형태 콘텐츠를 판별하는 휴리스틱.
 
-    Returns True only when the content looks structurally like YAML
-    (a document start marker, or multiple nested key/value lines with
-    values that are not bare uppercase log prefixes). Plain logs,
-    Python tracebacks, and `key: value` lines that consist entirely
-    of uppercase tags (which YAML treats as string keys) are refused.
+    구조적으로 YAML처럼 보일 때만 True를 반환한다(문서 시작 마커, 또는 값이 대문자
+    로그 접두사가 아닌 중첩 key/value 줄이 여러 개). 평범한 로그, Python traceback,
+    전부 대문자 태그로 된 `key: value` 줄(YAML은 문자열 키로 취급)은 거른다.
     """
     stripped = content.lstrip()
     if stripped.startswith("---"):
@@ -499,8 +486,8 @@ def _looks_yaml(content: str) -> bool:
     for line in content.splitlines()[:80]:
         if not _YAML_KEY_LINE_RE.match(line):
             continue
-        # Reject log-style lines where the key is an uppercase tag and
-        # the value is a free-form message: e.g. "INFO: starting service".
+        # 키가 대문자 태그이고 값이 자유 형식 메시지인 로그 형태 줄은 거른다.
+        # 예: "INFO: starting service".
         key = line.split(":", 1)[0].strip()
         if key.isupper() and "_" not in key:
             continue
@@ -513,10 +500,9 @@ def _looks_yaml(content: str) -> bool:
 def _try_yaml(content: str) -> ToolOutputSynopsis | None:
     if not _looks_yaml(content):
         return None
-    # Bound the parse size to prevent alias-bomb DoS (yaml.safe_load resolves
-    # YAML aliases which can expand exponentially). The heuristic detector
-    # already rejects most non-YAML content, but a crafted alias bomb can
-    # trivially pass the heuristic.
+    # alias-bomb DoS를 막기 위해 파싱 크기를 제한한다(yaml.safe_load는 지수적으로 커질 수
+    # 있는 YAML alias를 해석한다). 휴리스틱이 대부분의 비YAML 콘텐츠를 거르지만, 의도적으로
+    # 만든 alias bomb은 휴리스틱을 쉽게 통과한다.
     if len(content) > 500_000:
         return None
     try:
@@ -525,10 +511,9 @@ def _try_yaml(content: str) -> ToolOutputSynopsis | None:
         return None
     if not isinstance(value, (dict, list)):
         return None
-    # Refuse flat "all values are strings" payloads: that shape is what
-    # log lines and Python tracebacks collapse into after safe_load, and
-    # it gives the model a misleadingly small "YAML with N keys" summary
-    # for outputs that are really free-form text.
+    # 값이 전부 문자열인 평평한 payload는 거른다. 로그 줄과 Python traceback이
+    # safe_load 후 갖는 모양이며, 실제로는 자유 형식 텍스트인 출력에 대해 모델에게
+    # "YAML with N keys"라는 오해를 부르는 요약을 주게 된다.
     if isinstance(value, dict):
         non_string_children = sum(1 for v in value.values() if not isinstance(v, str))
         if non_string_children == 0 and len(value) > 0:
@@ -613,9 +598,8 @@ def _summarize_text(content: str, *, tool_name: str = "", include_excerpts: bool
         f"Text output{tool_hint} with {len(content)} characters, {len(normalized.split()) if normalized else 0} words, and {len(lines)} lines.",
         f"Detected section headers: {' | '.join(headers) if headers else 'none detected'}.",
     ]
-    # Include opening/closing excerpts only when no raw head/tail sample will
-    # be appended by render_tool_output_preview (avoids duplicating the same
-    # head/tail bytes in both the synopsis summary and the raw sample).
+    # render_tool_output_preview가 raw head/tail 샘플을 덧붙이지 않을 때만 시작/끝 발췌를
+    # 넣는다(synopsis 요약과 raw 샘플에 같은 head/tail 바이트가 중복되는 것을 피한다).
     if include_excerpts:
         opener = _one_line(content[:_TEXT_EXCERPT_CHARS], _TEXT_EXCERPT_CHARS)
         if len(content) <= _TEXT_EXCERPT_CHARS:

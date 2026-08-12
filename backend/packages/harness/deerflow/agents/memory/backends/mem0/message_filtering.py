@@ -1,10 +1,10 @@
-"""Message filtering for the mem0 write path -- self-contained mirror of
-DeerMem's ``filter_messages_for_memory`` rules (the portability rule forbids
-importing across backend folders, so the logic is duplicated, not shared).
+"""mem0 쓰기 경로용 메시지 필터링 — DeerMem의 ``filter_messages_for_memory`` 규칙을
+그대로 옮긴 독립 사본이다. 이식성 규칙상 백엔드 폴더끼리 import할 수 없어 로직을
+공유하지 않고 복제했다.
 
-Keeps: visible user inputs, well-formed human clarification answers, and final
-assistant responses. Drops: framework-internal ``hide_from_ui`` messages,
-tool-call AI messages, tool outputs, empty/upload-only turns.
+유지: 사용자에게 보이는 입력, 형식이 올바른 사람의 clarification 답변, 최종 assistant
+응답. 제거: 프레임워크 내부의 ``hide_from_ui`` 메시지, tool call AI 메시지, tool 출력,
+빈 턴과 업로드만 있는 턴.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ _UPLOAD_BLOCK_RE = re.compile(r"<(?P<tag>uploaded_files|current_uploads)>[\s\S]*
 
 
 def extract_message_text(message: Any) -> str:
-    """Extract plain text from message content (str or content-block list)."""
+    """메시지 content(str 또는 content block 리스트)에서 평문 텍스트를 뽑는다."""
     content = getattr(message, "content", "")
     if content is None:
         return ""
@@ -40,8 +40,8 @@ def _non_empty_str(value: object) -> str | None:
 
 
 def _is_human_clarification_response(additional_kwargs: Any) -> bool:
-    """Structural check for a user-authored clarification answer carried in a
-    hidden message (mirrors DeerMem's host-agnostic fallback)."""
+    """hidden 메시지에 실려 온 사용자 작성 clarification 답변인지 구조적으로 확인한다.
+    DeerMem의 host 비의존 fallback과 동일한 규칙이다."""
     if not isinstance(additional_kwargs, Mapping):
         return False
     raw = additional_kwargs.get("human_input_response")
@@ -60,7 +60,7 @@ def _is_human_clarification_response(additional_kwargs: Any) -> bool:
 
 
 def filter_messages_for_memory(messages: list[Any]) -> list[Any]:
-    """Keep only user inputs and final assistant responses."""
+    """사용자 입력과 최종 assistant 응답만 남긴다."""
     filtered: list[Any] = []
     skip_next_ai = False
     for msg in messages:
@@ -73,7 +73,7 @@ def filter_messages_for_memory(messages: list[Any]) -> list[Any]:
             if "<uploaded_files>" in text.lower() or "<current_uploads>" in text.lower():
                 stripped = _UPLOAD_BLOCK_RE.sub("", text).strip()
                 if not stripped:
-                    # Upload-only turn: the following AI ack carries no user content.
+                    # 업로드만 있는 턴. 뒤따르는 AI 확인 응답에는 사용자 내용이 없다.
                     skip_next_ai = True
                     continue
                 clean_msg = copy(msg)

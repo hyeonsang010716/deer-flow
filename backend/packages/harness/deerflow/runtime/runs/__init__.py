@@ -1,4 +1,4 @@
-"""Run lifecycle management for LangGraph Platform API compatibility."""
+"""LangGraph Platform API 호환을 위한 run lifecycle 관리."""
 
 from .manager import ORPHAN_RECOVERY_STOP_REASON, STARTUP_ORPHAN_RECOVERY_ERROR, CancelOutcome, ConflictError, RunManager, RunRecord, UnsupportedStrategyError
 from .schemas import DisconnectMode, RunStatus, ThreadOperationKind

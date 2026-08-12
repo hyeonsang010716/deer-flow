@@ -1,18 +1,18 @@
-"""Async checkpointer factory.
+"""async checkpointer 팩토리.
 
-Provides an **async context manager** for long-running async servers that need
-proper resource cleanup.
+리소스를 제대로 정리해야 하는 장시간 실행 async 서버를 위해 **async context manager**를
+제공한다.
 
-Supported backends: memory, sqlite, postgres.
+지원 backend: memory, sqlite, postgres.
 
-Usage (e.g. FastAPI lifespan)::
+사용법(예: FastAPI lifespan)::
 
     from deerflow.runtime.checkpointer.async_provider import make_checkpointer
 
     async with make_checkpointer() as checkpointer:
-        app.state.checkpointer = checkpointer  # InMemorySaver if not configured
+        app.state.checkpointer = checkpointer  # 설정이 없으면 InMemorySaver
 
-For sync usage see :mod:`deerflow.runtime.checkpointer.provider`.
+동기 방식은 :mod:`deerflow.runtime.checkpointer.provider`를 참고한다.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _prepare_database_sqlite_checkpointer_path(db_config) -> str:
 
 
 def _build_postgres_pool(conn_string: str, schema: str = ""):
-    """Build an AsyncConnectionPool with TCP keepalive and connection checking."""
+    """TCP keepalive와 연결 확인이 설정된 AsyncConnectionPool을 만든다."""
     from psycopg.rows import dict_row
     from psycopg_pool import AsyncConnectionPool
 
@@ -62,11 +62,10 @@ def _build_postgres_pool(conn_string: str, schema: str = ""):
         "keepalives_interval": 10,
         "keepalives_count": 6,
     }
-    # Inject search_path into the DSN (merging with any libpq options already in
-    # the conn string) rather than via kwargs["options"], which psycopg applies
-    # *on top of* the conninfo and would silently drop a DSN-supplied option
-    # such as statement_timeout. This also strips a SQLAlchemy ``+driver``
-    # suffix so libpq can parse the DSN. Matches the sync/DSN paths.
+    # search_path는 kwargs["options"]가 아니라 DSN에 주입한다(연결 문자열에 이미 있는 libpq
+    # option과 병합). psycopg는 kwargs["options"]를 conninfo *위에* 덮어써서 DSN이 제공한
+    # statement_timeout 같은 option을 조용히 날려버리기 때문이다. 여기서 SQLAlchemy의
+    # ``+driver`` suffix도 제거해 libpq가 DSN을 파싱할 수 있게 한다. 동기/DSN 경로와 동일하다.
     dsn = dsn_with_search_path(normalize_libpq_dsn(conn_string), schema)
 
     return AsyncConnectionPool(
@@ -77,7 +76,7 @@ def _build_postgres_pool(conn_string: str, schema: str = ""):
 
 
 async def _ensure_postgres_schema_with_pool(pool, schema: str) -> None:
-    """Create the configured schema before LangGraph creates its tables."""
+    """LangGraph가 테이블을 만들기 전에 설정된 schema를 생성한다."""
     statement = create_schema_sql(schema)
     if statement is None:
         return
@@ -86,7 +85,7 @@ async def _ensure_postgres_schema_with_pool(pool, schema: str) -> None:
 
 
 def _ensure_postgres_imports():
-    """Import and return (AsyncPostgresSaver, AsyncConnectionPool), raising ImportError on failure."""
+    """(AsyncPostgresSaver, AsyncConnectionPool)을 import해 반환하고, 실패하면 ImportError를 낸다."""
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     except ImportError as exc:
@@ -101,13 +100,13 @@ def _ensure_postgres_imports():
 
 
 # ---------------------------------------------------------------------------
-# Async factory
+# async factory
 # ---------------------------------------------------------------------------
 
 
 @contextlib.asynccontextmanager
 async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
-    """Async context manager that constructs and tears down a checkpointer."""
+    """checkpointer를 만들고 정리하는 async context manager."""
     if config.type == "memory":
         from langgraph.checkpoint.memory import InMemorySaver
 
@@ -143,13 +142,13 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
 
 
 # ---------------------------------------------------------------------------
-# Public async context manager
+# 공개 async context manager
 # ---------------------------------------------------------------------------
 
 
 @contextlib.asynccontextmanager
 async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpointer]:
-    """Async context manager that constructs a checkpointer from unified DatabaseConfig."""
+    """통합 DatabaseConfig로부터 checkpointer를 만드는 async context manager."""
     if db_config.backend == "memory":
         from langgraph.checkpoint.memory import InMemorySaver
 
@@ -186,27 +185,27 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
 
 @contextlib.asynccontextmanager
 async def _select_inner_checkpointer(app_config: AppConfig) -> AsyncIterator[Checkpointer]:
-    """Yield the raw checkpointer selected by *app_config* (no delta-cache wrapping).
+    """*app_config*가 선택한 raw checkpointer를 yield한다(delta-cache로 감싸지 않는다).
 
-    Priority:
-    1. Legacy ``checkpointer:`` config section (backward compatible)
-    2. Unified ``database:`` config section
-    3. Default InMemorySaver
+    우선순위:
+    1. legacy ``checkpointer:`` 설정 섹션(하위 호환)
+    2. 통합 ``database:`` 설정 섹션
+    3. 기본값 InMemorySaver
     """
-    # Legacy: standalone checkpointer config takes precedence
+    # legacy: 독립 checkpointer 설정이 우선한다
     if app_config.checkpointer is not None:
         async with _async_checkpointer(app_config.checkpointer) as saver:
             yield saver
             return
 
-    # Unified database config
+    # 통합 database 설정
     db_config = getattr(app_config, "database", None)
     if db_config is not None and db_config.backend != "memory":
         async with _async_checkpointer_from_database(db_config) as saver:
             yield saver
             return
 
-    # Default: in-memory
+    # 기본값: in-memory
     from langgraph.checkpoint.memory import InMemorySaver
 
     yield InMemorySaver()
@@ -214,23 +213,23 @@ async def _select_inner_checkpointer(app_config: AppConfig) -> AsyncIterator[Che
 
 @contextlib.asynccontextmanager
 async def make_checkpointer(app_config: AppConfig | None = None) -> AsyncIterator[Checkpointer]:
-    """Async context manager that yields a checkpointer for the caller's lifetime.
-    Resources are opened on enter and closed on exit -- no global state::
+    """호출자의 생명주기 동안 사용할 checkpointer를 yield하는 async context manager.
+
+    리소스는 진입 시 열리고 종료 시 닫히며, 전역 상태는 없다::
 
         async with make_checkpointer(app_config) as checkpointer:
             app.state.checkpointer = checkpointer
 
-    Yields an ``InMemorySaver`` when no checkpointer is configured in *config.yaml*.
+    *config.yaml*에 checkpointer 설정이 없으면 ``InMemorySaver``를 yield한다.
 
-    Backend selection priority:
-    1. Legacy ``checkpointer:`` config section (backward compatible)
-    2. Unified ``database:`` config section
-    3. Default InMemorySaver
+    backend 선택 우선순위:
+    1. legacy ``checkpointer:`` 설정 섹션(하위 호환)
+    2. 통합 ``database:`` 설정 섹션
+    3. 기본값 InMemorySaver
 
-    When the effective checkpoint channel mode is ``delta`` (the process-frozen
-    mode wins, falling back to ``database.checkpoint_channel_mode``), the raw
-    saver is wrapped in a :class:`CachedHistorySaver` backed by a history cache
-    whose lifetime equals this context manager's.
+    실효 checkpoint channel mode가 ``delta``이면(프로세스에 고정된 mode가 우선하고, 없으면
+    ``database.checkpoint_channel_mode``를 쓴다) raw saver를 :class:`CachedHistorySaver`로
+    감싼다. 그 history cache의 수명은 이 context manager와 같다.
     """
     from deerflow.runtime.checkpoint_mode import frozen_checkpoint_channel_mode
 

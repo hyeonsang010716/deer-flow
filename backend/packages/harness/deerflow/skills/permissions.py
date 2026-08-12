@@ -1,4 +1,4 @@
-"""Filesystem permission helpers for installed skill trees."""
+"""설치된 skill 트리의 파일시스템 권한 헬퍼."""
 
 import stat
 from pathlib import Path

@@ -1,4 +1,4 @@
-"""Middleware for logging token usage and annotating step attribution."""
+"""token 사용량을 기록하고 step 귀속 정보를 붙이는 미들웨어."""
 
 from __future__ import annotations
 
@@ -70,9 +70,8 @@ def _todo_action_kind(previous: Todo | None, current: Todo) -> str:
 
 
 def _build_todo_actions(previous_todos: list[Todo], next_todos: list[Todo]) -> list[dict[str, Any]]:
-    # This is the single source of truth for precise write_todos token
-    # attribution. The frontend intentionally falls back to a generic
-    # "Update to-do list" label when this metadata is missing or malformed.
+    # write_todos token 귀속을 정확히 계산하는 유일한 기준이다. 이 metadata가 없거나 형식이 잘못되면
+    # 프론트엔드는 의도적으로 일반적인 "Update to-do list" 레이블로 대체한다.
     previous_by_content: dict[str, list[tuple[int, Todo]]] = defaultdict(list)
     matched_previous_indices: set[int] = set()
 
@@ -218,7 +217,7 @@ def _infer_step_kind(message: AIMessage, actions: list[dict[str, Any]]) -> str:
 
 
 def _has_tool_call(message: AIMessage, tool_call_id: str) -> bool:
-    """Return True if the AIMessage contains a tool_call with the given id."""
+    """AIMessage에 주어진 id의 tool_call이 있으면 True를 반환한다."""
     for tc in message.tool_calls or []:
         if isinstance(tc, dict):
             if tc.get("id") == tool_call_id:
@@ -254,8 +253,8 @@ def _build_attribution(message: AIMessage, todos: list[Todo]) -> dict[str, Any]:
             tool_call_ids.append(tool_call_id)
 
     return {
-        # Schema changes should remain additive where possible so older
-        # frontends can ignore unknown fields and fall back safely.
+        # 스키마 변경은 가능한 한 추가만 하는 방향으로 유지한다. 그래야 구버전 프론트엔드가 모르는
+        # 필드를 무시하고 안전하게 대체 동작할 수 있다.
         "version": 1,
         "kind": _infer_step_kind(message, actions),
         "shared_attribution": len(actions) > 1,
@@ -265,19 +264,18 @@ def _build_attribution(message: AIMessage, todos: list[Todo]) -> dict[str, Any]:
 
 
 class TokenUsageMiddleware(AgentMiddleware):
-    """Logs token usage from model responses and annotates the AI step."""
+    """model 응답의 token 사용량을 기록하고 AI step에 귀속 정보를 붙인다."""
 
     def _apply(self, state: AgentState) -> dict | None:
         messages = state.get("messages", [])
         if not messages:
             return None
 
-        # Annotate subagent token usage onto the AIMessage that dispatched it.
-        # When a task tool completes, its usage is cached by tool_call_id.  Detect
-        # the ToolMessage → search backward for the corresponding AIMessage → merge.
-        # Walk backward through consecutive ToolMessages before the new AIMessage
-        # so that multiple concurrent task tool calls all get their subagent tokens
-        # written back to the same dispatch message (merging into one update).
+        # subagent token 사용량을 그것을 dispatch한 AIMessage에 기록한다.
+        # task tool이 끝나면 사용량은 tool_call_id로 캐시된다. ToolMessage를 찾고 → 대응하는
+        # AIMessage를 뒤로 훑어 찾은 뒤 → 병합한다.
+        # 새 AIMessage 앞의 연속된 ToolMessage들을 거꾸로 훑어, 동시에 실행된 여러 task tool
+        # 호출의 subagent token이 모두 같은 dispatch 메시지에 하나의 업데이트로 병합되게 한다.
         state_updates: dict[int, AIMessage] = {}
         if len(messages) >= 2:
             from deerflow.tools.builtins.task_tool import pop_cached_subagent_usage
@@ -290,16 +288,15 @@ class TokenUsageMiddleware(AgentMiddleware):
 
                 subagent_usage = pop_cached_subagent_usage(tool_msg.tool_call_id)
                 if subagent_usage:
-                    # Search backward from the ToolMessage to find the AIMessage
-                    # that dispatched it.  A single model response can dispatch
-                    # multiple task tool calls, so we can't assume a fixed offset.
+                    # ToolMessage에서 거꾸로 훑어 그것을 dispatch한 AIMessage를 찾는다.
+                    # 모델 응답 하나가 여러 task tool 호출을 낼 수 있으므로 고정 offset을
+                    # 가정할 수 없다.
                     dispatch_idx = idx - 1
                     while dispatch_idx >= 0:
                         candidate = messages[dispatch_idx]
                         if isinstance(candidate, AIMessage) and _has_tool_call(candidate, tool_msg.tool_call_id):
-                            # Accumulate into an existing update for the same
-                            # AIMessage (multiple task calls in one response),
-                            # or merge fresh from the original message.
+                            # 같은 AIMessage에 대한 기존 업데이트에 누적하거나(응답 하나에
+                            # 여러 task 호출), 원본 메시지에서 새로 병합한다.
                             existing_update = state_updates.get(dispatch_idx)
                             prev = existing_update.usage_metadata if existing_update else (getattr(candidate, "usage_metadata", None) or {})
                             merged = {

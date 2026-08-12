@@ -1,18 +1,16 @@
-"""Lark CLI sandbox credential broker (Pattern B, issue #4338).
+"""Lark CLI sandbox 자격증명 broker(Pattern B, issue #4338).
 
-Pattern A (PR #3971) provisions the ``lark-cli`` *binary* into the sandbox but
-still mounts the per-user credential directories (``config`` with the long-lived
-``appSecret`` and ``data`` with OAuth tokens) into the sandbox container, where
-the agent's ``bash`` tool can read them.
+Pattern A(PR #3971)는 ``lark-cli`` *바이너리*를 sandbox에 넣어주지만, 사용자별 자격증명
+디렉터리(장수명 ``appSecret``이 든 ``config``, OAuth 토큰이 든 ``data``)를 여전히
+sandbox 컨테이너에 마운트하므로 에이전트의 ``bash`` 도구가 읽을 수 있다.
 
-This module implements the broker half of Pattern B: a long-lived process that
-owns ``lark-cli`` + the credentials and exposes only the *command surface* over
-loopback. The sandbox gets a tiny ``lark-cli`` shim on ``PATH`` that forwards
-argv/stdin to the broker, so the raw credential files never exist in the sandbox
-filesystem.
+이 모듈은 Pattern B의 broker 쪽을 구현한다. ``lark-cli``와 자격증명을 소유하는 장수명
+프로세스가 loopback으로 *명령 표면*만 노출한다. sandbox에는 argv/stdin을 broker로
+전달하는 작은 ``lark-cli`` shim만 ``PATH``에 놓이므로, 원본 자격증명 파일은 sandbox
+파일시스템에 아예 존재하지 않는다.
 
-Everything here is Python-3-stdlib only so the same module can run inside the
-minimal broker sidecar image without extra dependencies.
+여기 있는 코드는 Python 3 표준 라이브러리만 쓴다. 최소 구성의 broker sidecar 이미지에서
+추가 의존성 없이 같은 모듈을 실행할 수 있어야 하기 때문이다.
 """
 
 from __future__ import annotations
@@ -31,58 +29,53 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ── Loopback wire contract ────────────────────────────────────────────────
+# ── Loopback 통신 규약 ────────────────────────────────────────────────
 
-# The sandbox and the broker sidecar share the Pod network namespace, so the
-# shim reaches the broker on loopback. The port is fixed and injected into the
-# sandbox as DEERFLOW_LARK_BROKER_URL.
+# sandbox와 broker sidecar는 Pod 네트워크 네임스페이스를 공유하므로 shim은 loopback으로
+# broker에 닿는다. 포트는 고정이며 DEERFLOW_LARK_BROKER_URL로 sandbox에 주입된다.
 LARK_BROKER_DEFAULT_HOST = "127.0.0.1"
 LARK_BROKER_DEFAULT_PORT = 8788
 LARK_BROKER_URL_ENV = "DEERFLOW_LARK_BROKER_URL"
 LARK_BROKER_EXEC_PATH = "/v1/exec"
 LARK_BROKER_HEALTH_PATH = "/v1/health"
 
-# Guards. Bounded so a compromised sandbox cannot exhaust the broker.
+# 방어용 상한. 침해된 sandbox가 broker 자원을 고갈시키지 못하게 한다.
 LARK_BROKER_MAX_REQUEST_BYTES = 1 * 1024 * 1024
 LARK_BROKER_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 LARK_BROKER_DEFAULT_TIMEOUT_SECONDS = 120
 LARK_BROKER_MAX_CONCURRENCY = 8
-# Per-connection socket timeout. ThreadingHTTPServer spawns a thread per
-# connection, so without this a sandbox could declare a large Content-Length and
-# never send the body, parking a thread forever. Bounds the read so a slow/stuck
-# client releases its thread. (Loopback-only, so this only guards the sandbox
-# against tying up its own broker.)
+# 연결당 socket timeout. ThreadingHTTPServer는 연결마다 thread를 띄우므로, 이게 없으면
+# sandbox가 큰 Content-Length만 선언하고 본문을 보내지 않아 thread를 영원히 붙잡을 수 있다.
+# 읽기에 상한을 둬서 느리거나 멈춘 클라이언트가 thread를 놓아주게 한다.
+# (loopback 전용이라 결국 sandbox가 자기 broker를 묶는 것을 막는 용도다.)
 LARK_BROKER_SOCKET_TIMEOUT_SECONDS = 30
 
-# Optional env knob (comma-separated) for the subcommand denylist below.
+# 아래 subcommand denylist를 지정하는 선택적 env(쉼표 구분).
 LARK_BROKER_DENY_SUBCOMMANDS_ENV = "DEERFLOW_LARK_BROKER_DENY_SUBCOMMANDS"
 
-# The runtime layout the sandbox sees is two files in ``bin/``:
+# sandbox가 보는 런타임 레이아웃은 ``bin/`` 아래 파일 두 개다.
 #
-#   bin/lark-cli          the POSIX-sh *launcher* (below) — the executable on PATH
-#   bin/lark-cli-shim.py  the Python *shim* body (below) it execs
+#   bin/lark-cli          POSIX sh *launcher*(아래) — PATH에 놓이는 실행 파일
+#   bin/lark-cli-shim.py  launcher가 exec하는 Python *shim* 본체(아래)
 #
-# Pattern A's launcher is pure ``#!/bin/sh`` (it just execs the arch-dispatched
-# binary) and therefore has no runtime deps. The broker shim has to speak HTTP,
-# so it is Python — but shipping it as a bare ``#!/usr/bin/env python3`` script
-# would make every ``lark-cli`` call ENOEXEC/exit-127 on a sandbox image without
-# ``python3`` on PATH, and because broker mode is opt-in that could slip past CI
-# and only surface for an operator. The ``/bin/sh`` launcher resolves a Python 3
-# interpreter itself (using only shell built-ins, so it still works when PATH is
-# empty and the interpreter is pinned) and, if none exists, fails *loudly* with
-# an actionable message instead of an opaque ENOEXEC. ``DEERFLOW_LARK_BROKER_PYTHON``
-# pins a specific interpreter for images that ship Python under a non-standard
-# name.
+# Pattern A의 launcher는 순수 ``#!/bin/sh``라(아키텍처별 바이너리를 exec할 뿐) 런타임
+# 의존성이 없다. broker shim은 HTTP를 말해야 해서 Python이다. 그런데 이를 그냥
+# ``#!/usr/bin/env python3`` 스크립트로 배포하면 ``python3``가 PATH에 없는 sandbox
+# 이미지에서 모든 ``lark-cli`` 호출이 ENOEXEC/exit 127로 죽는다. broker 모드는 opt-in이라
+# 이 문제가 CI를 통과해 운영자에게서만 드러날 수 있다. 그래서 ``/bin/sh`` launcher가 직접
+# Python 3 인터프리터를 찾고(shell 내장만 쓰므로 PATH가 비어 있고 인터프리터가 고정된
+# 상황에서도 동작한다), 없으면 불투명한 ENOEXEC 대신 조치 가능한 메시지와 함께 *요란하게*
+# 실패한다. ``DEERFLOW_LARK_BROKER_PYTHON``은 Python을 비표준 이름으로 제공하는 이미지를
+# 위해 특정 인터프리터를 고정한다.
 #
-# The launcher's path to the shim body is baked in at install time rather than
-# derived from ``$0``: when the sandbox runs ``lark-cli`` off PATH, ``$0`` is the
-# bare command name with no directory, so a sibling lookup would fail. The
-# install dir is a stable, shared mount, so the absolute path is valid in both
-# the init container that writes it and the sandbox that reads it.
+# launcher가 참조하는 shim 본체 경로는 ``$0``에서 유도하지 않고 설치 시점에 박아 넣는다.
+# sandbox가 PATH로 ``lark-cli``를 실행하면 ``$0``는 디렉터리 없는 명령 이름뿐이라 형제 파일
+# 탐색이 실패하기 때문이다. 설치 디렉터리는 안정적인 공유 마운트라 절대 경로가 이를 쓰는
+# init container와 읽는 sandbox 양쪽에서 모두 유효하다.
 #
-# Both scripts are kept here as the single source of truth and mirrored by the
-# broker image build via ``install_shim``, exactly like ``LARK_CLI_SANDBOX_LAUNCHER_SCRIPT``
-# for Pattern A, so the image copies can never drift from the Gateway's.
+# 두 스크립트 모두 여기를 단일 진실 원천으로 두고 broker 이미지 빌드가 ``install_shim``으로
+# 복제한다. Pattern A의 ``LARK_CLI_SANDBOX_LAUNCHER_SCRIPT``와 같은 방식이며, 이미지 사본이
+# Gateway 쪽과 어긋나지 않게 한다.
 LARK_BROKER_PYTHON_ENV = "DEERFLOW_LARK_BROKER_PYTHON"
 LARK_CLI_BROKER_SHIM_FILENAME = "lark-cli-shim.py"
 _LARK_CLI_BROKER_SHIM_PATH_PLACEHOLDER = "@@LARK_CLI_BROKER_SHIM_PATH@@"
@@ -111,15 +104,14 @@ LARK_CLI_BROKER_LAUNCHER_TEMPLATE = (
 
 
 def render_launcher_script(shim_path: str) -> str:
-    """Render the ``/bin/sh`` launcher with the shim body's absolute path baked in."""
+    """shim 본체의 절대 경로를 박아 넣은 ``/bin/sh`` launcher를 렌더링한다."""
     return LARK_CLI_BROKER_LAUNCHER_TEMPLATE.replace(_LARK_CLI_BROKER_SHIM_PATH_PLACEHOLDER, shim_path)
 
 
-# The shim reads argv/stdin, POSTs to the broker, and replays the broker's
-# stdout/stderr/exit code. On any transport failure it fails loudly and non-zero
-# so a broker outage never looks like a successful lark-cli run. It is invoked as
-# ``<python> lark-cli-shim.py <args...>`` by the launcher above (so it does not
-# rely on its own shebang being resolvable), and stdin/argv pass straight through.
+# shim은 argv/stdin을 읽어 broker에 POST하고 broker의 stdout/stderr/종료 코드를 그대로
+# 재현한다. 전송이 실패하면 요란하게 0이 아닌 코드로 죽으므로 broker 장애가 성공한
+# lark-cli 실행처럼 보이는 일은 없다. 위 launcher가 ``<python> lark-cli-shim.py <args...>``
+# 형태로 호출하므로 자체 shebang 해석에 의존하지 않으며, stdin/argv는 그대로 통과한다.
 LARK_CLI_BROKER_SHIM_SCRIPT = r'''#!/usr/bin/env python3
 """DeerFlow lark-cli broker shim (Pattern B). Forwards argv/stdin to the broker.
 
@@ -185,12 +177,12 @@ if __name__ == "__main__":
 '''
 
 
-# ── Broker server ─────────────────────────────────────────────────────────
+# ── Broker 서버 ─────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class BrokerConfig:
-    """Runtime configuration for the broker sidecar."""
+    """broker sidecar의 런타임 설정."""
 
     lark_cli_path: str
     config_dir: str
@@ -198,20 +190,18 @@ class BrokerConfig:
     host: str = LARK_BROKER_DEFAULT_HOST
     port: int = LARK_BROKER_DEFAULT_PORT
     timeout_seconds: int = LARK_BROKER_DEFAULT_TIMEOUT_SECONDS
-    # Opt-in denylist of ``lark-cli`` subcommand paths the broker refuses to run
-    # (issue #4338 hardening). Each entry is a space-joined command prefix, e.g.
-    # "config show" or "auth token", matched against the leading non-flag tokens
-    # of the request. Narrows the command surface a prompt-injected agent can
-    # reach — the broker already removes the credential *files*, but the full
-    # command surface stays reachable unless a secret-dumping subcommand is denied
-    # here. Empty by default (no behavior change).
+    # broker가 실행을 거부할 ``lark-cli`` subcommand 경로의 opt-in denylist(issue #4338 강화).
+    # 각 항목은 공백으로 이어진 명령 prefix이며(예: "config show", "auth token") 요청의
+    # 선두 non-flag 토큰과 대조한다. prompt injection된 에이전트가 닿을 수 있는 명령 표면을
+    # 좁힌다. broker는 자격증명 *파일*은 이미 제거했지만, 비밀을 덤프하는 subcommand를
+    # 여기서 막지 않으면 명령 표면은 그대로 열려 있다. 기본값은 비어 있다(동작 변화 없음).
     deny_subcommands: tuple[tuple[str, ...], ...] = ()
 
     def credential_env(self) -> dict[str, str]:
-        """Env the broker injects into every lark-cli invocation.
+        """broker가 모든 lark-cli 호출에 주입하는 env.
 
-        The client never supplies these — the broker owns the credential paths,
-        so a sandbox process cannot point lark-cli at a different profile.
+        클라이언트는 이 값을 제공하지 않는다. 자격증명 경로는 broker가 소유하므로
+        sandbox 프로세스가 lark-cli를 다른 profile로 돌릴 수 없다.
         """
         return {
             "LARKSUITE_CLI_CONFIG_DIR": self.config_dir,
@@ -222,10 +212,10 @@ class BrokerConfig:
 
 
 def parse_deny_subcommands(raw: str | None) -> tuple[tuple[str, ...], ...]:
-    """Parse the comma-separated denylist env into command-prefix tuples.
+    """쉼표로 구분된 denylist env를 명령 prefix tuple로 파싱한다.
 
     ``"config show, auth token"`` → ``(("config", "show"), ("auth", "token"))``.
-    Blank/whitespace-only entries are dropped.
+    비어 있거나 공백뿐인 항목은 버린다.
     """
     if not raw:
         return ()
@@ -238,10 +228,10 @@ def parse_deny_subcommands(raw: str | None) -> tuple[tuple[str, ...], ...]:
 
 
 def _denied_subcommand(deny: tuple[tuple[str, ...], ...], args: list[str]) -> tuple[str, ...] | None:
-    """Return the matched denylist prefix if ``args`` is a denied subcommand.
+    """``args``가 금지된 subcommand면 매칭된 denylist prefix를 반환한다.
 
-    Matches against the leading non-flag tokens (options and their values are
-    skipped) so ``config --json show`` is still caught by a ``config show`` rule.
+    선두 non-flag 토큰과 대조하므로(옵션과 그 값은 건너뛴다) ``config --json show``도
+    ``config show`` 규칙에 걸린다.
     """
     if not deny:
         return None
@@ -261,11 +251,11 @@ class ExecResult:
 
 
 def run_lark_cli(config: BrokerConfig, args: list[str], stdin: bytes) -> ExecResult:
-    """Run a single ``lark-cli`` invocation with broker-owned credentials.
+    """broker가 소유한 자격증명으로 ``lark-cli``를 한 번 실행한다.
 
-    ``args`` is passed as an argv list with ``shell=False`` so a sandbox-supplied
-    argument can never be shell-interpreted into a second command. A configured
-    ``deny_subcommands`` prefix is refused before the binary is ever spawned.
+    ``args``는 ``shell=False``와 함께 argv 리스트로 넘기므로 sandbox가 준 인자가 shell을
+    거쳐 두 번째 명령으로 해석될 수 없다. ``deny_subcommands``에 걸리면 바이너리를 띄우기
+    전에 거부한다.
     """
     denied = _denied_subcommand(config.deny_subcommands, args)
     if denied is not None:
@@ -273,7 +263,7 @@ def run_lark_cli(config: BrokerConfig, args: list[str], stdin: bytes) -> ExecRes
         return ExecResult(126, b"", message.encode("utf-8"), False)
     env = {**os.environ, **config.credential_env()}
     try:
-        completed = subprocess.run(  # noqa: S603 - argv list, shell=False, fixed binary
+        completed = subprocess.run(  # noqa: S603 - argv 리스트, shell=False, 고정 바이너리
             [config.lark_cli_path, *args],
             input=stdin,
             capture_output=True,
@@ -298,21 +288,20 @@ def _cap(data: bytes) -> tuple[bytes, bool]:
 
 
 def make_handler(config: BrokerConfig) -> type[BaseHTTPRequestHandler]:
-    """Build a request handler bound to ``config``.
+    """``config``에 바인딩된 request handler를 만든다.
 
-    A bounded semaphore caps concurrency so a flood of sandbox calls cannot spawn
-    unbounded ``lark-cli`` subprocesses.
+    bounded semaphore로 동시 실행 수를 제한해, sandbox 호출이 몰려도 ``lark-cli``
+    subprocess가 무제한으로 생기지 않게 한다.
     """
     semaphore = threading.BoundedSemaphore(LARK_BROKER_MAX_CONCURRENCY)
 
     class Handler(BaseHTTPRequestHandler):
-        # Bound per-connection reads so a client that declares a large
-        # Content-Length and never sends the body cannot park its thread forever
-        # (ThreadingHTTPServer is one-thread-per-connection). stdlib reads this
-        # to arm socket timeouts.
+        # 연결당 읽기에 상한을 둬서, 큰 Content-Length만 선언하고 본문을 보내지 않는
+        # 클라이언트가 thread를 영원히 붙잡지 못하게 한다(ThreadingHTTPServer는 연결당
+        # thread 하나다). 표준 라이브러리가 이 값을 읽어 socket timeout을 건다.
         timeout = LARK_BROKER_SOCKET_TIMEOUT_SECONDS
 
-        # Quiet: default BaseHTTPRequestHandler logs to stderr per request.
+        # 조용히: 기본 BaseHTTPRequestHandler는 요청마다 stderr에 로그를 남긴다.
         def log_message(self, *_args: Any) -> None:  # noqa: D401
             return
 
@@ -324,13 +313,13 @@ def make_handler(config: BrokerConfig) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(payload)
 
-        def do_GET(self) -> None:  # noqa: N802 - stdlib API
+        def do_GET(self) -> None:  # noqa: N802 - 표준 라이브러리 API
             if self.path.rstrip("/") == LARK_BROKER_HEALTH_PATH:
                 self._send_json(200, {"ok": True})
                 return
             self._send_json(404, {"error": "not found"})
 
-        def do_POST(self) -> None:  # noqa: N802 - stdlib API
+        def do_POST(self) -> None:  # noqa: N802 - 표준 라이브러리 API
             if self.path.rstrip("/") != LARK_BROKER_EXEC_PATH:
                 self._send_json(404, {"error": "not found"})
                 return
@@ -348,7 +337,7 @@ def make_handler(config: BrokerConfig) -> type[BaseHTTPRequestHandler]:
                 if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
                     raise ValueError("args must be a list of strings")
                 stdin = base64.b64decode(request.get("stdin_b64", "") or "")
-            except Exception:  # noqa: BLE001 - untrusted client input
+            except Exception:  # noqa: BLE001 - 신뢰할 수 없는 클라이언트 입력
                 self._send_json(400, {"error": "invalid request"})
                 return
 
@@ -357,12 +346,11 @@ def make_handler(config: BrokerConfig) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 result = run_lark_cli(config, args, stdin)
-            except Exception:  # noqa: BLE001 - keep the wire contract uniform
-                # run_lark_cli already maps the expected failures (timeout,
-                # missing binary) to ExecResults; anything else (OSError,
-                # PermissionError, …) would otherwise close the connection with
-                # no body and surface as an opaque transport error in the shim.
-                # Return a structured 500 so the shim reports a meaningful error.
+            except Exception:  # noqa: BLE001 - 통신 규약을 일관되게 유지한다
+                # run_lark_cli은 예상 가능한 실패(timeout, 바이너리 없음)를 이미
+                # ExecResult로 변환한다. 그 밖의 예외(OSError, PermissionError 등)는
+                # 본문 없이 연결이 닫히면서 shim에서 불투명한 전송 오류로 보인다.
+                # 구조화된 500을 반환해 shim이 의미 있는 에러를 알리게 한다.
                 logger.exception("lark-cli exec failed unexpectedly")
                 self._send_json(500, {"error": "broker exec failed"})
                 return
@@ -383,7 +371,7 @@ def make_handler(config: BrokerConfig) -> type[BaseHTTPRequestHandler]:
 
 
 def serve(config: BrokerConfig) -> ThreadingHTTPServer:
-    """Start the broker HTTP server bound to loopback and return it."""
+    """loopback에 바인딩한 broker HTTP 서버를 시작하고 반환한다."""
     if not shutil.which(config.lark_cli_path) and not os.path.isfile(config.lark_cli_path):
         logger.warning("lark-cli not found at %s; broker will report 127 for exec", config.lark_cli_path)
     server = ThreadingHTTPServer((config.host, config.port), make_handler(config))
@@ -392,20 +380,18 @@ def serve(config: BrokerConfig) -> ThreadingHTTPServer:
 
 
 def install_shim(dest_dir: str, *, version: str | None = None) -> str:
-    """Write the launcher + shim + runtime marker into the sandbox runtime dir.
+    """launcher, shim, 런타임 마커를 sandbox 런타임 디렉터리에 기록한다.
 
-    Called by the broker image's ``install-shim`` init-container mode. Produces
-    the same ``bin/lark-cli`` + ``.deerflow-lark-cli-runtime.json`` layout Pattern
-    A stages, but marked ``kind="shim"`` so the runtime validator knows the
-    ``linux-*`` binaries are intentionally absent (the sidecar holds the real
-    binary).
+    broker 이미지의 ``install-shim`` init container 모드에서 호출한다. Pattern A가 만드는
+    것과 같은 ``bin/lark-cli`` + ``.deerflow-lark-cli-runtime.json`` 레이아웃을 만들되
+    ``kind="shim"``으로 표시해, 런타임 검증기가 ``linux-*`` 바이너리 부재가 의도된 것임을
+    알게 한다(실제 바이너리는 sidecar가 갖고 있다).
 
-    Two files are written into ``bin/``: the executable-on-PATH ``lark-cli`` is a
-    ``/bin/sh`` *launcher* that resolves a Python 3 interpreter and execs the
-    ``lark-cli-shim.py`` *body* next to it. Splitting them keeps broker mode from
-    silently failing with ENOEXEC on a sandbox image that has no ``python3`` (the
-    launcher fails loudly with an actionable message instead). Both come from the
-    in-process constants so the image copy can never drift from the Gateway's.
+    ``bin/``에는 파일 두 개를 쓴다. PATH에 놓이는 실행 파일 ``lark-cli``는 Python 3
+    인터프리터를 찾아 옆의 ``lark-cli-shim.py`` *본체*를 exec하는 ``/bin/sh`` *launcher*다.
+    둘을 나눠야 ``python3``가 없는 sandbox 이미지에서 broker 모드가 ENOEXEC로 조용히
+    실패하지 않는다(대신 launcher가 조치 가능한 메시지로 요란하게 실패한다). 둘 다 이
+    프로세스의 상수에서 나오므로 이미지 사본이 Gateway 쪽과 어긋날 수 없다.
     """
     dest = os.path.abspath(dest_dir)
     bin_dir = os.path.join(dest, "bin")

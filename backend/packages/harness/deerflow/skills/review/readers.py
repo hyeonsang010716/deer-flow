@@ -1,4 +1,4 @@
-"""Read-only package readers for skill review snapshots."""
+"""skill review snapshot을 위한 읽기 전용 package reader."""
 
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ def build_inline_snapshot(
 
 
 class LocalDirectoryReader:
-    """Read a local skill directory without following symlink escapes."""
+    """symlink로 바깥을 벗어나지 않으면서 로컬 skill 디렉터리를 읽는다."""
 
     def __init__(
         self,
@@ -253,7 +253,7 @@ class LocalDirectoryReader:
 
 
 class ArchivePackageReader:
-    """Inspect a .skill ZIP archive without installing it."""
+    """.skill ZIP archive를 설치하지 않고 들여다본다."""
 
     def __init__(
         self,
@@ -367,7 +367,7 @@ def _read_zip_member_bounded(zf: zipfile.ZipFile, info: zipfile.ZipInfo, *, max_
 
 
 class InstalledSkillReader(LocalDirectoryReader):
-    """Resolve and read an installed skill by canonical skill:// identity."""
+    """표준 skill:// 식별자로 설치된 skill을 찾아 읽는다."""
 
     @classmethod
     def from_target(

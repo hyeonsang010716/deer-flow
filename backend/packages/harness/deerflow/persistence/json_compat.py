@@ -1,4 +1,4 @@
-"""Dialect-aware JSON value matching for SQLAlchemy (SQLite + PostgreSQL)."""
+"""SQLAlchemy용 dialect 인식 JSON 값 매칭(SQLite + PostgreSQL)."""
 
 from __future__ import annotations
 
@@ -13,41 +13,38 @@ from sqlalchemy.sql.expression import ColumnElement
 from sqlalchemy.sql.visitors import InternalTraversal
 from sqlalchemy.types import Boolean, TypeEngine
 
-# Key is interpolated into compiled SQL; restrict charset to prevent injection.
+# key는 컴파일된 SQL에 그대로 삽입되므로, injection을 막기 위해 문자 집합을 제한한다.
 _KEY_CHARSET_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
-# Allowed value types for metadata filter values (same set accepted by JsonMatch).
+# metadata filter 값으로 허용되는 타입(JsonMatch가 받는 집합과 동일).
 ALLOWED_FILTER_VALUE_TYPES: tuple[type, ...] = (type(None), bool, int, float, str)
 
-# SQLite raises an overflow when binding values outside signed 64-bit range;
-# PostgreSQL overflows during BIGINT cast. Reject at validation time instead.
+# SQLite는 부호 있는 64비트 범위를 벗어난 값을 바인딩하면 overflow를 낸다. PostgreSQL은
+# BIGINT cast 중에 overflow가 난다. 대신 검증 시점에 거부한다.
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
 
 def validate_metadata_filter_key(key: object) -> bool:
-    """Return True if *key* is safe for use as a JSON metadata filter key.
+    """*key*를 JSON metadata filter key로 써도 안전하면 True를 반환한다.
 
-    A key is "safe" when it is a string matching ``[A-Za-z0-9_-]+``. The
-    charset is restricted because the key is interpolated into the
-    compiled SQL path expression (``$."<key>"`` / ``->`` literal), so any
-    laxer pattern would open a SQL/JSONPath injection surface.
+    ``[A-Za-z0-9_-]+``에 일치하는 문자열일 때 "안전"하다. key가 컴파일된 SQL path
+    표현식(``$."<key>"`` / ``->`` 리터럴)에 그대로 삽입되므로 문자 집합을 제한한다. 더 느슨한
+    패턴은 SQL/JSONPath injection 표면을 열게 된다.
     """
     return isinstance(key, str) and bool(_KEY_CHARSET_RE.match(key))
 
 
 def validate_metadata_filter_value(value: object) -> bool:
-    """Return True if *value* is an allowed type for a JSON metadata filter.
+    """*value*가 JSON metadata filter에 허용되는 타입이면 True를 반환한다.
 
-    Matches the set of types ``_build_clause`` knows how to compile into
-    a dialect-portable predicate. Anything else (list/dict/bytes/...) is
-    intentionally rejected rather than silently coerced via ``str()`` —
-    silent coercion would (a) produce wrong matches and (b) break
-    SQLAlchemy's ``inherit_cache`` invariant when ``value`` is unhashable.
+    ``_build_clause``가 dialect 이식 가능한 predicate로 컴파일할 줄 아는 타입 집합과 일치한다.
+    그 외(list/dict/bytes/...)는 ``str()``로 조용히 변환하지 않고 의도적으로 거부한다. 조용한
+    변환은 (a) 잘못된 매칭을 만들고 (b) ``value``가 unhashable일 때 SQLAlchemy의
+    ``inherit_cache`` 불변식을 깨뜨린다.
 
-    Integer values are additionally restricted to the signed 64-bit range
-    ``[-2**63, 2**63 - 1]``: SQLite overflows when binding larger values
-    and PostgreSQL overflows during the ``BIGINT`` cast.
+    정수 값은 추가로 부호 있는 64비트 범위 ``[-2**63, 2**63 - 1]``로 제한된다. 더 큰 값은
+    SQLite에서 바인딩 시, PostgreSQL에서 ``BIGINT`` cast 중에 overflow가 난다.
     """
     if not isinstance(value, ALLOWED_FILTER_VALUE_TYPES):
         return False
@@ -58,14 +55,13 @@ def validate_metadata_filter_value(value: object) -> bool:
 
 
 class JsonMatch(ColumnElement):
-    """Dialect-portable ``column[key] == value`` for JSON columns.
+    """JSON column에 대한 dialect 이식 가능한 ``column[key] == value``.
 
-    Compiles to ``json_type``/``json_extract`` on SQLite and
-    ``json_typeof``/``->>`` on PostgreSQL, with type-safe comparison
-    that distinguishes bool vs int and NULL vs missing key.
+    SQLite에서는 ``json_type``/``json_extract``로, PostgreSQL에서는 ``json_typeof``/``->>``로
+    컴파일된다. bool과 int, NULL과 key 부재를 구분하는 타입 안전 비교를 한다.
 
-    *key* must be a single literal key matching ``[A-Za-z0-9_-]+``.
-    *value* must be one of: ``None``, ``bool``, ``int`` (signed 64-bit), ``float``, ``str``.
+    *key*는 ``[A-Za-z0-9_-]+``에 일치하는 단일 리터럴 key여야 한다.
+    *value*는 ``None``, ``bool``, ``int``(부호 있는 64비트), ``float``, ``str`` 중 하나여야 한다.
     """
 
     inherit_cache = True
@@ -93,16 +89,16 @@ class JsonMatch(ColumnElement):
 
 @dataclass(frozen=True)
 class _Dialect:
-    """Per-dialect names used when emitting JSON type/value comparisons."""
+    """JSON 타입/값 비교를 생성할 때 쓰는 dialect별 이름들."""
 
     null_type: str
     num_types: tuple[str, ...]
     num_cast: str
     int_types: tuple[str, ...]
     int_cast: str
-    # None for SQLite where json_type already returns 'integer'/'real';
-    # regex literal for PostgreSQL where json_typeof returns 'number' for
-    # both ints and floats, so an extra guard prevents CAST errors on floats.
+    # SQLite에서는 json_type이 이미 'integer'/'real'을 반환하므로 None이다.
+    # PostgreSQL에서는 json_typeof가 int와 float 모두에 'number'를 반환하므로, float에서
+    # CAST 오류가 나지 않도록 추가 guard용 regex 리터럴을 둔다.
     int_guard: str | None
     string_type: str
     bool_type: str | None
@@ -147,7 +143,7 @@ def _build_clause(compiler: SQLCompiler, typeof: str, extract: str, value: objec
     if value is None:
         return f"{typeof} = '{dialect.null_type}'"
     if isinstance(value, bool):
-        # bool check must precede int check — bool is a subclass of int in Python
+        # Python에서 bool은 int의 하위 클래스이므로 bool 검사가 int 검사보다 먼저 와야 한다
         bool_str = "true" if value else "false"
         if dialect.bool_type is None:
             return f"{typeof} = '{bool_str}'"
@@ -155,7 +151,7 @@ def _build_clause(compiler: SQLCompiler, typeof: str, extract: str, value: objec
     if isinstance(value, int):
         bp = _bind(compiler, value, BigInteger(), **kw)
         if dialect.int_guard:
-            # CASE prevents CAST error when json_typeof = 'number' also matches floats
+            # json_typeof = 'number'가 float에도 걸리므로, CASE로 CAST 오류를 막는다
             return f"(CASE WHEN {_type_check(typeof, dialect.int_types)} AND {extract} ~ {dialect.int_guard} THEN CAST({extract} AS {dialect.int_cast}) END = {bp})"
         return f"({_type_check(typeof, dialect.int_types)} AND CAST({extract} AS {dialect.int_cast}) = {bp})"
     if isinstance(value, float):

@@ -48,7 +48,7 @@ class Article:
                 if text_part:
                     content.append({"type": "text", "text": text_part})
 
-        # If after processing all parts, content is still empty, provide a fallback message.
+        # 모든 part를 처리한 뒤에도 content가 비어 있으면 fallback 메시지를 넣는다.
         if not content:
             content = [{"type": "text", "text": "No content available"}]
 

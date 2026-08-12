@@ -1,15 +1,14 @@
-"""Alembic environment for DeerFlow application tables.
+"""DeerFlow 애플리케이션 테이블용 Alembic 환경.
 
-ONLY manages DeerFlow's tables (runs, threads_meta, feedback, users,
-run_events, channel_connections, channel_credentials, channel_oauth_states,
-channel_conversations).
+DeerFlow 소유 테이블(runs, threads_meta, feedback, users, run_events,
+channel_connections, channel_credentials, channel_oauth_states,
+channel_conversations)만 관리한다.
 
-LangGraph's checkpointer tables (``checkpoints``, ``checkpoint_blobs``,
-``checkpoint_writes``, ``checkpoint_migrations``) are managed by LangGraph
-itself -- they have their own schema lifecycle and must not be touched by
-Alembic. The ``include_object`` filter below explicitly excludes them so a
-future ``alembic revision --autogenerate`` will not emit ``drop_table`` for
-tables it does not own.
+LangGraph의 checkpointer 테이블(``checkpoints``, ``checkpoint_blobs``,
+``checkpoint_writes``, ``checkpoint_migrations``)은 LangGraph가 직접 관리한다. 자체 schema
+lifecycle을 가지므로 Alembic이 건드려서는 안 된다. 아래 ``include_object`` 필터가 이들을 명시적으로
+제외하므로, 이후 ``alembic revision --autogenerate``가 소유하지 않은 테이블에 대해
+``drop_table``을 만들어내지 않는다.
 """
 
 from __future__ import annotations
@@ -27,17 +26,17 @@ from deerflow.persistence.migrations._env_filters import (
     include_object,
 )
 
-# Re-export under the module namespace for any consumer that addresses them
-# via ``env.LANGGRAPH_OWNED_TABLES`` / ``env.include_object``.
+# ``env.LANGGRAPH_OWNED_TABLES`` / ``env.include_object``로 접근하는 소비자를 위해 모듈
+# 네임스페이스에 다시 내보낸다.
 __all__ = ["LANGGRAPH_OWNED_TABLES", "include_object"]
 
-# Import all models so metadata is populated.
+# metadata가 채워지도록 모든 model을 import한다.
 try:
-    import deerflow.persistence.models as models  # register ORM models with Base.metadata
+    import deerflow.persistence.models as models  # ORM model을 Base.metadata에 등록한다
 
     _ = models
 except ImportError:
-    # Models not available — migration will work with existing metadata only.
+    # model을 쓸 수 없다. migration은 기존 metadata만으로 동작한다.
     logging.getLogger(__name__).warning("Could not import deerflow.persistence.models; Alembic may not detect all tables")
 
 config = context.config
@@ -64,7 +63,7 @@ def do_run_migrations(connection):
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        render_as_batch=True,  # Required for SQLite ALTER TABLE support
+        render_as_batch=True,  # SQLite ALTER TABLE 지원에 필요하다
         include_object=include_object,
     )
     with context.begin_transaction():
@@ -73,19 +72,17 @@ def do_run_migrations(connection):
 
 async def run_migrations_online() -> None:
     url = config.get_main_option("sqlalchemy.url")
-    # When a custom Postgres schema is configured, pin the alembic-spawned
-    # engine's search_path to it. This engine is built from the bare URL and
-    # does NOT inherit the asyncpg ``server_settings`` the app engine sets via
-    # ``connect_args``, so without this both ``alembic_version`` and every
-    # migration's DDL would land in the default (``public``) schema while the
-    # ORM tables land in the custom schema. ``init_engine`` has already created
-    # the schema (``CREATE SCHEMA IF NOT EXISTS``) before bootstrap runs.
+    # custom Postgres schema가 설정되어 있으면 alembic이 만든 engine의 search_path를 거기에
+    # 고정한다. 이 engine은 순수 URL로 만들어져서 app engine이 ``connect_args``로 설정하는
+    # asyncpg ``server_settings``를 상속받지 않는다. 이 처리가 없으면 ORM 테이블은 custom
+    # schema에 생기는데 ``alembic_version``과 모든 migration DDL은 기본(``public``) schema로
+    # 들어간다. bootstrap 전에 ``init_engine``이 이미 schema를 만들어 둔다
+    # (``CREATE SCHEMA IF NOT EXISTS``).
     pg_schema = config.get_main_option("deerflow_pg_schema")
     connect_args: dict = {}
-    # Accept both the canonical ``postgresql`` scheme and libpq's ``postgres``
-    # short scheme (with or without a SQLAlchemy ``+driver`` suffix) so a
-    # ``postgres://`` DSN still gets its search_path pinned instead of silently
-    # writing ``alembic_version`` + migration DDL to the default schema.
+    # 표준 ``postgresql`` scheme과 libpq의 축약형 ``postgres`` scheme을 모두 받아들인다
+    # (SQLAlchemy ``+driver`` 접미사 유무 무관). 그래야 ``postgres://`` DSN도 search_path가
+    # 고정되고, ``alembic_version``과 migration DDL이 조용히 기본 schema로 들어가지 않는다.
     if pg_schema and url and url.split("+", 1)[0].split(":", 1)[0] in {"postgresql", "postgres"}:
         from deerflow.persistence.postgres_schema import build_asyncpg_connect_args
 
@@ -93,13 +90,12 @@ async def run_migrations_online() -> None:
 
     connectable = create_async_engine(url, connect_args=connect_args)
 
-    # Cross-process bootstrap safety for SQLite: every connection alembic
-    # opens needs a wide ``busy_timeout`` so that when another process holds
-    # the file write lock (e.g. mid-bootstrap), our writes wait instead of
-    # raising ``database is locked``. The production engine in
-    # ``deerflow.persistence.engine`` sets this on its own connections, but
-    # alembic spawns its OWN engine here -- those connections wouldn't inherit
-    # anything unless we wire the same hook on this one.
+    # SQLite의 프로세스 간 bootstrap 안전장치. alembic이 여는 모든 connection에 넉넉한
+    # ``busy_timeout``이 필요하다. 그래야 다른 프로세스가 파일 write lock을 쥐고 있을 때
+    # (예: bootstrap 도중) 우리 write가 ``database is locked``를 내지 않고 대기한다.
+    # ``deerflow.persistence.engine``의 운영 engine은 자기 connection에 이를 설정하지만,
+    # alembic은 여기서 자체 engine을 만들기 때문에 같은 hook을 걸어주지 않으면 아무것도
+    # 상속받지 못한다.
     if connectable.url.drivername.startswith("sqlite"):
         from sqlalchemy import event
 

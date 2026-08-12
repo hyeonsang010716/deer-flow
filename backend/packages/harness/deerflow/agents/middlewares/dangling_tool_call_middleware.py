@@ -1,21 +1,20 @@
-"""Middleware to fix dangling tool calls and orphan tool results in message history.
+"""메시지 이력의 dangling tool call과 orphan tool 결과를 바로잡는 middleware.
 
-A dangling tool call occurs when an AIMessage contains tool_calls but there are
-no corresponding ToolMessages in the history (e.g., due to user interruption or
-request cancellation). An orphan ToolMessage occurs when a tool result exists
-without a matching AIMessage tool_call (e.g., after summarization/branching
-dropped the upstream AIMessage). Both cause strict-provider rejections.
+dangling tool call은 AIMessage에 tool_calls가 있는데 이력에 대응하는 ToolMessage가 없는
+상태다(사용자 중단이나 요청 취소 등으로 발생한다). orphan ToolMessage는 짝이 되는 AIMessage
+tool_call 없이 tool 결과만 남은 상태다(summarization/branching이 상위 AIMessage를 지운 뒤 등).
+둘 다 엄격한 provider의 요청 거부를 유발한다.
 
-This middleware intercepts the model call to:
-- Sanitize malformed tool-call names and arguments before provider serialization
-- Insert synthetic ToolMessages with an error indicator for each dangling AIMessage
-  tool_call, ensuring correct message ordering
-- Drop orphan ToolMessages whose originating tool_call is no longer present in the
-  request, preventing strict OpenAI-compatible backends from returning HTTP 400
+이 middleware는 model 호출을 가로채 다음을 수행한다.
 
-Note: Uses wrap_model_call instead of before_model to ensure patches are inserted
-at the correct positions (immediately after each dangling AIMessage), not appended
-to the end of the message list as before_model + add_messages reducer would do.
+- provider 직렬화 전에 잘못된 tool-call 이름과 인자를 정리한다.
+- dangling한 AIMessage tool_call마다 에러 표시가 담긴 합성 ToolMessage를 올바른 위치에 넣는다.
+- 요청에 더 이상 원본 tool_call이 없는 orphan ToolMessage를 제거해, 엄격한 OpenAI 호환
+  backend가 HTTP 400을 반환하지 않게 한다.
+
+참고: before_model이 아니라 wrap_model_call을 쓴다. before_model + add_messages reducer는
+패치를 메시지 목록 끝에 덧붙이지만, 여기서는 각 dangling AIMessage 바로 뒤라는 정확한 위치에
+삽입해야 하기 때문이다.
 """
 
 import json
@@ -31,9 +30,9 @@ from langchain_core.messages import ToolMessage
 
 logger = logging.getLogger(__name__)
 
-# Workaround for issue #2894: malformed write_file calls can carry huge Markdown
-# payloads in invalid tool-call args. Keep recovery error details short so the
-# synthetic ToolMessage does not echo large or malformed content back to the model.
+# 이슈 #2894 우회: 잘못된 write_file 호출은 invalid tool-call args에 거대한 Markdown payload를
+# 담을 수 있다. 합성 ToolMessage가 크거나 깨진 내용을 모델에게 되돌려 주지 않도록 복구 에러
+# 상세를 짧게 유지한다.
 _MAX_RECOVERY_ERROR_DETAIL_LEN = 500
 _UNKNOWN_TOOL_NAME = "unknown_tool"
 _EMPTY_TOOL_NAME_ERROR = "Tool call could not be executed because its name was missing or empty."
@@ -49,7 +48,7 @@ def _valid_tool_call_id(tool_call_id: object) -> bool:
 
 
 def _tool_call_name(tool_call: dict) -> object:
-    """Return a call's declared name, mirroring _message_tool_calls' raw-payload fallback."""
+    """호출이 선언한 이름을 반환한다. _message_tool_calls의 raw-payload fallback과 동일하게 동작한다."""
     name = tool_call.get("name")
     if _valid_tool_name(name):
         return name
@@ -58,11 +57,11 @@ def _tool_call_name(tool_call: dict) -> object:
 
 
 def _names_can_pair(call_name: object, result_name: object) -> bool:
-    """Whether a result's name contradicts a call's name.
+    """결과의 이름이 호출의 이름과 모순되지 않는지 판단한다.
 
-    Either side may legitimately be missing (the empty-name sibling recovery exists
-    for exactly that), and a missing name cannot contradict anything — only two
-    usable names that differ rule the pairing out.
+    양쪽 모두 정당하게 비어 있을 수 있고(빈 이름 형제 복구가 바로 그것을 위해 존재한다),
+    없는 이름은 아무것과도 모순될 수 없다. 사용 가능한 두 이름이 서로 다를 때만 짝짓기를
+    배제한다.
     """
     if not _valid_tool_name(call_name) or not _valid_tool_name(result_name):
         return True
@@ -70,13 +69,14 @@ def _names_can_pair(call_name: object, result_name: object) -> bool:
 
 
 def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str) -> tuple[list, list[dict], bool]:
-    """Replace malformed ids in one tool-call list with stable synthetic ids.
+    """tool-call 목록의 잘못된 id를 안정적인 합성 id로 교체한다.
 
-    The id is derived from the call's position so both the pairing pass and the
-    model-bound message agree on it without threading state between them.
+    id는 호출의 위치에서 파생하므로 짝짓기 단계와 model에 실릴 메시지가 상태를 주고받지
+    않고도 같은 값에 도달한다.
 
-    Returns the rewritten list, one ``{original, synthetic, name}`` claim entry per
-    relabelled call, and whether anything changed.
+    Returns:
+        재작성된 목록, 재라벨된 호출마다 하나씩의 ``{original, synthetic, name}`` 항목,
+        그리고 변경 여부.
     """
     relabeled: list = []
     assigned: list[dict] = []
@@ -93,7 +93,7 @@ def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str) -> tup
 
 
 def _turn_malformed_result_count(messages: list, start: int) -> int:
-    """Count the malformed results issued by the turn opened at ``start``."""
+    """``start``에서 시작된 turn이 낸 잘못된 결과의 개수를 센다."""
     count = 0
     for msg in messages[start + 1 :]:
         if getattr(msg, "type", None) == "ai":
@@ -104,24 +104,23 @@ def _turn_malformed_result_count(messages: list, start: int) -> int:
 
 
 def _claim_synthetic_id(open_calls: list[dict], result: ToolMessage, positional: bool) -> str | None:
-    """Consume the open malformed call that ``result`` answers, returning its new id.
+    """``result``가 답하는 열린 malformed 호출을 소비하고 그 새 id를 반환한다.
 
-    Malformed originals are all equally empty, so they cannot identify their own
-    result; ``open_calls`` is already scoped to the issuing turn. Within that turn the
-    result's name narrows the candidates, and only a *forced* choice is taken:
+    malformed 원본은 모두 똑같이 비어 있어서 자기 결과를 식별할 수 없다. ``open_calls``는 이미
+    호출을 낸 turn으로 범위가 좁혀져 있다. 그 turn 안에서 결과의 이름이 후보를 좁히고,
+    *강제되는* 선택만 취한다.
 
-    * one compatible call — its name, or being the turn's only call, identifies it;
-    * several compatible calls — position identifies them, but only while ``positional``
-      holds, i.e. every open call in the turn has a result. Identical parallel calls
-      (two ``bash``) are distinguishable by nothing else, and order here is a
-      construction guarantee rather than an assumption about the provider: LangGraph's
-      ``ToolNode`` builds the results with ``asyncio.gather`` / ``executor.map`` over
-      ``tool_calls``, both of which yield in input order however the tools interleave.
-      A *missing* result means a call was interrupted — this middleware's own trigger —
-      so the surviving results can no longer be trusted to line up with the calls.
+    * 호환 호출이 하나 — 이름이나 turn의 유일한 호출이라는 사실이 그것을 식별한다.
+    * 호환 호출이 여럿 — 위치가 식별하지만 ``positional``이 성립할 때만, 즉 turn의 모든 열린
+      호출에 결과가 있을 때만 그렇다. 동일한 병렬 호출(``bash`` 두 개)은 다른 무엇으로도
+      구분할 수 없고, 여기서의 순서는 provider에 대한 가정이 아니라 구성상의 보장이다.
+      LangGraph의 ``ToolNode``는 ``tool_calls``에 대해 ``asyncio.gather`` / ``executor.map``으로
+      결과를 만들고, 둘 다 도구가 어떻게 뒤섞이든 입력 순서로 내놓는다. 결과가 *없다*는 것은
+      호출이 중단되었다는 뜻이고 — 이 middleware가 존재하는 이유 자체다 — 그러면 살아남은
+      결과가 호출과 나란히 맞는다고 더는 신뢰할 수 없다.
 
-    Returning ``None`` leaves the result malformed for the orphan pass to drop, which is
-    what an unattributable result gets today — better than inventing a pairing.
+    ``None``을 반환하면 결과는 malformed인 채로 남아 orphan 단계에서 제거된다. 이는 귀속 불가능한
+    결과가 현재 받는 처리이며, 없는 짝을 지어내는 것보다 낫다.
     """
     candidates = [position for position, entry in enumerate(open_calls) if entry["original"] == result.tool_call_id and _names_can_pair(entry["name"], result.name)]
     if not candidates or (len(candidates) > 1 and not positional):
@@ -138,7 +137,7 @@ def _has_invalid_tool_name(name: object) -> bool:
 
 
 def _parse_json_object(value: object) -> dict | None:
-    """Parse a JSON-object string, returning None for other inputs."""
+    """JSON object 문자열을 파싱한다. 그 외 입력에는 None을 반환한다."""
     if not isinstance(value, str):
         return None
     try:
@@ -149,7 +148,7 @@ def _parse_json_object(value: object) -> dict | None:
 
 
 def _normalize_tool_arguments(arguments: object) -> str:
-    """Return a JSON-object string safe for OpenAI-compatible replay."""
+    """OpenAI 호환 재전송에 안전한 JSON object 문자열을 반환한다."""
     if isinstance(arguments, dict):
         try:
             return json.dumps(arguments, ensure_ascii=False, allow_nan=False)
@@ -159,26 +158,25 @@ def _normalize_tool_arguments(arguments: object) -> str:
 
 
 class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
-    """Inserts placeholder ToolMessages for dangling tool calls and drops orphan
-    ToolMessages (tool results whose originating AIMessage tool_call is gone).
+    """dangling tool call에 placeholder ToolMessage를 넣고, orphan ToolMessage(출처 AIMessage
+    tool_call이 사라진 tool 결과)를 제거한다.
 
-    Scans the message history for:
-    - AIMessages whose tool_calls lack corresponding ToolMessages, and injects
-      synthetic error responses immediately after the offending AIMessage
-    - ToolMessages with no matching AIMessage tool_call (orphans), and drops
-      them so strict OpenAI-compatible backends do not reject the request
+    메시지 이력에서 다음을 찾는다.
+    - tool_calls에 대응하는 ToolMessage가 없는 AIMessage — 문제의 AIMessage 바로 뒤에 합성
+      에러 응답을 주입한다
+    - 짝이 되는 AIMessage tool_call이 없는 ToolMessage(orphan) — 엄격한 OpenAI 호환 backend가
+      요청을 거부하지 않도록 제거한다
     """
 
     @staticmethod
     def _message_tool_calls(msg) -> list[dict]:
-        """Return normalized tool calls from structured fields or raw provider payloads.
+        """구조화된 필드나 raw provider payload에서 정규화된 tool call을 반환한다.
 
-        LangChain stores malformed provider function calls in ``invalid_tool_calls``.
-        They do not execute, but provider adapters may still serialize enough of
-        the call id/name back into the next request that strict OpenAI-compatible
-        validators expect a matching ToolMessage. Treat them as dangling calls so
-        the next model request stays well-formed and the model sees a recoverable
-        tool error instead of another provider 400.
+        LangChain은 잘못된 provider function call을 ``invalid_tool_calls``에 저장한다. 이들은
+        실행되지 않지만, provider adapter가 호출 id/이름을 다음 요청에 충분히 직렬화해서
+        엄격한 OpenAI 호환 validator가 짝이 되는 ToolMessage를 기대하게 만들 수 있다. 그래서
+        dangling 호출로 취급해 다음 model 요청이 올바른 형태를 유지하고, 모델이 또 다른
+        provider 400 대신 복구 가능한 tool 에러를 보게 한다.
         """
         normalized: list[dict] = []
 
@@ -195,12 +193,10 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
             normalized.append(normalized_call)
 
         raw_tool_calls = (getattr(msg, "additional_kwargs", None) or {}).get("tool_calls") or []
-        # The raw payload is a fallback serialization of the same calls: the
-        # OpenAI serializer reaches for it only once BOTH structured views are
-        # empty (mirrors the gating in _normalize_tool_call_ids).  Collecting
-        # it while invalid_tool_calls is non-empty would count the same call
-        # twice and emit two ToolMessages for one id — the exact duplicate-id
-        # shape strict providers reject.
+        # raw payload는 같은 호출들의 fallback 직렬화다. OpenAI serializer는 구조화된 두 view가
+        # 모두 비었을 때만 이걸 찾는다(_normalize_tool_call_ids의 게이팅과 동일). invalid_tool_calls가
+        # 비어 있지 않은데 이걸 수집하면 같은 호출을 두 번 세어 하나의 id에 ToolMessage를 둘
+        # 만들게 되고, 이는 엄격한 provider가 거부하는 바로 그 중복 id 형태다.
         if not tool_calls and not getattr(msg, "invalid_tool_calls", None):
             for raw_tc in raw_tool_calls:
                 if not isinstance(raw_tc, dict):
@@ -250,9 +246,9 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
             name = tool_call.get("name")
             error = tool_call.get("error")
             error_text = error[:_MAX_RECOVERY_ERROR_DETAIL_LEN] if isinstance(error, str) and error else ""
-            # Workaround for issue #2894: malformed write_file calls can carry huge Markdown
-            # payloads in invalid tool-call args. Keep recovery guidance actionable without
-            # echoing large or malformed content back to the model.
+            # 이슈 #2894 우회: 잘못된 write_file 호출은 invalid tool-call args에 거대한 Markdown
+            # payload를 담을 수 있다. 크거나 깨진 내용을 모델에게 되돌려 주지 않으면서 복구
+            # 안내는 실행 가능하게 유지한다.
             if name == "write_file":
                 details = f" Parser error: {error_text}" if error_text else ""
                 return (
@@ -271,7 +267,7 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
 
     @staticmethod
     def _sanitize_ai_message_tool_calls(msg):
-        """Return an AIMessage with model-bound tool calls safe to serialize."""
+        """model에 실릴 tool call을 직렬화해도 안전하게 만든 AIMessage를 반환한다."""
         if getattr(msg, "type", None) != "ai":
             return msg
 
@@ -361,23 +357,21 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
 
     @staticmethod
     def _normalize_tool_call_ids(messages: list) -> list:
-        """Return messages with malformed tool-call ids replaced by synthetic ids.
+        """malformed tool-call id를 합성 id로 교체한 메시지를 반환한다.
 
-        A provider that omits a tool-call id parses into a well-formed ``tool_calls``
-        entry with an empty/``None`` id. Such an id can never enter the pairing set
-        below, so the call's own result is dropped as an orphan and no placeholder
-        replaces it — the request then reaches the provider with an empty id and the
-        tool result gone. Normalizing ids up front lets the pairing and placeholder
-        logic treat the call like any other, mirroring the empty-name recovery.
+        tool-call id를 생략하는 provider는 id가 비었거나 ``None``인 올바른 형태의 ``tool_calls``
+        항목으로 파싱된다. 그런 id는 아래 짝짓기 집합에 들어갈 수 없어서 해당 호출의 결과는
+        orphan으로 제거되고 placeholder도 대신 들어가지 않는다. 그러면 요청은 빈 id를 단 채
+        tool 결과 없이 provider에 도달한다. id를 먼저 정규화하면 짝짓기와 placeholder 로직이
+        그 호출을 다른 호출과 똑같이 다룰 수 있고, 이는 빈 이름 복구와 같은 방식이다.
         """
         rewritten: dict[int, object] = {}
-        # Malformed calls from the most recent AIMessage that are still unanswered.
-        # Walking in document order and resetting here is what scopes a result to the
-        # turn that issued it: a result never answers a call from an earlier turn, so
-        # an earlier dangling call must not consume a later turn's result.
+        # 가장 최근 AIMessage에서 나온, 아직 응답되지 않은 malformed 호출들. 문서 순서대로 훑으며
+        # 여기서 리셋하는 것이 결과를 그것을 낸 turn으로 한정한다. 결과는 이전 turn의 호출에
+        # 응답하지 않으므로, 앞선 dangling 호출이 나중 turn의 결과를 소비해서는 안 된다.
         open_calls: list[dict] = []
-        # Whether this turn's results line up 1:1 with its malformed calls, which is what
-        # lets position break a tie between otherwise indistinguishable siblings.
+        # 이 turn의 결과가 malformed 호출과 1:1로 맞는지 여부. 다른 방법으로는 구분할 수 없는
+        # 형제 호출 사이의 동점을 위치로 깨뜨릴 수 있게 해준다.
         positional = False
 
         for index, msg in enumerate(messages):
@@ -393,11 +387,10 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
                     ("call", structured, "tool_calls"),
                     ("invalid", invalid, "invalid_tool_calls"),
                 ]
-                # The raw payload is a fallback view of the same calls, so relabel it only when
-                # it is the view actually serialized: the OpenAI serializer reaches for it only
-                # once *both* structured views are empty. Minting an id for a shadowed raw view
-                # would owe a placeholder to a call the provider never sees, putting an orphan
-                # tool result on the wire.
+                # raw payload는 같은 호출들의 fallback view이므로, 실제로 직렬화되는 view일 때만
+                # 재라벨한다. OpenAI serializer는 구조화된 두 view가 *모두* 비었을 때만 이걸
+                # 찾는다. 가려진 raw view에 id를 발급하면 provider가 결코 보지 않는 호출에
+                # placeholder를 빚지게 되어, orphan tool 결과를 wire에 올리게 된다.
                 if not structured and not invalid and isinstance(raw_tool_calls, list):
                     sources.append(("raw", raw_tool_calls, "additional_kwargs"))
 
@@ -414,8 +407,8 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
                     rewritten[index] = msg.model_copy(update=update)
                 continue
 
-            # Re-point an already-paired result at its call's new id so the pairing
-            # below keeps it instead of dropping it as an orphan.
+            # 이미 짝지어진 결과를 해당 호출의 새 id로 다시 가리키게 해서, 아래 짝짓기가 이를
+            # orphan으로 버리지 않고 유지하게 한다.
             if not isinstance(msg, ToolMessage) or _valid_tool_call_id(msg.tool_call_id):
                 continue
             synthetic = _claim_synthetic_id(open_calls, msg, positional)
@@ -427,10 +420,10 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         return [rewritten.get(index, msg) for index, msg in enumerate(messages)]
 
     def _build_patched_messages(self, messages: list) -> list | None:
-        """Return messages with tool results grouped after their tool-call AIMessage.
+        """tool 결과를 해당 tool-call AIMessage 뒤에 모아 놓은 메시지를 반환한다.
 
-        This normalizes model-bound causal order before provider serialization while
-        preserving already-valid transcripts unchanged.
+        provider 직렬화 전에 model에 실릴 인과 순서를 정규화하되, 이미 유효한 대화 기록은
+        그대로 둔다.
         """
         normalized = self._normalize_tool_call_ids(messages)
 
@@ -454,12 +447,11 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         for msg in normalized:
             if isinstance(msg, ToolMessage):
                 if msg.tool_call_id in tool_call_ids:
-                    continue  # Will be re-emitted after its AIMessage
-                # Orphan: ToolMessage whose originating AIMessage tool_call is
-                # no longer in the request (e.g. removed by summarization).
-                # Drop it silently from the model request so strict providers
-                # do not reject it with HTTP 400. Persisted state is untouched;
-                # this only affects the single model call.
+                    continue  # 해당 AIMessage 뒤에서 다시 내보낸다
+                # orphan: 출처 AIMessage tool_call이 더 이상 요청에 없는 ToolMessage
+                # (예: summarization이 제거한 경우). 엄격한 provider가 HTTP 400으로 거부하지
+                # 않도록 model 요청에서 조용히 제거한다. 영속 state는 건드리지 않으며 이 한 번의
+                # model 호출에만 영향을 준다.
                 drop_count += 1
                 continue
 
@@ -468,8 +460,8 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
             if getattr(msg, "type", None) != "ai":
                 continue
 
-            # Intentionally inspect the original message so empty names can be
-            # classified before the sanitized message replaces them.
+            # 정리된 메시지가 대체하기 전에 빈 이름을 분류할 수 있도록 의도적으로 원본
+            # 메시지를 검사한다.
             for tc in self._message_tool_calls(msg):
                 tc_id = tc.get("id")
                 if not tc_id:

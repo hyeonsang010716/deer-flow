@@ -3,36 +3,30 @@ from abc import ABC, abstractmethod
 
 from deerflow.sandbox.search import GrepMatch
 
-# POSIX env-var name rule: letter or underscore, then letters/digits/underscores.
-# Used to validate ``env`` keys before they reach a sandbox implementation.
-# No current implementation splices a key into a shell string — the local
-# sandbox passes the dict to ``subprocess.run(env=...)`` (no shell), the AIO
-# sandbox forwards it via the ``bash.exec`` structured ``env`` field, and e2b
-# forwards it as the SDK's ``envs``. The check is defense-in-depth for the
-# contract: a future shell-splicing implementation must not have to re-derive
-# its own rule.
+# POSIX 환경변수 이름 규칙: 글자나 밑줄로 시작하고 이어서 글자/숫자/밑줄. ``env`` 키가 sandbox
+# 구현에 도달하기 전에 검증하는 데 쓴다. 현재 어떤 구현도 키를 shell 문자열에 끼워 넣지 않는다.
+# local sandbox는 dict를 ``subprocess.run(env=...)``에 넘기고(shell 미사용), AIO sandbox는
+# ``bash.exec``의 구조화된 ``env`` 필드로 전달하며, e2b는 SDK의 ``envs``로 전달한다. 이 검사는
+# 계약에 대한 defense-in-depth다. 앞으로 shell에 끼워 넣는 구현이 생기더라도 자체 규칙을 다시
+# 만들 필요가 없어야 한다.
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _validate_extra_env(extra_env: dict[str, str] | None) -> None:
-    """Reject ``env`` keys that are not valid POSIX env-var names.
+    """유효한 POSIX 환경변수 이름이 아닌 ``env`` 키를 거부한다.
 
-    The :meth:`Sandbox.execute_command` contract accepts arbitrary ``str``
-    keys. Today no implementation splices a key into a shell string — the
-    local sandbox passes the dict to ``subprocess.run(env=...)`` (no shell),
-    the AIO sandbox forwards it via the ``bash.exec`` structured ``env``
-    field (no command-string splice), and e2b forwards it as the SDK's
-    ``envs``. Enforcing the POSIX env-name rule in the abstract layer is
-    defense-in-depth for the contract: a future implementation that does
-    route a key through a shell must not have to re-derive its own
-    validation rule, and a caller passing a key derived from config /
-    payload / user input fails fast with ``ValueError`` instead of silently
-    producing an exploit should a future implementation regress to splicing.
+    :meth:`Sandbox.execute_command` 계약은 임의의 ``str`` 키를 받는다. 현재는 어떤 구현도 키를
+    shell 문자열에 끼워 넣지 않는다. local sandbox는 dict를 ``subprocess.run(env=...)``에
+    넘기고(shell 미사용), AIO sandbox는 ``bash.exec``의 구조화된 ``env`` 필드로 전달하며
+    (명령 문자열에 끼워 넣지 않는다), e2b는 SDK의 ``envs``로 전달한다. 추상 레이어에서 POSIX
+    환경변수 이름 규칙을 강제하는 것은 계약에 대한 defense-in-depth다. 앞으로 키를 shell로
+    보내는 구현이 생겨도 자체 검증 규칙을 다시 만들 필요가 없고, config / payload / 사용자
+    입력에서 유도한 키를 넘기는 호출자는 나중에 구현이 끼워 넣기로 퇴행했을 때 조용히 취약점을
+    만드는 대신 ``ValueError``로 즉시 실패한다.
 
     Raises:
-        ValueError: When ``extra_env`` is not None and any key does not
-            match ``^[A-Za-z_][A-Za-z0-9_]*$``. ``None`` and empty dicts
-            pass through unchanged.
+        ValueError: ``extra_env``가 None이 아니고 어떤 키가
+            ``^[A-Za-z_][A-Za-z0-9_]*$``에 맞지 않을 때. ``None``과 빈 dict는 그대로 통과한다.
     """
     if not extra_env:
         return
@@ -42,7 +36,7 @@ def _validate_extra_env(extra_env: dict[str, str] | None) -> None:
 
 
 class Sandbox(ABC):
-    """Abstract base class for sandbox environments"""
+    """sandbox 환경의 추상 base class"""
 
     _id: str
 
@@ -60,33 +54,27 @@ class Sandbox(ABC):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Execute bash command in sandbox.
+        """sandbox에서 bash 명령을 실행한다.
 
         Args:
-            command: The command to execute.
-            env: Optional per-call environment variables to inject into the
-                command's process. Used to pass request-scoped secrets (e.g. a
-                short-lived end-user token for skill scripts, issue #3861, or a
-                GitHub App installation token for ``git push`` / ``gh``) without
-                placing them in the prompt, tool arguments, or the command
-                string. When ``None`` the sandbox uses its default environment.
-                Keys must be valid POSIX environment-variable names
-                (``^[A-Za-z_][A-Za-z0-9_]*$``); implementations validate
-                via :func:`_validate_extra_env` before use. Values are
-                arbitrary strings — shell-using implementations
-                ``shlex.quote`` them on splice.
-            timeout: Optional per-call wall-clock timeout in seconds. Local
-                sandboxes use this to bound host bash commands so long-lived
-                foreground processes cannot hang a turn indefinitely. Remote/AIO
-                implementations may ignore it when their backend does not expose
-                an equivalent command-timeout control separate from its own API
-                timeouts.
+            command: 실행할 명령.
+            env: 명령 프로세스에 주입할 호출별 환경변수(선택). request-scoped secret
+                (예: skill 스크립트용 단기 최종 사용자 토큰(이슈 #3861), ``git push`` / ``gh``용
+                GitHub App installation 토큰)을 prompt, 도구 인자, 명령 문자열에 넣지 않고
+                전달하는 데 쓴다. ``None``이면 sandbox의 기본 환경을 쓴다. 키는 유효한 POSIX
+                환경변수 이름(``^[A-Za-z_][A-Za-z0-9_]*$``)이어야 하며, 구현은 사용 전
+                :func:`_validate_extra_env`로 검증한다. 값은 임의 문자열이고, shell을 쓰는
+                구현은 끼워 넣을 때 ``shlex.quote``를 적용한다.
+            timeout: 호출별 wall-clock timeout(초, 선택). local sandbox는 이걸로 host bash
+                명령을 제한해 오래 도는 foreground 프로세스가 turn을 무한정 붙잡지 못하게 한다.
+                remote/AIO 구현은 backend가 자체 API timeout과 별개인 명령 timeout 제어를
+                제공하지 않으면 무시할 수 있다.
 
         Returns:
-            The standard or error output of the command.
+            명령의 표준 출력 또는 에러 출력.
 
         Raises:
-            ValueError: when an ``env`` key is not a valid env-var name.
+            ValueError: ``env`` 키가 유효한 환경변수 이름이 아닐 때.
         """
         pass
 
@@ -97,64 +85,62 @@ class Sandbox(ABC):
         start_line: int | None = None,
         end_line: int | None = None,
     ) -> str:
-        """Read the content of a file.
+        """파일 내용을 읽는다.
 
         Args:
-            path: The absolute path of the file to read.
-            start_line: Optional starting line number (1-indexed, inclusive).
-            end_line: Optional ending line number (1-indexed, inclusive).
+            path: 읽을 파일의 절대 경로.
+            start_line: 시작 줄 번호(1부터, 포함, 선택).
+            end_line: 끝 줄 번호(1부터, 포함, 선택).
 
         Returns:
-            The content of the file.
+            파일 내용.
         """
         pass
 
     @abstractmethod
     def download_file(self, path: str) -> bytes:
-        """Download the binary content of a file.
+        """파일의 바이너리 내용을 내려받는다.
 
         Args:
-            path: The absolute path of the file to download.
+            path: 내려받을 파일의 절대 경로.
 
         Returns:
-            Raw file bytes.
+            원본 파일 bytes.
 
         Raises:
-            PermissionError: If path traversal is detected or the path is outside
-                the allowed virtual prefix.
-            OSError: If the file cannot be read or does not exist.  Both local
-                and remote implementations must raise ``OSError`` so callers
-                have a single exception type to handle.
+            PermissionError: path traversal이 감지되거나 경로가 허용된 가상 prefix 밖일 때.
+            OSError: 파일을 읽을 수 없거나 존재하지 않을 때. 호출자가 하나의 예외 타입만
+                처리하면 되도록 local과 remote 구현 모두 ``OSError``를 던져야 한다.
         """
         pass
 
     @abstractmethod
     def list_dir(self, path: str, max_depth=2) -> list[str]:
-        """List the contents of a directory.
+        """디렉터리 내용을 나열한다.
 
         Args:
-            path: The absolute path of the directory to list.
-            max_depth: The maximum depth to traverse. Default is 2.
+            path: 나열할 디렉터리의 절대 경로.
+            max_depth: 탐색할 최대 깊이. 기본값은 2.
 
         Returns:
-            The contents of the directory.
+            디렉터리 내용.
         """
         pass
 
     @abstractmethod
     def write_file(self, path: str, content: str, append: bool = False) -> None:
-        """Write content to a file.
+        """파일에 내용을 쓴다.
 
         Args:
-            path: The absolute path of the file to write to.
-            content: The text content to write to the file.
-            append: Whether to append the content to the file. If False, the file will be created or overwritten.
+            path: 쓸 파일의 절대 경로.
+            content: 파일에 쓸 텍스트 내용.
+            append: 내용을 파일에 덧붙일지 여부. False면 파일을 새로 만들거나 덮어쓴다.
         """
         pass
 
     @abstractmethod
     def glob(self, path: str, pattern: str, *, include_dirs: bool = False, max_results: int = 200) -> tuple[list[str], bool]:
-        """Find paths that match a glob pattern under a root directory."""
+        """루트 디렉터리 아래에서 glob 패턴에 맞는 경로를 찾는다."""
         pass
 
     @abstractmethod
@@ -168,15 +154,15 @@ class Sandbox(ABC):
         case_sensitive: bool = False,
         max_results: int = 100,
     ) -> tuple[list[GrepMatch], bool]:
-        """Search for matches inside a text file or files under a directory."""
+        """텍스트 파일 하나 또는 디렉터리 아래 파일들에서 일치하는 부분을 검색한다."""
         pass
 
     @abstractmethod
     def update_file(self, path: str, content: bytes) -> None:
-        """Update a file with binary content.
+        """파일을 바이너리 내용으로 갱신한다.
 
         Args:
-            path: The absolute path of the file to update.
-            content: The binary content to write to the file.
+            path: 갱신할 파일의 절대 경로.
+            content: 파일에 쓸 바이너리 내용.
         """
         pass

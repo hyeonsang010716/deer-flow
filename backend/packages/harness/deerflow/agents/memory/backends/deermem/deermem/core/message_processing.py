@@ -1,4 +1,4 @@
-"""Shared helpers for turning conversations into memory update inputs."""
+"""대화를 memory 갱신 입력으로 바꾸는 공용 헬퍼."""
 
 from __future__ import annotations
 
@@ -19,23 +19,23 @@ _PATTERN_CACHE: dict[tuple[str, str | None], list[re.Pattern[str]]] = {}
 
 
 def load_patterns(name: str, *, patterns_dir: str | None = None) -> list[re.Pattern[str]]:
-    """Load and compile signal patterns from a YAML file.
+    """YAML 파일에서 signal 패턴을 읽어 컴파일한다.
 
-    ``name`` is ``"correction"`` or ``"reinforcement"``. ``patterns_dir``
-    overrides the bundled ``core/message_patterns/`` directory; ``None`` (the
-    default) loads the bundled defaults, which mirror the pre-externalization
-    hardcoded patterns so zero-config behavior is unchanged. Compiled patterns
-    are cached per ``(name, patterns_dir)``.
+    ``name``은 ``"correction"`` 또는 ``"reinforcement"``다. ``patterns_dir``은
+    번들된 ``core/message_patterns/`` 디렉터리를 대체하며, ``None``(기본값)이면
+    번들 기본값을 쓴다. 기본값은 외부화 이전의 하드코딩 패턴과 동일하므로
+    무설정 동작이 그대로 유지된다. 컴파일 결과는 ``(name, patterns_dir)`` 단위로
+    캐시한다.
 
-    Each YAML list entry is either a string (compiled with no flags) or a
-    mapping ``{pattern: <regex>, flags: [...]}`` where ``flags`` may contain
-    ``"ignorecase"``. Raises ``ValueError`` for invalid YAML, a non-list
-    top-level value, or an invalid regex (all with the file path in the message).
-    For explicit *patterns_dir*: missing files raise ``FileNotFoundError``;
-    unreadable files (OSError) are re-raised. Malformed entries and unknown flag
-    names are skipped with a WARNING. For bundled defaults (*patterns_dir* is
-    ``None``): missing/unreadable files log a WARNING and return ``[]``
-    (packaging bug, not a configuration error).
+    YAML 리스트의 각 항목은 문자열(플래그 없이 컴파일)이거나
+    ``{pattern: <regex>, flags: [...]}`` 매핑이며 ``flags``에는 ``"ignorecase"``를
+    넣을 수 있다. 잘못된 YAML, 리스트가 아닌 최상위 값, 잘못된 regex는
+    ``ValueError``를 던진다(모두 메시지에 파일 경로를 포함한다).
+    *patterns_dir*를 명시한 경우 파일이 없으면 ``FileNotFoundError``를 던지고
+    읽기 실패(OSError)는 그대로 다시 던진다. 형식이 깨진 항목과 알 수 없는 플래그
+    이름은 WARNING만 남기고 건너뛴다. 번들 기본값(*patterns_dir*가 ``None``)일 때는
+    파일이 없거나 읽지 못하면 WARNING을 남기고 ``[]``를 반환한다. 설정 오류가 아니라
+    패키징 버그이기 때문이다.
     """
     cache_key = (name, patterns_dir)
     cached = _PATTERN_CACHE.get(cache_key)
@@ -95,7 +95,7 @@ def load_patterns(name: str, *, patterns_dir: str | None = None) -> list[re.Patt
 
 
 def extract_message_text(message: Any) -> str:
-    """Extract plain text from message content for filtering and signal detection."""
+    """필터링과 signal 감지에 쓸 평문 텍스트를 메시지 content에서 뽑아낸다."""
     content = getattr(message, "content", "")
     if isinstance(content, list):
         text_parts: list[str] = []
@@ -111,24 +111,23 @@ def extract_message_text(message: Any) -> str:
 
 
 def _non_empty_str(value: object) -> str | None:
-    """Return ``value`` if it is a non-empty (stripped) string, else None."""
+    """``value``가 공백 제거 후에도 비어 있지 않은 문자열이면 그대로, 아니면 None을 반환한다."""
     return value if isinstance(value, str) and value.strip() else None
 
 
 def _is_human_clarification_response(additional_kwargs: Any) -> bool:
-    """Return True iff ``additional_kwargs`` carries a well-formed human
-    clarification response (a user-authored answer worth remembering).
+    """``additional_kwargs``가 형식에 맞는 human clarification 응답을 담고 있을 때만 True를 반환한다.
 
-    Host-agnostic structural mirror of deer-flow's ``read_human_input_response``
-    (which the host injects via ``should_keep_hidden_message`` in production):
-    a ``human_input_response`` mapping with version 1 + kind
-    ``human_input_response``, non-empty source/request_id/value, and (for
-    option responses) a non-empty option_id. Malformed/partial payloads return
-    False so they are excluded like other hide_from_ui framework messages.
-    Kept inline (no host import) so the bare ``filter_messages_for_memory``
-    does the right thing standalone and in tests. NOTE: if the
-    human_input_response format changes, keep this in sync with
-    ``read_human_input_response`` (the production path) -- they must agree.
+    사용자가 직접 쓴, 기억할 가치가 있는 답변인지 판단한다. deer-flow의
+    ``read_human_input_response``(운영에서는 host가 ``should_keep_hidden_message``로
+    주입한다)를 host 비의존 구조 검사로 옮긴 것이다. 조건은 version 1 + kind
+    ``human_input_response``인 ``human_input_response`` 매핑, 비어 있지 않은
+    source/request_id/value, 그리고 option 응답이면 비어 있지 않은 option_id다.
+    형식이 깨졌거나 일부만 있는 payload는 False를 반환해 다른 hide_from_ui
+    프레임워크 메시지처럼 제외된다. host를 import하지 않고 인라인으로 둔 이유는
+    ``filter_messages_for_memory``가 단독 실행이나 테스트에서도 올바르게 동작하게
+    하기 위해서다. NOTE: human_input_response 포맷이 바뀌면 운영 경로인
+    ``read_human_input_response``와 반드시 함께 맞춰야 한다.
     """
     if not isinstance(additional_kwargs, Mapping):
         return False
@@ -148,15 +147,14 @@ def _is_human_clarification_response(additional_kwargs: Any) -> bool:
 
 
 def filter_messages_for_memory(messages: list[Any], *, should_keep_hidden_message: Any = None) -> list[Any]:
-    """Keep only user inputs and final assistant responses for memory updates.
+    """memory 갱신을 위해 사용자 입력과 최종 assistant 응답만 남긴다.
 
-    ``hide_from_ui`` framework messages are skipped, but user-authored
-    clarification answers (a well-formed ``human_input_response``) are kept by
-    default via a host-agnostic structural check (mirrors deer-flow's
-    ``read_human_input_response``). Pass a ``should_keep_hidden_message(
-    additional_kwargs) -> bool`` hook to override the keep decision; the host
-    injects one delegating to the authoritative ``read_human_input_response``
-    in production.
+    ``hide_from_ui`` 프레임워크 메시지는 건너뛰지만, 사용자가 직접 쓴 clarification
+    답변(형식에 맞는 ``human_input_response``)은 host 비의존 구조 검사로 기본 유지한다
+    (deer-flow의 ``read_human_input_response``와 동일한 판정).
+    ``should_keep_hidden_message(additional_kwargs) -> bool`` 훅을 넘기면 유지 여부
+    판단을 대체할 수 있다. 운영에서는 host가 권위 있는
+    ``read_human_input_response``에 위임하는 훅을 주입한다.
     """
     filtered = []
     skip_next_ai = False
@@ -164,21 +162,20 @@ def filter_messages_for_memory(messages: list[Any], *, should_keep_hidden_messag
         msg_type = getattr(msg, "type", None)
 
         if msg_type == "human":
-            # Middleware-injected hidden messages (e.g. TodoMiddleware.todo_reminder,
-            # ViewImageMiddleware, p0 DynamicContextMiddleware.__memory) carry
-            # hide_from_ui and must never reach the memory-updating LLM — otherwise
-            # framework-internal text pollutes long-term memory (and the p0 __memory
-            # payload could trigger a self-amplification loop).
+            # middleware가 주입한 숨김 메시지(TodoMiddleware.todo_reminder,
+            # ViewImageMiddleware, p0 DynamicContextMiddleware.__memory 등)는
+            # hide_from_ui를 달고 있으며 memory 갱신 LLM에 절대 도달하면 안 된다.
+            # 프레임워크 내부 텍스트가 장기 memory를 오염시키고, p0 __memory
+            # payload는 자기 증폭 루프를 유발할 수 있다.
             additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
             if additional_kwargs.get("hide_from_ui"):
-                # Framework-injected hidden messages (TodoMiddleware reminders,
-                # ViewImage payloads, p0 __memory self-amplification guard) are
-                # excluded. User-authored clarification answers (a well-formed
-                # human_input_response) ARE real content worth remembering, so
-                # they are kept by default via a host-agnostic structural check.
-                # A host ``should_keep_hidden_message`` hook, when supplied,
-                # overrides this (production DeerMem injects one delegating to
-                # the authoritative read_human_input_response).
+                # 프레임워크가 주입한 숨김 메시지(TodoMiddleware 리마인더,
+                # ViewImage payload, p0 __memory 자기 증폭 방지)는 제외한다.
+                # 사용자가 직접 쓴 clarification 답변(형식에 맞는
+                # human_input_response)은 기억할 가치가 있는 실제 내용이므로
+                # host 비의존 구조 검사로 기본 유지한다.
+                # host가 ``should_keep_hidden_message`` 훅을 주면 그 판단이 우선한다
+                # (운영 DeerMem은 read_human_input_response에 위임하는 훅을 주입한다).
                 if should_keep_hidden_message is not None:
                     keep = should_keep_hidden_message(additional_kwargs)
                 else:
@@ -210,12 +207,12 @@ def filter_messages_for_memory(messages: list[Any], *, should_keep_hidden_messag
 
 
 def detect_correction(messages: list[Any], *, patterns: list[re.Pattern[str]] | None = None) -> bool:
-    """Detect explicit user corrections in recent conversation turns.
+    """최근 대화 턴에서 사용자의 명시적 정정을 감지한다.
 
-    ``patterns`` overrides the loaded patterns (useful when the caller has
-    already resolved ``DeerMemConfig.patterns_dir``); ``None`` loads the bundled
-    defaults via :func:`load_patterns`. The scan window stays ``messages[-6:]``
-    (the most recent human turns).
+    ``patterns``를 주면 로드된 패턴 대신 그것을 쓴다(호출자가 이미
+    ``DeerMemConfig.patterns_dir``를 해석한 경우에 유용하다). ``None``이면
+    :func:`load_patterns`로 번들 기본값을 읽는다. 스캔 범위는 최근 human 턴인
+    ``messages[-6:]``로 고정한다.
     """
     if patterns is None:
         patterns = load_patterns("correction")
@@ -230,11 +227,12 @@ def detect_correction(messages: list[Any], *, patterns: list[re.Pattern[str]] | 
 
 
 def detect_reinforcement(messages: list[Any], *, patterns: list[re.Pattern[str]] | None = None) -> bool:
-    """Detect explicit positive reinforcement signals in recent conversation turns.
+    """최근 대화 턴에서 명시적인 긍정 강화 signal을 감지한다.
 
-    ``patterns`` overrides the loaded patterns (useful when the caller has
-    already resolved ``DeerMemConfig.patterns_dir``); ``None`` loads the bundled
-    defaults via :func:`load_patterns`. The scan window stays ``messages[-6:]``.
+    ``patterns``를 주면 로드된 패턴 대신 그것을 쓴다(호출자가 이미
+    ``DeerMemConfig.patterns_dir``를 해석한 경우에 유용하다). ``None``이면
+    :func:`load_patterns`로 번들 기본값을 읽는다. 스캔 범위는 ``messages[-6:]``로
+    고정한다.
     """
     if patterns is None:
         patterns = load_patterns("reinforcement")
@@ -248,11 +246,11 @@ def detect_reinforcement(messages: list[Any], *, patterns: list[re.Pattern[str]]
     return False
 
 
-# Signal classes detected by :func:`detect_signals`. Names align with the fact
-# ``category`` enum (CORE_CATEGORIES) so a signal can drive an extraction
-# category hint directly, except ``reinforcement`` (no same-named category; it
-# maps to preference/behavior in the extraction hint). Keep new signal names in
-# sync with CORE_CATEGORIES before adding them here.
+# :func:`detect_signals`가 감지하는 signal 종류. 이름은 fact의 ``category``
+# enum(CORE_CATEGORIES)과 맞춰 두어 signal이 추출 category 힌트로 바로 쓰인다.
+# 예외는 ``reinforcement``로, 같은 이름의 category가 없고 추출 힌트에서는
+# preference/behavior로 매핑된다. 새 signal 이름을 추가하기 전에 반드시
+# CORE_CATEGORIES와 맞춘다.
 SIGNAL_NAMES: tuple[str, ...] = (
     "correction",
     "reinforcement",
@@ -268,12 +266,11 @@ def detect_signals(
     *,
     patterns_dir: str | None = None,
 ) -> set[str]:
-    """Detect signal classes in the recent conversation turns.
+    """최근 대화 턴에서 signal 종류를 감지한다.
 
-    Returns the set of signal names whose patterns match any of the last 6
-    human turns. This generalizes :func:`detect_correction` /
-    :func:`detect_reinforcement` (which remain for backward compatibility) to
-    the full signal set. The window stays ``messages[-6:]``.
+    최근 human 턴 6개 중 하나라도 패턴이 일치하는 signal 이름의 집합을 반환한다.
+    :func:`detect_correction` / :func:`detect_reinforcement`(하위 호환용으로 남아 있다)를
+    전체 signal 집합으로 일반화한 함수다. 스캔 범위는 ``messages[-6:]``로 고정한다.
     """
     recent_user_msgs = [msg for msg in messages[-6:] if getattr(msg, "type", None) == "human"]
     if not recent_user_msgs:
@@ -292,8 +289,8 @@ def detect_signals(
     return hits
 
 
-# Trailing characters stripped before a whole-message trivial match: a pure
-# acknowledgment with trailing punctuation ("ok.", "好的！") is still trivial.
+# 메시지 전체를 trivial로 판정하기 전에 잘라내는 후행 문자. 뒤에 문장부호가 붙은
+# 단순 응답("ok.", "好的！")도 여전히 trivial이다.
 _TRIVIAL_TRAIL = " \t\n\r.。,，!！?？;；"
 
 
@@ -303,15 +300,14 @@ def filter_trivial(
     patterns: list[re.Pattern[str]] | None = None,
     patterns_dir: str | None = None,
 ) -> list[Any]:
-    """Drop pure-acknowledgment human turns and their AI replies.
+    """단순 응답뿐인 human 턴과 그에 대한 AI 답변을 제거한다.
 
-    A human turn is "trivial" when its whole (stripped) text matches a trivial
-    pattern (e.g. "嗯", "ok", "好的", "谢谢") -- matched via ``fullmatch`` so a
-    substantive turn containing "ok" is never dropped. The matched human turn
-    and its following assistant reply are both removed (reusing the
-    ``skip_next_ai`` discipline from :func:`filter_messages_for_memory`). When
-    every turn is trivial, the result is empty, which the caller treats as "do
-    not enqueue" (saving an extraction LLM call).
+    공백을 제거한 전체 텍스트가 trivial 패턴("嗯", "ok", "好的", "谢谢" 등)과
+    일치하면 그 human 턴은 "trivial"이다. ``fullmatch``로 판정하므로 "ok"가 포함된
+    실질적인 턴은 절대 버려지지 않는다. 일치한 human 턴과 바로 뒤따르는 assistant
+    답변을 함께 제거한다(:func:`filter_messages_for_memory`의 ``skip_next_ai`` 방식을
+    그대로 쓴다). 모든 턴이 trivial이면 결과가 비고, 호출자는 이를 "enqueue하지 않음"
+    으로 처리해 추출 LLM 호출을 아낀다.
     """
     if patterns is None:
         patterns = load_patterns("trivial", patterns_dir=patterns_dir)

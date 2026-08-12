@@ -1,4 +1,4 @@
-"""ORM model for run events."""
+"""run event의 ORM model."""
 
 from __future__ import annotations
 
@@ -17,13 +17,12 @@ class RunEventRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     thread_id: Mapped[str] = mapped_column(String(64), nullable=False)
     run_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Owner of the conversation this event belongs to. Nullable for data
-    # created before auth was introduced; populated by auth middleware on
-    # new writes and by the boot-time orphan migration on existing rows.
+    # 이 이벤트가 속한 대화의 소유자. auth 도입 이전에 생성된 데이터를 위해 nullable이며,
+    # 새 쓰기에서는 auth middleware가, 기존 row는 부팅 시 orphan migration이 채운다.
     user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     event_type: Mapped[str] = mapped_column(String(RUN_EVENT_TYPE_MAX_LENGTH), nullable=False)
     category: Mapped[str] = mapped_column(String(RUN_EVENT_CATEGORY_MAX_LENGTH), nullable=False)
-    # Category values and semantics are defined by runtime/events/catalog.py
+    # category 값과 의미는 runtime/events/catalog.py가 정의한다
     content: Mapped[str] = mapped_column(Text, default="")
     event_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
     seq: Mapped[int] = mapped_column(nullable=False)

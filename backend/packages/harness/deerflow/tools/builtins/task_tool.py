@@ -1,4 +1,4 @@
-"""Task tool for delegating work to subagents."""
+"""subagent에게 작업을 위임하는 task 도구."""
 
 import asyncio
 import logging
@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Cache subagent token usage by tool_call_id so TokenUsageMiddleware can
-# write it back to the triggering AIMessage's usage_metadata.
+# subagent token usage를 tool_call_id로 캐시해 두면 TokenUsageMiddleware가
+# 이를 호출을 유발한 AIMessage의 usage_metadata에 다시 기록할 수 있다.
 _subagent_usage_cache: dict[str, dict[str, int]] = {}
 
 
@@ -64,12 +64,12 @@ def pop_cached_subagent_usage(tool_call_id: str) -> dict | None:
 
 
 def _is_subagent_terminal(result: Any) -> bool:
-    """Return whether a background subagent result is safe to clean up."""
+    """background subagent 결과를 정리해도 안전한지 반환한다."""
     return result.status in {SubagentStatus.COMPLETED, SubagentStatus.FAILED, SubagentStatus.CANCELLED, SubagentStatus.TIMED_OUT} or getattr(result, "completed_at", None) is not None
 
 
 async def _await_subagent_terminal(task_id: str, max_polls: int) -> Any | None:
-    """Poll until the background subagent reaches a terminal status or we run out of polls."""
+    """background subagent가 terminal 상태에 도달하거나 poll 횟수가 소진될 때까지 polling한다."""
     for _ in range(max_polls):
         result = get_background_task_result(task_id)
         if result is None:
@@ -81,7 +81,7 @@ async def _await_subagent_terminal(task_id: str, max_polls: int) -> Any | None:
 
 
 async def _deferred_cleanup_subagent_task(task_id: str, trace_id: str, max_polls: int) -> None:
-    """Keep polling a cancelled subagent until it can be safely removed."""
+    """취소된 subagent를 안전하게 제거할 수 있을 때까지 계속 polling한다."""
     cleanup_poll_count = 0
     while True:
         result = get_background_task_result(task_id)
@@ -113,18 +113,17 @@ def _schedule_deferred_subagent_cleanup(task_id: str, trace_id: str, max_polls: 
 
 
 def _find_usage_recorder(runtime: Any) -> Any | None:
-    """Find a callback handler with ``record_external_llm_usage_records`` in the runtime config.
+    """runtime config에서 ``record_external_llm_usage_records``를 가진 callback handler를 찾는다.
 
-    LangChain may pass ``config["callbacks"]`` in three different shapes:
+    LangChain은 ``config["callbacks"]``를 세 가지 형태로 넘길 수 있다.
 
-    - ``None`` (no callbacks registered): no recorder.
-    - A plain ``list[BaseCallbackHandler]``: iterate it directly.
-    - A ``BaseCallbackManager`` instance (e.g. ``AsyncCallbackManager`` on async
-      tool runs): managers are not iterable, so we unwrap ``.handlers`` first.
+    - ``None``(등록된 callback 없음): recorder 없음.
+    - 평범한 ``list[BaseCallbackHandler]``: 그대로 순회한다.
+    - ``BaseCallbackManager`` 인스턴스(예: async tool 실행 시의 ``AsyncCallbackManager``):
+      manager는 순회할 수 없으므로 먼저 ``.handlers``를 꺼낸다.
 
-    Any other shape (e.g. a single handler object accidentally passed without a
-    list wrapper) cannot be iterated safely; treat it as "no recorder" rather
-    than raise.
+    그 외의 형태(예: list로 감싸지 않고 실수로 넘어온 단일 handler 객체)는 안전하게 순회할 수
+    없으므로 예외를 던지지 않고 "recorder 없음"으로 처리한다.
     """
     if runtime is None:
         return None
@@ -145,7 +144,7 @@ def _find_usage_recorder(runtime: Any) -> Any | None:
 
 
 def _summarize_usage(records: list[dict] | None) -> dict | None:
-    """Summarize token usage records into a compact dict for SSE events."""
+    """token usage 레코드를 SSE 이벤트용 compact dict로 요약한다."""
     if not records:
         return None
     return {
@@ -156,9 +155,9 @@ def _summarize_usage(records: list[dict] | None) -> dict | None:
 
 
 def _report_subagent_usage(runtime: Any, result: Any) -> None:
-    """Report subagent token usage to the parent RunJournal, if available.
+    """가능한 경우 subagent token usage를 부모 RunJournal에 보고한다.
 
-    Each subagent task must be reported only once (guarded by usage_reported).
+    각 subagent task는 한 번만 보고되어야 한다(usage_reported로 보호한다).
     """
     if getattr(result, "usage_reported", True):
         return
@@ -186,7 +185,7 @@ def _get_runtime_app_config(runtime: Any) -> "AppConfig | None":
 
 
 def _merge_skill_allowlists(parent: list[str] | None, child: list[str] | None) -> list[str] | None:
-    """Return the effective subagent skill allowlist under the parent policy."""
+    """부모 정책 아래에서 실제로 적용될 subagent skill allowlist를 반환한다."""
     if parent is None:
         return child
     if child is None:
@@ -236,58 +235,54 @@ async def task_tool(
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> str | Command:
-    """Delegate a bounded task to a specialized subagent in its own context.
+    """범위가 한정된 작업을 자체 context를 가진 전문 subagent에게 위임한다.
 
-    Delegate only when expected benefit clearly exceeds delegation overhead.
-    Useful benefits are:
-    - Material wall-clock savings from independent parallel work
-    - Specialist tools, skills, models, or domain instructions
-    - Context isolation for a bounded, unusually context-heavy investigation
+    기대 이득이 위임 오버헤드를 명확히 초과할 때만 위임하라.
+    유효한 이득은 다음과 같다:
+    - 독립적인 병렬 작업으로 얻는 실질적인 wall-clock 시간 절감
+    - 전문화된 tool, skill, model, 도메인 지시문
+    - 비정상적으로 context를 많이 소모하는 한정된 조사에 대한 context 격리
 
-    Built-in subagent types:
-    - **general-purpose**: A capable agent for bounded exploration and action. Use
-      when the assignment has clear specialist or context-isolation benefit, or is
-      one of several independent, non-overlapping tasks that can actually run in
-      parallel.
-    - **bash**: Command execution specialist for running bash commands. This is only
-      available when host bash is explicitly allowed or when using an isolated shell
-      sandbox such as `AioSandboxProvider`. Use it only for a bounded shell workflow
-      with clear context-isolation or independent-parallel benefit.
-      Routine git, build, test, or deploy operations are not sufficient reason to delegate.
+    내장 subagent 타입:
+    - **general-purpose**: 한정된 탐색과 실행을 수행하는 범용 agent. 해당 작업에 명확한
+      전문성 이득이나 context 격리 이득이 있을 때, 또는 실제로 병렬 실행이 가능한 여러
+      독립적이고 겹치지 않는 작업 중 하나일 때 사용하라.
+    - **bash**: bash 명령 실행 전문 agent. host bash가 명시적으로 허용되었거나
+      `AioSandboxProvider` 같은 격리된 shell sandbox를 사용할 때만 사용할 수 있다. 명확한
+      context 격리 이득이나 독립적 병렬 이득이 있는 한정된 shell 작업에만 사용하라.
+      일상적인 git, build, test, deploy 작업은 위임 사유로 충분하지 않다.
 
-    Additional custom subagent types may be defined in config.yaml under
-    `subagents.custom_agents`. Each custom type can have its own system prompt,
-    tools, skills, model, and timeout configuration. If an unknown subagent_type
-    is provided, the error message will list all available types.
+    추가 custom subagent 타입은 config.yaml의 `subagents.custom_agents` 아래에 정의할 수
+    있다. 각 custom 타입은 자체 system prompt, tools, skills, model, timeout 설정을 가질 수
+    있다. 알 수 없는 subagent_type을 전달하면 오류 메시지가 사용 가능한 모든 타입을 나열한다.
 
-    When to use this tool:
-    - Independent tasks that materially reduce wall-clock time when run in parallel
-    - A specialist subagent provides capability unavailable on the direct path
-    - Bounded exploration that would otherwise displace important parent context
+    이 tool을 사용해야 할 때:
+    - 병렬로 실행하면 wall-clock 시간이 실질적으로 줄어드는 독립적인 작업
+    - 직접 수행 경로에서는 쓸 수 없는 능력을 전문 subagent가 제공할 때
+    - 그대로 두면 중요한 parent context를 밀어낼 한정된 탐색
 
-    When NOT to use this tool:
-    - Merely because a task is complex, multi-step, verbose, or touches a large repo
-    - Splitting dependent steps across parallel subagents; keep the chain together
-      and delegate it as one bounded task only when specialist or context-isolation
-      benefit clearly wins
-    - Parallel work with overlapping files, shared mutable state, or external side effects
-    - Tasks requiring user interaction or clarification
+    이 tool을 사용하면 안 되는 때:
+    - 단지 작업이 복잡하거나, 여러 단계이거나, 장황하거나, 큰 repo를 다룬다는 이유만으로는 안 된다
+    - 의존 관계가 있는 단계들을 여러 병렬 subagent로 쪼개지 마라. 그 체인은 하나로 묶어 두고,
+      전문성 이득이나 context 격리 이득이 명확히 클 때만 하나의 한정된 작업으로 위임하라
+    - 파일이 겹치거나, 가변 상태를 공유하거나, 외부 side effect가 있는 병렬 작업
+    - 사용자 상호작용이나 clarification이 필요한 작업
 
-    Costs to include in the delegation decision:
-    - Repeating the same repository discovery in multiple contexts
-    - Coordination, verification, and synthesis of returned results
-    - Any task the parent can complete more cheaply with direct tools
+    위임 판단에 포함해야 하는 비용:
+    - 동일한 repository 탐색을 여러 context에서 반복하는 비용
+    - 반환된 결과를 조율, 검증, 종합하는 비용
+    - parent가 직접 tool로 더 저렴하게 끝낼 수 있는 모든 작업
 
     Args:
-        description: A short (3-5 word) description of the task for logging/display. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        prompt: The task description for the subagent. Be specific and clear about what needs to be done. ALWAYS PROVIDE THIS PARAMETER SECOND.
-        subagent_type: The type of subagent to use. ALWAYS PROVIDE THIS PARAMETER THIRD.
+        description: 로깅/표시용 짧은(3-5 단어) 작업 설명. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        prompt: subagent에게 줄 작업 설명. 무엇을 해야 하는지 구체적이고 명확하게 적어라. ALWAYS PROVIDE THIS PARAMETER SECOND.
+        subagent_type: 사용할 subagent의 타입. ALWAYS PROVIDE THIS PARAMETER THIRD.
     """
     runtime_app_config = _get_runtime_app_config(runtime)
     cache_token_usage = _token_usage_cache_enabled(runtime_app_config)
     available_subagent_names = get_available_subagent_names(app_config=runtime_app_config) if runtime_app_config is not None else get_available_subagent_names()
 
-    # Get subagent configuration
+    # subagent 설정을 가져온다
     config = get_subagent_config(subagent_type, app_config=runtime_app_config) if runtime_app_config is not None else get_subagent_config(subagent_type)
     if config is None:
         available = ", ".join(available_subagent_names)
@@ -306,14 +301,14 @@ async def task_tool(
                 error=LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE,
             )
 
-    # Build config overrides
+    # config override를 구성한다
     overrides: dict = {}
 
-    # Skills are loaded by SubagentExecutor per-session (aligned with Codex's pattern:
-    # each subagent loads its own skills based on config, injected as conversation items).
-    # No longer appended to system_prompt here.
+    # skill은 SubagentExecutor가 세션 단위로 로드한다(Codex 패턴과 동일하게, 각 subagent가
+    # 자신의 config에 따라 skill을 로드해 conversation item으로 주입한다).
+    # 더 이상 여기서 system_prompt에 덧붙이지 않는다.
 
-    # Extract parent context from runtime
+    # runtime에서 부모 context를 추출한다
     sandbox_state = None
     thread_data = None
     thread_id = None
@@ -330,40 +325,39 @@ async def task_tool(
         if thread_id is None:
             thread_id = runtime.config.get("configurable", {}).get("thread_id")
 
-        # Try to get parent model from configurable
+        # configurable에서 부모 model을 가져온다
         metadata = runtime.config.get("metadata", {})
         parent_model = metadata.get("model_name")
 
-        # Get or generate trace_id for distributed tracing
+        # 분산 tracing용 trace_id를 가져오거나 생성한다
         trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
 
-    # Get user_id for tracing (uses standard resolution order)
+    # tracing용 user_id를 가져온다(표준 resolution 순서를 따른다)
     user_id = resolve_runtime_user_id(runtime)
 
-    # Propagate the authenticated runtime context so delegated tool calls are
-    # evaluated by GuardrailMiddleware with the same identity/attribution as
-    # the lead agent. Sourced from the server-side context written by
-    # inject_authenticated_user_context (and run_id by the run worker); stays
-    # None when absent (e.g. internal-auth runs) so guardrail behavior is
-    # unchanged. Without this, role-aware policy silently mis-attributes any
-    # tool call delegated to a subagent (user_role=None).
+    # 인증된 runtime context를 전파해서, 위임된 tool call도 lead agent와 동일한
+    # identity/attribution으로 GuardrailMiddleware의 평가를 받게 한다. 값은
+    # inject_authenticated_user_context가 쓴 server-side context에서 온다(run_id는 run
+    # worker가 쓴다). 값이 없으면(예: internal-auth 실행) None으로 남겨 guardrail 동작을
+    # 그대로 유지한다. 이게 없으면 role 기반 정책이 subagent에 위임된 tool call을 조용히
+    # 잘못 귀속시킨다(user_role=None).
     parent_context = runtime.context if runtime is not None else None
     parent_context = parent_context if isinstance(parent_context, dict) else {}
     user_role = parent_context.get("user_role")
     oauth_provider = parent_context.get("oauth_provider")
     oauth_id = parent_context.get("oauth_id")
     run_id = parent_context.get("run_id")
-    # IM-channel sender identity: group chats share one thread across senders,
-    # so delegated bash commands need the dispatching turn's channel_user_id.
+    # IM-channel 발신자 identity. group chat은 여러 발신자가 하나의 thread를 공유하므로,
+    # 위임된 bash 명령은 이번 turn을 발생시킨 발신자의 channel_user_id가 필요하다.
     channel_user_id = parent_context.get("channel_user_id")
-    # Propagate authorization identity: is_internal (strict bool) and
-    # authz_attributes (validated Mapping, copied). These follow the same
-    # server-side provenance as user_role/oauth — see inject_authenticated_user_context.
+    # authorization identity를 전파한다: is_internal(엄격한 bool)과
+    # authz_attributes(검증된 Mapping, 복사본). 둘 다 user_role/oauth와 동일한 server-side
+    # 출처를 따른다 — inject_authenticated_user_context 참고.
     is_internal = parent_context.get("is_internal") is True
     authz_attributes = normalize_authz_attributes(parent_context.get("authz_attributes"))
-    # The run's immutable extension snapshot, published by the run worker. Stays
-    # None outside that path (embedded client, standalone LangGraph Server), where
-    # the executor keeps its process-singleton fallback.
+    # run worker가 발행한 해당 run의 불변 extension snapshot. 그 경로 밖(embedded client,
+    # standalone LangGraph Server)에서는 None으로 남고, 이때 executor는 process-singleton
+    # fallback을 사용한다.
     run_extensions = resolve_run_extensions(parent_context)
     deerflow_trace_id = normalize_trace_id(parent_context.get(DEERFLOW_TRACE_METADATA_KEY)) or normalize_trace_id(metadata.get(DEERFLOW_TRACE_METADATA_KEY)) or get_current_trace_id()
 
@@ -374,21 +368,21 @@ async def task_tool(
     if overrides:
         config = replace(config, **overrides)
 
-    # Get available tools (excluding task tool to prevent nesting)
-    # Lazy import to avoid circular dependency
+    # 사용 가능한 tool을 가져온다(중첩을 막기 위해 task tool은 제외)
+    # 순환 의존을 피하려고 lazy import한다
     from deerflow.tools import get_available_tools
 
-    # Inherit parent agent's tool_groups so subagents respect the same restrictions
+    # 부모 agent의 tool_groups를 물려받아 subagent도 같은 제약을 지키게 한다
     parent_tool_groups = metadata.get("tool_groups")
     resolved_app_config = runtime_app_config
     if config.model == "inherit" and parent_model is None and resolved_app_config is None:
         resolved_app_config = get_app_config()
     effective_model = resolve_subagent_model_name(config, parent_model, app_config=resolved_app_config)
 
-    # Subagents should not have subagent tools enabled (prevent recursive nesting).
-    # Subagents also must not get list_uploaded_files — they have an independent
-    # ThreadState where runtime.state["uploaded_files"] is absent, so the
-    # current-run file exclusion would not work.
+    # subagent에는 subagent tool을 활성화하지 않는다(재귀적 중첩 방지).
+    # 또한 subagent에는 list_uploaded_files를 주지 않는다. subagent는 독립적인 ThreadState를
+    # 가져서 runtime.state["uploaded_files"]가 없고, 그러면 현재 run의 파일 제외가 동작하지
+    # 않기 때문이다.
     available_tools_kwargs = {
         "model_name": effective_model,
         "groups": parent_tool_groups,
@@ -399,7 +393,7 @@ async def task_tool(
         available_tools_kwargs["app_config"] = resolved_app_config
     tools = get_available_tools(**available_tools_kwargs)
 
-    # Create executor
+    # executor를 생성한다
     executor_kwargs = {
         "config": config,
         "tools": tools,
@@ -424,21 +418,21 @@ async def task_tool(
         executor_kwargs["extensions"] = run_extensions
     executor = SubagentExecutor(**executor_kwargs)
 
-    # Start background execution (always async to prevent blocking)
-    # Use tool_call_id as task_id for better traceability
+    # background 실행을 시작한다(blocking을 막기 위해 항상 async로 실행)
+    # 추적을 쉽게 하려고 tool_call_id를 task_id로 사용한다
     task_id = executor.execute_async(prompt, task_id=tool_call_id)
 
-    # Poll for task completion in backend (removes need for LLM to poll)
+    # backend에서 task 완료를 polling한다(LLM이 직접 poll할 필요가 없어진다)
     poll_count = 0
     last_status = None
-    last_message_count = 0  # Track how many AI messages we've already sent
-    # Polling timeout: execution timeout + 60s buffer, checked every 5s
+    last_message_count = 0  # 이미 보낸 AI message 개수를 추적한다
+    # polling timeout: 실행 timeout + 60초 버퍼, 5초마다 확인한다
     max_poll_count = (config.timeout_seconds + 60) // 5
 
     logger.info(f"[trace={trace_id}] Started background task {task_id} (subagent={subagent_type}, timeout={config.timeout_seconds}s, polling_limit={max_poll_count} polls)")
 
     writer = get_stream_writer()
-    # Send Task Started message'
+    # Task Started 메시지를 보낸다
     await aemit_custom_event(
         {
             "type": "task_started",
@@ -467,21 +461,20 @@ async def task_tool(
                     error=error,
                 )
 
-            # Log status changes for debugging
+            # 디버깅을 위해 status 변경을 로깅한다
             if result.status != last_status:
                 logger.info(f"[trace={trace_id}] Task {task_id} status: {result.status.value}")
                 last_status = result.status
 
-            # The collector publishes cumulative records. Reuse one snapshot for
-            # both live progress and the terminal event so the frontend can
-            # replace, rather than add, its per-task total.
+            # collector는 누적 레코드를 발행한다. 실시간 진행 상황과 terminal 이벤트가 같은
+            # snapshot을 재사용해야, frontend가 task별 합계를 더하지 않고 교체할 수 있다.
             usage = _summarize_usage(getattr(result, "token_usage_records", None))
 
-            # Check for new AI messages and send task_running events
+            # 새 AI message를 확인하고 task_running 이벤트를 보낸다
             ai_messages = result.ai_messages or []
             current_message_count = len(ai_messages)
             if current_message_count > last_message_count:
-                # Send task_running event for each new message
+                # 새 message마다 task_running 이벤트를 보낸다
                 for i in range(last_message_count, current_message_count):
                     message = ai_messages[i]
                     await aemit_custom_event(
@@ -489,7 +482,7 @@ async def task_tool(
                             "type": "task_running",
                             "task_id": task_id,
                             "message": message,
-                            "message_index": i + 1,  # 1-based index for display
+                            "message_index": i + 1,  # 표시용 1부터 시작하는 index
                             "total_messages": current_message_count,
                             "usage": usage,
                             "model_name": effective_model,
@@ -499,7 +492,7 @@ async def task_tool(
                     logger.info(f"[trace={trace_id}] Task {task_id} sent message #{i + 1}/{current_message_count}")
                 last_message_count = current_message_count
 
-            # Check if task completed, failed, or timed out
+            # task가 완료/실패/timeout되었는지 확인한다
             if result.status == SubagentStatus.COMPLETED:
                 _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
                 _report_subagent_usage(runtime, result)
@@ -515,9 +508,9 @@ async def task_tool(
                 )
                 logger.info(f"[trace={trace_id}] Task {task_id} completed after {poll_count} polls")
                 cleanup_background_task(task_id)
-                # stop_reason carries a guardrail cap (token_capped / turn_capped)
-                # when the run was ended early but still produced a final answer
-                # — the work survives on result_brief like a clean success.
+                # run이 조기 종료되었지만 최종 답변은 만들어낸 경우 stop_reason이 guardrail
+                # cap(token_capped / turn_capped)을 담는다 — 작업 결과는 정상 성공과
+                # 마찬가지로 result_brief에 남는다.
                 return _task_result_command(
                     tool_call_id=tool_call_id,
                     status="completed",
@@ -541,9 +534,9 @@ async def task_tool(
                 )
                 logger.error(f"[trace={trace_id}] Task {task_id} failed: {result.error}")
                 cleanup_background_task(task_id)
-                # A turn-capped run with no usable output surfaces as failed +
-                # stop_reason=turn_capped; the cap note lets the lead tell "out
-                # of budget" from "broken subagent".
+                # 쓸 만한 출력 없이 turn cap에 걸린 run은 failed + stop_reason=turn_capped로
+                # 드러난다. 이 cap 표시가 있어야 lead가 "예산 소진"과 "고장 난 subagent"를
+                # 구분할 수 있다.
                 return _task_result_command(
                     tool_call_id=tool_call_id,
                     status="failed",
@@ -597,13 +590,13 @@ async def task_tool(
                     usage=usage,
                 )
 
-            # Still running, wait before next poll
+            # 아직 실행 중이므로 다음 poll 전까지 대기한다
             await asyncio.sleep(5)
             poll_count += 1
 
-            # Polling timeout as a safety net (in case thread pool timeout doesn't work)
-            # Set to execution timeout + 60s buffer, in 5s poll intervals
-            # This catches edge cases where the background task gets stuck
+            # 안전망으로서의 polling timeout(thread pool timeout이 동작하지 않는 경우 대비).
+            # 실행 timeout + 60초 버퍼로 잡고 5초 간격으로 poll한다.
+            # background task가 멈춰버리는 엣지 케이스를 잡아낸다.
             if poll_count > max_poll_count:
                 timeout_minutes = config.timeout_seconds // 60
                 logger.error(f"[trace={trace_id}] Task {task_id} polling timed out after {poll_count} polls (should have been caught by thread pool timeout)")
@@ -619,9 +612,9 @@ async def task_tool(
                     },
                     writer=writer,
                 )
-                # The task may still be running in the background. Signal cooperative
-                # cancellation and schedule deferred cleanup to remove the entry from
-                # _background_tasks once the background thread reaches a terminal state.
+                # task가 여전히 background에서 실행 중일 수 있다. 협조적 취소를 요청하고,
+                # background thread가 terminal 상태에 도달하면 _background_tasks에서 항목을
+                # 제거하도록 지연 cleanup을 예약한다.
                 request_cancel_background_task(task_id)
                 _schedule_deferred_subagent_cleanup(task_id, trace_id, max_poll_count)
                 message = f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
@@ -633,19 +626,19 @@ async def task_tool(
                     usage=usage,
                 )
     except asyncio.CancelledError:
-        # Signal the background subagent thread to stop cooperatively.
+        # background subagent thread에 협조적으로 중단하라고 알린다.
         request_cancel_background_task(task_id)
 
-        # Wait (shielded) for the subagent to reach a terminal state so the
-        # final token usage snapshot is reported to the parent RunJournal
-        # before the parent worker persists get_completion_data().
+        # 부모 worker가 get_completion_data()를 저장하기 전에 최종 token usage snapshot이
+        # 부모 RunJournal에 보고되도록, subagent가 terminal 상태에 도달할 때까지
+        # (shield한 채) 기다린다.
         terminal_result = None
         try:
             terminal_result = await asyncio.shield(_await_subagent_terminal(task_id, max_poll_count))
         except asyncio.CancelledError:
             pass
 
-        # Report whatever the subagent collected (even if we timed out).
+        # timeout이 났더라도 subagent가 수집한 내용은 그대로 보고한다.
         final_result = terminal_result or get_background_task_result(task_id)
         if final_result is not None:
             _report_subagent_usage(runtime, final_result)

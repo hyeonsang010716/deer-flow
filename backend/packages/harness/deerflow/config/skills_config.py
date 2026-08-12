@@ -8,14 +8,14 @@ from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
 
 
 def _legacy_skills_candidates() -> tuple[Path, ...]:
-    """Return source-tree skills locations for monorepo compatibility."""
+    """monorepo 호환을 위해 소스 트리의 skills 위치를 반환한다."""
     backend_dir = Path(__file__).resolve().parents[4]
     repo_root = backend_dir.parent
     return (repo_root / "skills",)
 
 
 class SkillsConfig(BaseModel):
-    """Configuration for skills system"""
+    """skills 시스템 설정."""
 
     use: str = Field(
         default="deerflow.skills.storage.local_skill_storage:LocalSkillStorage",
@@ -36,19 +36,19 @@ class SkillsConfig(BaseModel):
 
     def get_skills_path(self) -> Path:
         """
-        Get the resolved skills directory path.
+        확정된 skills 디렉터리 경로를 반환한다.
 
-        Resolution order:
-            1. Explicit ``path`` field
-            2. ``DEER_FLOW_SKILLS_PATH`` environment variable
-            3. ``skills`` under the caller project root (``project_root()``)
-            4. Legacy repo-root candidates for monorepo compatibility (``_legacy_skills_candidates``)
+        결정 순서:
+            1. 명시적인 ``path`` 필드
+            2. ``DEER_FLOW_SKILLS_PATH`` 환경변수
+            3. 호출자 프로젝트 루트(``project_root()``) 아래의 ``skills``
+            4. monorepo 호환용 legacy 저장소 루트 후보(``_legacy_skills_candidates``)
 
-        When none of (3) or (4) exist on disk, the project-root default is returned so callers
-        can still surface a stable "no skills" location without raising.
+        (3)과 (4) 모두 디스크에 없으면 프로젝트 루트 기본값을 반환한다. 예외를 던지지 않고도
+        호출자가 "skill 없음"을 일관된 위치로 표현할 수 있게 하기 위함이다.
         """
         if self.path:
-            # Use configured path (can be absolute or relative to project root)
+            # 설정된 경로를 쓴다(절대 경로이거나 프로젝트 루트 기준 상대 경로).
             return resolve_path(self.path)
         if env_path := os.getenv("DEER_FLOW_SKILLS_PATH"):
             return resolve_path(env_path)
@@ -65,13 +65,13 @@ class SkillsConfig(BaseModel):
 
     def get_skill_container_path(self, skill_name: str, category: str = "public") -> str:
         """
-        Get the full container path for a specific skill.
+        특정 skill의 컨테이너 전체 경로를 반환한다.
 
         Args:
-            skill_name: Name of the skill (directory name)
-            category: Category of the skill (public or custom)
+            skill_name: skill 이름(디렉터리 이름).
+            category: skill 카테고리(public 또는 custom).
 
         Returns:
-            Full path to the skill in the container
+            컨테이너 안에서의 skill 전체 경로.
         """
         return f"{self.container_path}/{category}/{skill_name}"

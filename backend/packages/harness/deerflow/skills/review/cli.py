@@ -1,4 +1,4 @@
-"""CLI entry point for deterministic skill review facts."""
+"""결정적 skill review fact를 만드는 CLI 진입점."""
 
 from __future__ import annotations
 

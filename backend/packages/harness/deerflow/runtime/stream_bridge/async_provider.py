@@ -1,9 +1,9 @@
-"""Async stream bridge factory.
+"""async stream bridge 팩토리.
 
-Provides an **async context manager** aligned with
-:func:`deerflow.runtime.checkpointer.async_provider.make_checkpointer`.
+:func:`deerflow.runtime.checkpointer.async_provider.make_checkpointer`와 형태를 맞춘
+**async context manager**를 제공한다.
 
-Usage (e.g. FastAPI lifespan)::
+사용법(예: FastAPI lifespan)::
 
     from deerflow.agents.stream_bridge import make_stream_bridge
 
@@ -47,10 +47,10 @@ def _resolve_redis_url(config: StreamBridgeConfig) -> str:
 
 @contextlib.asynccontextmanager
 async def make_stream_bridge(app_config: AppConfig | None = None) -> AsyncIterator[StreamBridge]:
-    """Async context manager that yields a :class:`StreamBridge`.
+    """:class:`StreamBridge`를 yield하는 async context manager.
 
-    Falls back to :class:`MemoryStreamBridge` when no configuration is
-    provided and nothing is set globally.
+    설정이 주어지지 않고 전역에도 아무것도 설정되어 있지 않으면 :class:`MemoryStreamBridge`로
+    대체한다.
     """
     config = _resolve_config(app_config)
 

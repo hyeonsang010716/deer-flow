@@ -38,12 +38,12 @@ def next_run_at(
             raise ValueError("once schedule requires run_at")
         run_at = datetime.fromisoformat(run_at_raw)
         if run_at.tzinfo is None:
-            # A naive run_at means "wall-clock time in the task's declared
-            # timezone", matching how cron schedules interpret it.
+            # naive한 run_at은 "task가 선언한 timezone의 벽시계 시각"을 뜻하며, cron
+            # schedule이 해석하는 방식과 같다.
             run_at = run_at.replace(tzinfo=ZoneInfo(timezone_name))
-        # Normalize to UTC like the cron branch: next_run_at is persisted to
-        # timezone-discarding columns (SQLite), where a non-UTC offset shifts
-        # the effective fire time by the whole offset.
+        # cron 분기와 마찬가지로 UTC로 정규화한다. next_run_at은 timezone을 버리는
+        # 컬럼(SQLite)에 저장되므로, UTC가 아닌 offset은 실제 발화 시각을 그 offset만큼
+        # 통째로 밀어 버린다.
         run_at = run_at.astimezone(UTC)
         return run_at if run_at > now else None
 

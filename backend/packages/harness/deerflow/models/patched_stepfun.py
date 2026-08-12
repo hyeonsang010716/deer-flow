@@ -1,10 +1,9 @@
-"""Patched ChatOpenAI adapter for StepFun reasoning models.
+"""StepFun reasoning 모델용으로 패치한 ChatOpenAI adapter.
 
-StepFun returns ``reasoning`` (or ``reasoning_content`` with deepseek-style) in
-both streaming deltas and non-streaming responses. Standard ``ChatOpenAI``
-ignores these non-standard fields, so reasoning content is silently dropped.
-This adapter captures reasoning from all response paths and replays it on
-historical assistant messages for multi-turn tool-call conversations.
+StepFun은 streaming delta와 비streaming 응답 양쪽에서 ``reasoning``(deepseek 방식이면
+``reasoning_content``)을 반환한다. 표준 ``ChatOpenAI``는 이 비표준 필드를 무시하므로
+reasoning 내용이 조용히 사라진다. 이 adapter는 모든 응답 경로에서 reasoning을 잡아내고,
+멀티턴 tool call 대화에서 과거 assistant 메시지에 다시 실어 보낸다.
 """
 
 from __future__ import annotations
@@ -26,25 +25,25 @@ _MISSING = object()
 
 
 def _extract_reasoning(value: Any) -> str | object:
-    """Return reasoning content from a dict/Pydantic object.
+    """dict 또는 Pydantic 객체에서 reasoning 내용을 반환한다.
 
-    StepFun may return reasoning via ``reasoning`` (default) or
-    ``reasoning_content`` (deepseek-style). Check both fields.
+    StepFun은 reasoning을 ``reasoning``(기본) 또는 ``reasoning_content``(deepseek 방식)로
+    반환할 수 있다. 두 필드를 모두 확인한다.
     """
     if isinstance(value, Mapping):
-        # Check reasoning_content first (deepseek-style), then reasoning (default)
+        # reasoning_content(deepseek 방식)를 먼저 보고, 그다음 reasoning(기본)을 본다
         for field in ("reasoning_content", "reasoning"):
             if field in value and value[field] is not None:
                 return value[field]
         return _MISSING
 
-    # Pydantic / SDK object attributes
+    # Pydantic / SDK 객체 속성
     for field in ("reasoning_content", "reasoning"):
         attr = getattr(value, field, _MISSING)
         if attr is not _MISSING and attr is not None:
             return attr
 
-    # Some SDK versions store extra fields in model_extra
+    # 일부 SDK 버전은 추가 필드를 model_extra에 저장한다
     model_extra = getattr(value, "model_extra", None)
     if isinstance(model_extra, Mapping):
         for field in ("reasoning_content", "reasoning"):
@@ -55,7 +54,7 @@ def _extract_reasoning(value: Any) -> str | object:
 
 
 def _with_reasoning_content(message: AIMessage | AIMessageChunk, reasoning: str) -> AIMessage | AIMessageChunk:
-    """Return a copy of *message* with reasoning_content stored in additional_kwargs."""
+    """additional_kwargs에 reasoning_content를 담은 *message*의 사본을 반환한다."""
     additional_kwargs = dict(message.additional_kwargs)
     if additional_kwargs.get("reasoning_content") != reasoning:
         additional_kwargs["reasoning_content"] = reasoning
@@ -63,7 +62,7 @@ def _with_reasoning_content(message: AIMessage | AIMessageChunk, reasoning: str)
 
 
 def _get_typed_choice_message(response: Any, index: int) -> Any:
-    """Extract the SDK-typed choice message at *index*, if available."""
+    """가능하면 *index* 위치의 SDK 타입 choice 메시지를 추출한다."""
     choices = getattr(response, "choices", None)
     if choices is None:
         return None
@@ -74,11 +73,10 @@ def _get_typed_choice_message(response: Any, index: int) -> Any:
 
 
 class PatchedChatStepFun(ChatOpenAI):
-    """ChatOpenAI with full reasoning support for StepFun models.
+    """StepFun 모델의 reasoning을 완전히 지원하는 ChatOpenAI.
 
-    Captures ``reasoning`` / ``reasoning_content`` from both streaming and
-    non-streaming responses and replays it on historical assistant messages in
-    multi-turn tool-call conversations.
+    streaming과 비streaming 응답 양쪽에서 ``reasoning`` / ``reasoning_content``를 잡아내고,
+    멀티턴 tool call 대화에서 과거 assistant 메시지에 다시 실어 보낸다.
     """
 
     @classmethod
@@ -89,7 +87,7 @@ class PatchedChatStepFun(ChatOpenAI):
     def lc_secrets(self) -> dict[str, str]:
         return {"api_key": "STEPFUN_API_KEY", "openai_api_key": "STEPFUN_API_KEY"}
 
-    # --- Request payload replay ---
+    # --- request payload 재전달 ---
 
     def _get_request_payload(
         self,
@@ -98,7 +96,7 @@ class PatchedChatStepFun(ChatOpenAI):
         stop: list[str] | None = None,
         **kwargs: Any,
     ) -> dict:
-        """Restore ``reasoning_content`` on historical assistant messages."""
+        """과거 assistant 메시지에 ``reasoning_content``를 복원한다."""
         original_messages = self._convert_input(input_).to_messages()
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
@@ -110,7 +108,7 @@ class PatchedChatStepFun(ChatOpenAI):
 
         return payload
 
-    # --- Streaming reasoning capture ---
+    # --- streaming reasoning 수집 ---
 
     def _convert_chunk_to_generation_chunk(
         self,
@@ -118,7 +116,7 @@ class PatchedChatStepFun(ChatOpenAI):
         default_chunk_class: type,
         base_generation_info: dict | None,
     ) -> ChatGenerationChunk | None:
-        """Capture ``reasoning`` / ``reasoning_content`` from streaming deltas."""
+        """streaming delta에서 ``reasoning`` / ``reasoning_content``를 수집한다."""
         generation_chunk = super()._convert_chunk_to_generation_chunk(
             chunk,
             default_chunk_class,
@@ -139,14 +137,14 @@ class PatchedChatStepFun(ChatOpenAI):
 
         return generation_chunk
 
-    # --- Non-streaming reasoning capture ---
+    # --- 비streaming reasoning 수집 ---
 
     def _create_chat_result(
         self,
         response: dict | Any,
         generation_info: dict | None = None,
     ) -> ChatResult:
-        """Extract ``reasoning`` / ``reasoning_content`` from non-streaming responses."""
+        """비streaming 응답에서 ``reasoning`` / ``reasoning_content``를 추출한다."""
         result = super()._create_chat_result(response, generation_info)
         response_dict = response if isinstance(response, dict) else response.model_dump()
         choices = response_dict.get("choices", [])

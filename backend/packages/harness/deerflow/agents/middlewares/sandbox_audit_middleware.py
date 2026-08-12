@@ -1,4 +1,4 @@
-"""SandboxAuditMiddleware - bash command security auditing."""
+"""SandboxAuditMiddleware - bash 명령 보안 감사."""
 
 import json
 import logging
@@ -18,85 +18,82 @@ from deerflow.agents.thread_state import ThreadState
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Command classification rules
+# 명령 분류 규칙
 # ---------------------------------------------------------------------------
 
-# Executables whose output is dangerous to *execute*. Used by the command
-# substitution rules below; ``\b`` prevents matching unrelated names that merely
-# start with one of these words (``shellcheck``, ``shasum``, ``pythonic-tool``).
+# 출력을 *실행*하면 위험한 실행 파일들. 아래 command substitution 규칙에서 쓴다.
+# ``\b``는 이 단어들로 시작하기만 하는 무관한 이름(``shellcheck``, ``shasum``,
+# ``pythonic-tool``)이 매칭되는 것을 막는다.
 _RISKY_SUBSTITUTION_EXECUTABLES = r"(?:curl|wget|bash|sh|python[\d.]*|ruby|perl|base64)\b"
 
-# A substitution opening one of those executables, in any of its spellings:
-# ``$(cmd``, ``<(cmd``, or the backtick form, which has no parenthesis. Sharing
-# one opener is what keeps ``eval `curl u` `` from slipping past a rule written
-# only for ``eval $(curl u)``.
+# 위 실행 파일을 여는 substitution의 모든 표기: ``$(cmd``, ``<(cmd``, 그리고 괄호가
+# 없는 backtick 형태. 하나의 opener를 공유하기 때문에 ``eval $(curl u)``만 겨냥한
+# 규칙을 ``eval `curl u` ``가 빠져나가지 못한다.
 _RISKY_SUBSTITUTION = rf"(?:[$<]\(\s*|`\s*){_RISKY_SUBSTITUTION_EXECUTABLES}"
 
-# Interpreters that execute a *code string* handed to them as an argument, and
-# the flags that receive it: ``-c`` (shells, python), ``-e`` (perl/ruby/node),
-# ``-p`` (perl/node print loop), ``-r`` (php). Whatever the flag receives is
-# executed, so a risky substitution there is executed too -- the same class as
-# ``eval``/``source``, spelled with a flag instead. A here-string (``<<<``)
-# reaches the same place through stdin.
+# 인자로 받은 *코드 문자열*을 실행하는 interpreter들과 그것을 받는 flag:
+# ``-c``(shell, python), ``-e``(perl/ruby/node), ``-p``(perl/node print loop),
+# ``-r``(php). flag가 받은 내용은 그대로 실행되므로 거기 있는 위험한 substitution도
+# 실행된다 — ``eval``/``source``와 같은 부류를 flag로 표기한 것일 뿐이다.
+# here-string(``<<<``)은 stdin을 통해 같은 지점에 도달한다.
 #
-# These are position-blind on purpose: ``bash -c`` is an execution context
-# wherever it appears, including as an argument to something else
-# (``xargs sh -c "$(curl url)"``). The leading-flag repetition is bounded so the
-# alternation cannot backtrack on long input.
+# 이 규칙들은 의도적으로 위치를 가리지 않는다: ``bash -c``는 어디에 나타나든 실행
+# context이며, 다른 명령의 인자로 들어간 경우(``xargs sh -c "$(curl url)"``)도 포함한다.
+# 선행 flag 반복은 긴 입력에서 alternation이 backtracking하지 않도록 상한을 둔다.
 _CODE_STRING_INTERPRETERS = r"(?:(?:ba|da|k|z)?sh|python[\d.]*|perl|ruby|node|php)"
 _LEADING_FLAGS = r"(?:-\w+\s+){0,4}"
 
-# Each pattern is compiled once at import time.
+# 각 패턴은 import 시점에 한 번 컴파일된다.
 _HIGH_RISK_PATTERNS: list[re.Pattern[str]] = [
-    # --- original rules (retained) ---
+    # --- 기존 규칙(유지) ---
     re.compile(r"rm\s+-[^\s]*r[^\s]*\s+(/\*?|~/?\*?|/home\b|/root\b)\s*$"),
     re.compile(r"dd\s+if="),
     re.compile(r"mkfs"),
     re.compile(r"cat\s+/etc/shadow"),
     re.compile(r">+\s*/etc/"),
-    # --- pipe to sh/bash (generalised, replaces old curl|sh rule) ---
+    # --- sh/bash로의 pipe (일반화, 기존 curl|sh 규칙 대체) ---
     re.compile(r"\|\s*(ba)?sh\b"),
-    # --- eval/source execute a substitution regardless of its position ---
+    # --- eval/source는 위치와 무관하게 substitution을 실행한다 ---
     re.compile(rf"\b(eval|source)\s+[\"']?{_RISKY_SUBSTITUTION}"),
-    # --- an interpreter's code-string flag is an execution context too ---
+    # --- interpreter의 code-string flag도 실행 context다 ---
     re.compile(rf"\b{_CODE_STRING_INTERPRETERS}\s+{_LEADING_FLAGS}-[cepr]\s+[\"']?{_RISKY_SUBSTITUTION}"),
     re.compile(rf"\b{_CODE_STRING_INTERPRETERS}\s+{_LEADING_FLAGS}<<<\s*[\"']?{_RISKY_SUBSTITUTION}"),
-    # --- base64 decode piped to execution ---
+    # --- base64 디코드를 실행으로 pipe ---
     re.compile(r"base64\s+.*-d.*\|"),
-    # --- overwrite system binaries ---
+    # --- 시스템 바이너리 덮어쓰기 ---
     re.compile(r">+\s*(/usr/bin/|/bin/|/sbin/)"),
-    # --- overwrite shell startup files ---
+    # --- shell 시작 파일 덮어쓰기 ---
     re.compile(r">+\s*~/?\.(bashrc|profile|zshrc|bash_profile)"),
-    # --- process environment leakage ---
+    # --- 프로세스 환경 변수 유출 ---
     re.compile(r"/proc/[^/]+/environ"),
-    # --- dynamic linker hijack (one-step escalation) ---
+    # --- dynamic linker hijack (한 단계 권한 상승) ---
     re.compile(r"\b(LD_PRELOAD|LD_LIBRARY_PATH)\s*="),
-    # --- bash built-in networking (bypasses tool allowlists) ---
+    # --- bash 내장 네트워킹 (tool allowlist 우회) ---
     re.compile(r"/dev/tcp/"),
     # --- fork bomb ---
     re.compile(r"\S+\(\)\s*\{[^}]*\|\s*\S+\s*&"),  # :(){ :|:& };:
     re.compile(r"while\s+true.*&\s*done"),  # while true; do bash & done
 ]
 
-# Command substitution in *command position*: the substitution result becomes the
-# command that runs, so fetched or interpreted content is executed.
+# *command position*의 command substitution: substitution 결과가 실행될 명령이 되므로,
+# 받아온 내용이나 해석된 내용이 그대로 실행된다.
 #
-# These are matched anchored against a single sub-command, never against the whole
-# compound string, because position is what distinguishes the two shapes:
+# 이 규칙들은 전체 복합 문자열이 아니라 개별 sub-command에 anchor를 걸어 매칭한다.
+# 두 형태를 구분하는 것이 바로 위치이기 때문이다.
 #
-#   $(curl url)          → executes what was downloaded          → block
-#   x=$(curl url)        → captures the output into a variable   → pass
-#   echo $(curl url)     → passes the output as an argument      → pass
+#   $(curl url)          → 다운로드한 것을 실행한다        → block
+#   x=$(curl url)        → 출력을 변수에 담는다            → pass
+#   echo $(curl url)     → 출력을 인자로 넘긴다            → pass
 #
-# The previous unanchored rule could not tell them apart and refused everyday
-# output capture (issue #4611).
+# 이전의 anchor 없는 규칙은 둘을 구분하지 못해 일상적인 출력 캡처까지 거부했다
+# (issue #4611).
 #
-# A command position is not always the first character: POSIX shell allows leading
-# variable assignments, and exec wrappers keep what follows in command position
-# (``FOO=1 $(curl url)``, ``env FOO=1 $(curl url)``, ``nohup $(curl url)``). The
-# assignment branch cannot match ``x=$(curl url)`` because it requires whitespace
-# between the assignment and the substitution, so value position stays allowed.
-# The repetition is bounded to keep the alternation from backtracking on long input.
+# command position이 항상 첫 글자인 것은 아니다. POSIX shell은 선행 변수 할당을
+# 허용하고, exec wrapper는 뒤따르는 것을 command position에 남긴다
+# (``FOO=1 $(curl url)``, ``env FOO=1 $(curl url)``, ``nohup $(curl url)``).
+# 할당 분기는 할당과 substitution 사이에 공백을 요구하므로 ``x=$(curl url)``에는
+# 매칭될 수 없고, 따라서 value position은 계속 허용된다. 긴 입력에서 alternation이
+# backtracking하지 않도록 반복에는 상한을 둔다.
 _COMMAND_POSITION_PREFIX = r"(?:(?:env|command|builtin|exec|nohup|time|sudo|doas)\s+|\w+=\S*\s+){0,8}"
 
 _HIGH_RISK_COMMAND_POSITION_PATTERNS: list[re.Pattern[str]] = [
@@ -108,30 +105,28 @@ _MEDIUM_RISK_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"chmod\s+777"),
     re.compile(r"pip3?\s+install"),
     re.compile(r"apt(-get)?\s+install"),
-    # sudo/su: no-op under Docker root; warn so LLM is aware
+    # sudo/su: Docker root 환경에서는 no-op이지만, LLM이 인지하도록 warn한다
     re.compile(r"\b(sudo|su)\b"),
-    # PATH modification: long attack chain, warn rather than block
+    # PATH 변경: 공격 사슬이 길므로 block 대신 warn
     re.compile(r"\bPATH\s*="),
 ]
 
 
-# A heredoc header and its delimiter: ``<<EOF``, ``<< EOF``, ``<<-EOF``,
-# ``<<\EOF``, ``<<'EOF'``, ``<<"EOF"``. Both guards are needed to keep ``<<<``
-# (a here-string, which has no body) from opening one: the lookahead rejects it
-# at its first ``<``, and the lookbehind stops its trailing ``<<`` from matching
-# one character later, where ``<<< "text"`` would otherwise read as a heredoc
-# with delimiter ``text``.
+# heredoc 헤더와 그 delimiter: ``<<EOF``, ``<< EOF``, ``<<-EOF``, ``<<\EOF``,
+# ``<<'EOF'``, ``<<"EOF"``. ``<<<``(본문이 없는 here-string)가 heredoc을 열지 못하게
+# 하려면 두 guard가 모두 필요하다. lookahead가 첫 ``<``에서 거부하고, lookbehind는
+# 뒤쪽 ``<<``가 한 글자 뒤에서 매칭되는 것을 막는다. 그렇지 않으면 ``<<< "text"``가
+# delimiter ``text``인 heredoc으로 읽힌다.
 _HEREDOC_HEADER = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:\\?([A-Za-z_][\w.-]*)|'([^'\n]*)'|\"([^\"\n]*)\")")
 
 
 def _consume_heredoc_bodies(command: str, pos: int, delimiters: list[str]) -> int:
-    """Return the index just past the bodies of the *delimiters* opened so far.
+    """지금까지 열린 *delimiters*의 본문 바로 다음 인덱스를 반환한다.
 
-    Bodies are consumed in the order their headers appeared, each running until a
-    line whose stripped content equals its delimiter (``<<-`` strips leading tabs,
-    which ``strip()`` covers). An unterminated body consumes the rest of the
-    string: everything after the header genuinely is body, and there is no later
-    statement to find.
+    본문은 헤더가 나타난 순서대로 소비되며, 각 본문은 strip한 내용이 자기 delimiter와
+    같은 줄까지 이어진다(``<<-``는 선행 탭을 제거하는데 ``strip()``이 이를 포함한다).
+    종료되지 않은 본문은 문자열의 나머지를 전부 소비한다. 헤더 뒤는 실제로 전부 본문이며
+    찾을 수 있는 이후 statement가 없기 때문이다.
     """
     for delimiter in delimiters:
         while pos < len(command):
@@ -148,37 +143,34 @@ def _consume_heredoc_bodies(command: str, pos: int, delimiters: list[str]) -> in
 
 
 def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[str]:
-    """Split a compound command into sub-commands (quote-aware).
+    """복합 명령을 sub-command로 분리한다(따옴표 인식).
 
-    Scans the raw command string so unquoted shell control operators are
-    recognised even when they are not surrounded by whitespace
-    (e.g. ``safe;rm -rf /`` or ``rm -rf /&&echo ok``). Operators inside
-    quotes are ignored. If the command ends with an unclosed quote or a
-    dangling escape, return the whole command unchanged (fail-closed —
-    safer to classify the unsplit string than silently drop parts).
+    원본 명령 문자열을 스캔하므로 따옴표 밖의 shell 제어 연산자가 공백으로 둘러싸이지
+    않아도 인식된다(예: ``safe;rm -rf /``, ``rm -rf /&&echo ok``). 따옴표 안의 연산자는
+    무시한다. 명령이 닫히지 않은 따옴표나 매달린 escape로 끝나면 명령 전체를 그대로
+    반환한다(fail-closed — 일부를 조용히 버리는 것보다 분리하지 않은 문자열을 분류하는
+    편이 안전하다).
 
-    Sequencing operators (``&&``, ``||``, ``;``) split, and so does an unquoted
-    newline — it separates statements exactly like ``;``, so leaving it joined let
-    ``echo hi\\n$(curl url)`` evade the anchored command-position rules that
-    ``echo hi; $(curl url)`` triggers, despite identical shell semantics.
+    순차 연산자(``&&``, ``||``, ``;``)가 분리 기준이며, 따옴표 밖의 개행도 마찬가지다.
+    개행은 ``;``와 정확히 같은 방식으로 statement를 나누므로, 붙여 두면 shell 의미가
+    동일한데도 ``echo hi; $(curl url)``이 걸리는 anchor된 command-position 규칙을
+    ``echo hi\\n$(curl url)``이 빠져나갔다.
 
-    A heredoc body is data, not statements: its newlines and operators are file
-    content. Headers (``<<EOF``, ``<<-EOF``, ``<<'EOF'``) are therefore recorded
-    as they are read and their bodies consumed verbatim at the newline that
-    starts them, so a body line beginning with ``$(curl url)`` is not promoted to
-    command position. ``<<<`` is a here-string, not a heredoc, and does not open
-    one; neither does a ``<<`` inside ``$(( ... ))`` or ``(( ... ))``, where it is
-    a bit shift whose right operand would otherwise read as a delimiter that never
-    appears — swallowing the rest of the command. This is a heuristic, not shell
-    parsing — the goal is only to avoid manufacturing command positions that the
-    shell would never create, and to avoid destroying real ones.
+    heredoc 본문은 statement가 아니라 데이터다. 그 안의 개행과 연산자는 파일 내용이다.
+    따라서 헤더(``<<EOF``, ``<<-EOF``, ``<<'EOF'``)는 읽는 대로 기록하고, 본문은 헤더를
+    끝내는 개행 지점에서 그대로 소비한다. 덕분에 ``$(curl url)``로 시작하는 본문 줄이
+    command position으로 승격되지 않는다. ``<<<``는 heredoc이 아니라 here-string이므로
+    heredoc을 열지 않고, ``$(( ... ))``나 ``(( ... ))`` 안의 ``<<``도 마찬가지다. 그것은
+    bit shift이며, 그렇지 않으면 오른쪽 피연산자가 끝내 나타나지 않는 delimiter로 읽혀
+    명령의 나머지를 통째로 삼킨다. 이것은 shell 파싱이 아니라 휴리스틱이다. 목표는 shell이
+    결코 만들지 않을 command position을 만들어내지 않는 것과, 진짜 command position을
+    없애지 않는 것뿐이다.
 
-    Pipes do not split by default, because a pipeline is one logical command.
-    Pass ``split_pipes=True`` to also split on ``|``, which is what
-    command-position detection needs — the word after a pipe starts a new
-    command. Rules that span a pipe (``| sh``, ``base64 -d | ...``) are matched by
-    the whole-command scan in :func:`_classify_command`, so they are unaffected by
-    the extra split.
+    pipeline은 논리적으로 하나의 명령이므로 pipe는 기본적으로 분리하지 않는다.
+    ``split_pipes=True``를 주면 ``|``에서도 분리하는데, command-position 탐지에 필요하다 —
+    pipe 뒤의 단어는 새 명령을 시작하기 때문이다. pipe를 가로지르는 규칙(``| sh``,
+    ``base64 -d | ...``)은 :func:`_classify_command`의 전체 명령 스캔에서 매칭되므로 추가
+    분리의 영향을 받지 않는다.
     """
     parts: list[str] = []
     current: list[str] = []
@@ -217,13 +209,11 @@ def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[
             continue
 
         if not in_single_quote and not in_double_quote:
-            # ``<<`` inside arithmetic is a bit shift, not a redirection, and a
-            # phantom header whose delimiter never appears would swallow the rest
-            # of the command. Both ``$(( ... ))`` and the bare arithmetic command
-            # ``(( ... ))`` are tracked. An unclosed ``((`` leaves the depth
-            # positive, which only disables heredoc detection — newlines keep
-            # splitting, so the failure direction stays towards seeing more
-            # command positions rather than fewer.
+            # 산술식 안의 ``<<``는 redirection이 아니라 bit shift이며, delimiter가 끝내
+            # 나타나지 않는 유령 헤더는 명령의 나머지를 삼켜 버린다. ``$(( ... ))``와
+            # 순수 산술 명령 ``(( ... ))``를 모두 추적한다. 닫히지 않은 ``((``는 depth를
+            # 양수로 남기지만 그것은 heredoc 탐지만 끄고 개행 분리는 계속되므로, 실패
+            # 방향은 command position을 덜 보는 쪽이 아니라 더 보는 쪽으로 유지된다.
             if char == "(" and command.startswith("((", index):
                 arithmetic_depth += 1
                 current.append("((")
@@ -234,8 +224,8 @@ def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[
                 current.append("))")
                 index += 2
                 continue
-            # A header can only start at ``<``; checking that first keeps the
-            # regex off every other character of a long command.
+            # 헤더는 ``<``에서만 시작할 수 있다. 이를 먼저 검사하면 긴 명령의 나머지
+            # 모든 문자에 regex를 돌리지 않아도 된다.
             if char == "<" and not arithmetic_depth:
                 heredoc = _HEREDOC_HEADER.match(command, index)
                 if heredoc:
@@ -244,8 +234,8 @@ def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[
                     index = heredoc.end()
                     continue
             if char == "\n":
-                # The newline that follows a heredoc header is the statement
-                # separator, and its body belongs to the statement being closed.
+                # heredoc 헤더 뒤의 개행이 statement 구분자이며, 그 본문은 닫히는
+                # statement에 속한다.
                 if pending_heredocs:
                     body_end = _consume_heredoc_bodies(command, index + 1, pending_heredocs)
                     pending_heredocs = []
@@ -265,7 +255,7 @@ def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[
                 current = []
                 index += 2
                 continue
-            # Checked after "||" so a single "|" cannot steal that operator.
+            # "||" 뒤에 검사해 단일 "|"가 그 연산자를 가로채지 못하게 한다.
             if split_pipes and char == "|":
                 part = "".join(current).strip()
                 if part:
@@ -284,7 +274,7 @@ def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[
         current.append(char)
         index += 1
 
-    # Unclosed quote or dangling escape → fail-closed, return whole command
+    # 닫히지 않은 따옴표나 매달린 escape → fail-closed, 명령 전체를 반환
     if in_single_quote or in_double_quote or escaping:
         return [command]
 
@@ -295,29 +285,29 @@ def _split_compound_command(command: str, *, split_pipes: bool = False) -> list[
 
 
 def _matches_high_risk(candidate: str) -> bool:
-    """Return True if *candidate* (one sub-command) matches any high-risk rule."""
+    """*candidate*(sub-command 하나)가 high-risk 규칙 중 하나에 매칭되면 True를 반환한다."""
     if any(pattern.search(candidate) for pattern in _HIGH_RISK_PATTERNS):
         return True
-    # Anchored: only meaningful for a single sub-command, not a compound string.
+    # anchor된 규칙: 복합 문자열이 아니라 단일 sub-command에 대해서만 의미가 있다.
     return any(pattern.match(candidate) for pattern in _HIGH_RISK_COMMAND_POSITION_PATTERNS)
 
 
 def _classify_single_command(command: str) -> str:
-    """Classify a single (non-compound) command. Return 'block', 'warn', or 'pass'."""
+    """단일(복합이 아닌) 명령을 분류한다. 'block', 'warn', 'pass' 중 하나를 반환한다."""
     normalized = " ".join(command.split())
 
     if _matches_high_risk(normalized):
         return "block"
 
-    # Also try shlex-parsed tokens for high-risk detection
+    # high-risk 탐지를 위해 shlex로 파싱한 토큰도 시도한다
     try:
         tokens = shlex.split(command)
         joined = " ".join(tokens)
         if _matches_high_risk(joined):
             return "block"
     except ValueError:
-        # Heredocs and other multiline shell forms may be valid bash but
-        # unparseable by shlex. Raw high-risk patterns were already checked.
+        # heredoc이나 다른 여러 줄 shell 형태는 유효한 bash지만 shlex로는 파싱되지 않을
+        # 수 있다. 원본에 대한 high-risk 패턴은 이미 검사했다.
         pass
 
     for pattern in _MEDIUM_RISK_PATTERNS:
@@ -328,30 +318,29 @@ def _classify_single_command(command: str) -> str:
 
 
 def _classify_command(command: str) -> str:
-    """Return 'block', 'warn', or 'pass'.
+    """'block', 'warn', 'pass' 중 하나를 반환한다.
 
-    Strategy:
-    1. First scan the *whole* raw command against high-risk patterns. This
-       catches structural attacks like ``while true; do bash & done`` or
-       ``:(){ :|:& };:`` that span multiple shell statements — splitting them
-       on ``;`` would destroy the pattern context.
-    2. Then split compound commands (e.g. ``cmd1 && cmd2 ; cmd3``) and
-       classify each sub-command independently. The most severe verdict wins.
+    전략:
+    1. 먼저 원본 명령 *전체*를 high-risk 패턴으로 스캔한다. ``while true; do bash & done``
+       이나 ``:(){ :|:& };:``처럼 여러 shell statement에 걸친 구조적 공격을 잡기 위해서다 —
+       ``;``로 분리하면 패턴의 context가 파괴된다.
+    2. 그다음 복합 명령(예: ``cmd1 && cmd2 ; cmd3``)을 분리해 각 sub-command를 독립적으로
+       분류한다. 가장 심각한 판정이 이긴다.
     """
-    # Pass 1: whole-command high-risk scan (catches multi-statement patterns)
+    # Pass 1: 명령 전체 high-risk 스캔 (여러 statement에 걸친 패턴을 잡는다)
     normalized = " ".join(command.split())
     for pattern in _HIGH_RISK_PATTERNS:
         if pattern.search(normalized):
             return "block"
 
-    # Pass 2: per-sub-command classification. Pipes split here too, because the
-    # word after a pipe starts a new command position (``echo hi | $(curl ...)``).
+    # Pass 2: sub-command 단위 분류. pipe 뒤의 단어가 새 command position을 시작하므로
+    # (``echo hi | $(curl ...)``) 여기서는 pipe도 분리한다.
     sub_commands = _split_compound_command(command, split_pipes=True)
     worst = "pass"
     for sub in sub_commands:
         verdict = _classify_single_command(sub)
         if verdict == "block":
-            return "block"  # short-circuit: can't get worse
+            return "block"  # short-circuit: 더 나빠질 수 없다
         if verdict == "warn":
             worst = "warn"
     return worst
@@ -363,30 +352,29 @@ def _classify_command(command: str) -> str:
 
 
 class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
-    """Bash command security auditing middleware.
+    """bash 명령 보안 감사 middleware.
 
-    For every ``bash`` tool call:
-    1. **Command classification**: regex + shlex analysis grades commands as
-       high-risk (block), medium-risk (warn), or safe (pass).
-    2. **Audit log**: every bash call is recorded as a structured JSON entry
-       via the standard logger (visible in gateway.log).
+    모든 ``bash`` tool call에 대해:
+    1. **명령 분류**: regex + shlex 분석으로 명령을 high-risk(block), medium-risk(warn),
+       safe(pass)로 등급을 매긴다.
+    2. **감사 로그**: 모든 bash 호출을 표준 logger로 구조화된 JSON 항목으로 기록한다
+       (gateway.log에서 확인 가능).
 
-    High-risk commands (e.g. ``rm -rf /``, ``curl url | bash``) are blocked:
-    the handler is not called and an error ``ToolMessage`` is returned so the
-    agent loop can continue gracefully.
+    high-risk 명령(예: ``rm -rf /``, ``curl url | bash``)은 차단된다. handler를 호출하지
+    않고 error ``ToolMessage``를 반환해 agent loop가 무리 없이 이어지게 한다.
 
-    Medium-risk commands (e.g. ``pip install``, ``chmod 777``) are executed
-    normally; a warning is appended to the tool result so the LLM is aware.
+    medium-risk 명령(예: ``pip install``, ``chmod 777``)은 정상 실행되며, LLM이 인지하도록
+    tool 결과에 경고를 덧붙인다.
     """
 
     state_schema = ThreadState
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Helper
     # ------------------------------------------------------------------
 
     def _get_thread_id(self, request: ToolCallRequest) -> str | None:
-        runtime = request.runtime  # ToolRuntime; may be None-like in tests
+        runtime = request.runtime  # ToolRuntime. 테스트에서는 None에 가까울 수 있다
         if runtime is None:
             return None
         ctx = getattr(runtime, "context", None) or {}
@@ -420,7 +408,7 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
         )
 
     def _append_warn_to_result(self, result: ToolMessage | Command, command: str) -> ToolMessage | Command:
-        """Append a warning note to the tool result for medium-risk commands."""
+        """medium-risk 명령에 대해 tool 결과에 경고 문구를 덧붙인다."""
         if not isinstance(result, ToolMessage):
             return result
         warning = f"\n\n⚠️ Warning: `{command}` is a medium-risk command that may modify the runtime environment."
@@ -436,17 +424,16 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
         )
 
     # ------------------------------------------------------------------
-    # Input sanitisation
+    # 입력 sanitisation
     # ------------------------------------------------------------------
 
-    # Normal bash commands rarely exceed a few hundred characters.  10 000 is
-    # well above any legitimate use case yet a tiny fraction of Linux ARG_MAX.
-    # Anything longer is almost certainly a payload injection or base64-encoded
-    # attack string.
+    # 정상적인 bash 명령이 수백 자를 넘는 경우는 드물다. 10 000은 정당한 사용 사례를
+    # 훨씬 웃돌면서도 Linux ARG_MAX에 비하면 아주 작은 값이다. 그보다 긴 것은 거의
+    # 확실히 payload injection이거나 base64로 인코딩된 공격 문자열이다.
     _MAX_COMMAND_LENGTH = 10_000
 
     def _validate_input(self, command: str) -> str | None:
-        """Return ``None`` if *command* is acceptable, else a rejection reason."""
+        """*command*가 허용 가능하면 ``None``을, 아니면 거부 사유를 반환한다."""
         if not command.strip():
             return "empty command"
         if len(command) > self._MAX_COMMAND_LENGTH:
@@ -456,31 +443,31 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
         return None
 
     # ------------------------------------------------------------------
-    # Core logic (shared between sync and async paths)
+    # 핵심 로직 (sync/async 경로 공용)
     # ------------------------------------------------------------------
 
     def _pre_process(self, request: ToolCallRequest) -> tuple[str, str | None, str, str | None]:
         """
-        Returns (command, thread_id, verdict, reject_reason).
-        verdict is 'block', 'warn', or 'pass'.
-        reject_reason is non-None only for input sanitisation rejections.
+        (command, thread_id, verdict, reject_reason)를 반환한다.
+        verdict는 'block', 'warn', 'pass' 중 하나다.
+        reject_reason은 입력 sanitisation 거부일 때만 None이 아니다.
         """
         args = request.tool_call.get("args", {})
         raw_command = args.get("command")
         command = raw_command if isinstance(raw_command, str) else ""
         thread_id = self._get_thread_id(request)
 
-        # ① input sanitisation — reject malformed input before regex analysis
+        # ① 입력 sanitisation — regex 분석 전에 잘못된 입력을 거부한다
         reject_reason = self._validate_input(command)
         if reject_reason:
             self._write_audit(thread_id, command, "block", truncate=True)
             logger.warning("[SandboxAudit] INVALID INPUT thread=%s reason=%s", thread_id, reject_reason)
             return command, thread_id, "block", reject_reason
 
-        # ② classify command
+        # ② 명령 분류
         verdict = _classify_command(command)
 
-        # ③ audit log
+        # ③ 감사 로그
         self._write_audit(thread_id, command, verdict)
 
         if verdict == "block":

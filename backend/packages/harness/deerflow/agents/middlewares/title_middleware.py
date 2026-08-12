@@ -1,4 +1,4 @@
-"""Middleware for automatic thread title generation."""
+"""thread 제목을 자동 생성하는 미들웨어."""
 
 import logging
 import re
@@ -22,13 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 class TitleMiddlewareState(AgentState):
-    """Compatible with the `ThreadState` schema."""
+    """`ThreadState` 스키마와 호환된다."""
 
     title: NotRequired[str | None]
 
 
 class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
-    """Automatically generate a title for the thread after the first user message."""
+    """첫 사용자 메시지 이후 thread 제목을 자동으로 생성한다."""
 
     state_schema = TitleMiddlewareState
 
@@ -99,37 +99,36 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         return self._normalize_content(user_msg_content)
 
     def _should_generate_title(self, state: TitleMiddlewareState, *, allow_partial_exchange: bool = False) -> bool:
-        """Check if we should generate a title for this thread."""
+        """이 thread에 제목을 생성해야 하는지 판단한다."""
         config = self._get_title_config()
         if not config.enabled:
             return False
 
-        # Check if thread already has a title in state
+        # state에 이미 제목이 있는지 확인한다.
         if state.get("title"):
             return False
 
-        # Check if this is the first turn (has at least one user message and one assistant response).
-        # Defensively coerce a None ``messages`` channel (possible when reading a
-        # partially-initialized checkpoint) into an empty list so ``len()`` is safe.
+        # 첫 턴인지 확인한다(사용자 메시지 하나와 assistant 응답 하나 이상).
+        # 부분 초기화된 checkpoint를 읽을 때 ``messages`` 채널이 None일 수 있으므로, ``len()``이 안전하도록
+        # 방어적으로 빈 리스트로 바꾼다.
         messages = state.get("messages") or []
         min_messages = 1 if allow_partial_exchange else 2
         if len(messages) < min_messages:
             return False
 
-        # Count user and assistant messages
+        # 사용자 메시지와 assistant 메시지를 센다.
         user_messages = [m for m in messages if self._is_user_message_for_title(m)]
         assistant_messages = [m for m in messages if self._message_type(m) == "ai"]
 
-        # Normal path: title only after first complete exchange. Interrupted path
-        # (``allow_partial_exchange=True``) accepts a lone first-turn user message
-        # so a fallback title can still be persisted when the run is cancelled
-        # before any AI chunk reaches the checkpoint.
+        # 일반 경로에서는 첫 완전한 주고받기 이후에만 제목을 만든다. 중단 경로
+        # (``allow_partial_exchange=True``)는 첫 턴의 사용자 메시지 하나만으로도 허용해, AI chunk가
+        # checkpoint에 닿기 전에 run이 취소되어도 fallback 제목을 남길 수 있게 한다.
         return len(user_messages) == 1 and (len(assistant_messages) >= 1 or allow_partial_exchange)
 
     def _build_title_prompt(self, state: TitleMiddlewareState) -> tuple[str, str]:
-        """Extract user/assistant messages and build the title prompt.
+        """사용자/assistant 메시지를 뽑아 제목 prompt를 만든다.
 
-        Returns (prompt_string, user_msg) so callers can use user_msg as fallback.
+        호출자가 user_msg를 fallback으로 쓸 수 있도록 (prompt_string, user_msg)를 반환한다.
         """
         config = self._get_title_config()
         messages = state.get("messages") or []
@@ -147,11 +146,11 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         return prompt, user_msg
 
     def _strip_think_tags(self, text: str) -> str:
-        """Remove <think>...</think> blocks emitted by reasoning models (e.g. minimax, DeepSeek-R1)."""
+        """reasoning 모델(예: minimax, DeepSeek-R1)이 내보내는 <think>...</think> 블록을 제거한다."""
         return re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
 
     def _parse_title(self, content: object) -> str:
-        """Normalize model output into a clean title string."""
+        """모델 출력을 정돈된 제목 문자열로 정규화한다."""
         config = self._get_title_config()
         title_content = self._normalize_content(content)
         title_content = self._strip_think_tags(title_content)
@@ -162,18 +161,17 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         config = self._get_title_config()
         fallback_chars = min(config.max_chars, 50)
         if len(user_msg) > fallback_chars:
-            # Reserve room for the ellipsis so this path honours ``max_chars``
-            # exactly as ``_parse_title`` does on the model path.
+            # 말줄임표 자리를 미리 확보해, 이 경로도 모델 경로의 ``_parse_title``과 똑같이
+            # ``max_chars``를 지키게 한다.
             ellipsis = "..."
             body = min(fallback_chars, config.max_chars - len(ellipsis))
             return user_msg[:body].rstrip() + ellipsis
         return user_msg if user_msg else "New Conversation"
 
     def _get_runnable_config(self) -> dict[str, Any]:
-        """Inherit the parent RunnableConfig and add middleware tag.
+        """부모 RunnableConfig를 상속하고 미들웨어 tag를 추가한다.
 
-        This ensures RunJournal identifies LLM calls from this middleware
-        as ``middleware:title`` instead of ``lead_agent``.
+        덕분에 RunJournal이 이 미들웨어의 LLM 호출을 ``lead_agent``가 아니라 ``middleware:title``로 식별한다.
         """
         try:
             parent = get_config()
@@ -189,7 +187,7 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         return config
 
     def _generate_title_result(self, state: TitleMiddlewareState, *, allow_partial_exchange: bool = False) -> dict | None:
-        """Generate a local fallback title without blocking on an LLM call."""
+        """LLM 호출로 블로킹하지 않고 로컬 fallback 제목을 만든다."""
         if not self._should_generate_title(state, allow_partial_exchange=allow_partial_exchange):
             return None
 
@@ -197,7 +195,7 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
         return {"title": self._fallback_title(user_msg)}
 
     async def _agenerate_title_result(self, state: TitleMiddlewareState) -> dict | None:
-        """Generate a configured LLM title asynchronously and fall back locally."""
+        """설정된 LLM으로 제목을 비동기 생성하고, 실패하면 로컬 fallback을 쓴다."""
         if not self._should_generate_title(state):
             return None
 
@@ -210,10 +208,9 @@ class TitleMiddleware(AgentMiddleware[TitleMiddlewareState]):
 
         try:
             prompt, user_msg = self._build_title_prompt(state)
-            # attach_tracing=False because ``_get_runnable_config()`` inherits
-            # the graph-level RunnableConfig (set in ``_make_lead_agent``) whose
-            # callbacks already carry tracing handlers; binding them again at
-            # the model level would emit duplicate spans.
+            # ``_get_runnable_config()``가 graph 수준 RunnableConfig(``_make_lead_agent``에서 설정)를
+            # 상속하고 그 callbacks에 이미 tracing handler가 들어 있으므로 attach_tracing=False를 쓴다.
+            # model 수준에서 다시 바인딩하면 span이 중복 생성된다.
             model_kwargs = {"thinking_enabled": False, "attach_tracing": False}
             if self._app_config is not None:
                 model_kwargs["app_config"] = self._app_config

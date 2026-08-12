@@ -22,9 +22,9 @@ from deerflow.subagents.status_contract import SUBAGENT_STATUS_VALUES
 
 
 def _resolve_snapshot_frequency(snapshot_frequency: int | None) -> int:
-    """Resolve the effective cadence: explicit value, else process-frozen,
-    else default. Imported lazily — ``deerflow.runtime.__init__`` reaches this
-    module via ``checkpoint_state``, so a top-level import would cycle."""
+    """유효한 cadence를 결정한다. 명시값이 있으면 그것, 없으면 프로세스에 frozen된 값,
+    그것도 없으면 기본값을 쓴다. lazy import인 이유는 ``deerflow.runtime.__init__``이
+    ``checkpoint_state``를 거쳐 이 모듈에 닿기 때문에 top-level import가 순환이 되기 때문이다."""
     if snapshot_frequency is not None:
         return snapshot_frequency
     from deerflow.runtime.checkpoint_mode import resolve_checkpoint_snapshot_frequency
@@ -43,12 +43,11 @@ class ThreadDataState(TypedDict):
 
 
 class ViewedImageData(TypedDict):
-    """Metadata for a viewed image file.
+    """열람한 이미지 파일의 metadata.
 
-    Only lightweight metadata is persisted in checkpoint state; the actual
-    image bytes are read on-demand from disk when the model needs them.
-    This avoids duplicating large base64 payloads across every checkpoint
-    (see #4138).
+    checkpoint state에는 가벼운 metadata만 저장하고, 실제 이미지 바이트는 모델이 필요로 할 때
+    디스크에서 그때그때 읽는다. 큰 base64 payload가 모든 checkpoint에 중복 저장되는 것을
+    막는다(#4138 참고).
     """
 
     mime_type: str
@@ -57,13 +56,12 @@ class ViewedImageData(TypedDict):
 
 
 def merge_sandbox(existing: SandboxState | None, new: SandboxState | None) -> SandboxState | None:
-    """Reducer for sandbox state - accepts idempotent writes only.
+    """sandbox state용 reducer. 멱등한 쓰기만 허용한다.
 
-    Multiple sandbox tools can initialize lazily in the same graph step and
-    emit the same sandbox_id via Command(update=...). LangGraph needs an
-    explicit reducer for that shared state key. Different sandbox ids in the
-    same thread indicate a lifecycle/isolation bug, so fail closed instead of
-    choosing one silently.
+    여러 sandbox 도구가 같은 graph step에서 lazy 초기화되면서 Command(update=...)로 같은
+    sandbox_id를 낼 수 있다. LangGraph는 그 공유 state 키에 대한 명시적 reducer를 요구한다.
+    같은 thread에서 sandbox id가 다르다면 lifecycle/격리 버그이므로, 하나를 조용히 고르지 않고
+    fail closed 한다.
     """
     if new is None:
         return existing
@@ -81,39 +79,38 @@ SandboxStateField = Annotated[NotRequired[SandboxState | None], merge_sandbox]
 
 
 def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[str]:
-    """Reducer for artifacts list - merges and deduplicates artifacts."""
+    """artifacts 목록용 reducer. artifact를 합치고 중복을 제거한다."""
     if existing is None:
         return new or []
     if new is None:
         return existing
-    # Use dict.fromkeys to deduplicate while preserving order
+    # 순서를 유지하면서 중복을 제거하기 위해 dict.fromkeys를 쓴다
     return list(dict.fromkeys(existing + new))
 
 
 def merge_viewed_images(existing: dict[str, ViewedImageData] | None, new: dict[str, ViewedImageData] | None) -> dict[str, ViewedImageData]:
-    """Reducer for viewed_images dict - merges image dictionaries.
+    """viewed_images dict용 reducer. 이미지 dict를 병합한다.
 
-    Special case: If new is an empty dict {}, it clears the existing images.
-    This allows middlewares to clear the viewed_images state after processing.
+    특수 케이스: new가 빈 dict {}이면 기존 이미지를 모두 지운다. middleware가 처리 후
+    viewed_images state를 비울 수 있게 하기 위해서다.
     """
     if existing is None:
         return new or {}
     if new is None:
         return existing
-    # Special case: empty dict means clear all viewed images
+    # 특수 케이스: 빈 dict는 열람 이미지 전체 삭제를 뜻한다
     if len(new) == 0:
         return {}
-    # Merge dictionaries, new values override existing ones for same keys
+    # dict를 병합한다. 키가 겹치면 new 값이 기존 값을 덮어쓴다
     return {**existing, **new}
 
 
 def merge_todos(existing: list | None, new: list | None) -> list | None:
-    """Reducer for todos list - keeps the last non-None value.
+    """todos 목록용 reducer. 마지막 non-None 값을 유지한다.
 
-    Semantics:
-    - If `new` is None (node didn't touch todos), preserve `existing`.
-    - If `new` is provided (even empty list), it represents an explicit
-      update and wins over `existing`.
+    의미:
+    - `new`가 None이면(노드가 todos를 건드리지 않음) `existing`을 보존한다.
+    - `new`가 주어지면(빈 list라도) 명시적 갱신으로 보고 `existing`을 이긴다.
     """
     if new is None:
         return existing
@@ -121,7 +118,7 @@ def merge_todos(existing: list | None, new: list | None) -> list | None:
 
 
 def merge_goal(existing: GoalState | None, new: GoalState | None) -> GoalState | None:
-    """Reducer for goal state - preserves existing when a node does not touch it."""
+    """goal state용 reducer. 노드가 건드리지 않으면 기존 값을 보존한다."""
     if new is None:
         return existing
     return new
@@ -133,12 +130,12 @@ class PromotedTools(TypedDict):
 
 
 def merge_promoted(existing: PromotedTools | None, new: PromotedTools | None) -> PromotedTools | None:
-    """Reducer for deferred-tool promotions, scoped by catalog hash.
+    """catalog hash로 범위가 정해지는 deferred-tool promotion용 reducer.
 
-    - new None/empty -> preserve existing (node didn't touch promotions).
-    - catalog_hash changed -> replace wholesale, dropping stale names (prevents a
-      persisted bare name from exposing a different tool after catalog drift).
-    - same catalog_hash -> union names, dedupe, preserve order.
+    - new가 None/빈 값 -> existing 보존(노드가 promotion을 건드리지 않음).
+    - catalog_hash가 바뀜 -> 통째로 교체하고 낡은 이름을 버린다(catalog가 바뀐 뒤에도 저장된
+      맨이름이 다른 도구를 노출하는 것을 막는다).
+    - catalog_hash가 같음 -> 이름을 합집합으로 모으고 중복을 제거하며 순서를 유지한다.
     """
     if not new:
         return existing
@@ -166,20 +163,19 @@ class DelegationEntry(TypedDict):
     result_brief: NotRequired[str]
     result_sha256: NotRequired[str]
     result_ref: NotRequired[str]
-    # Why a guardrail cap ended the run early (#3875 Phase 2): token_capped /
-    # turn_capped / loop_capped. The status stays completed/failed; this field
-    # is the additive signal that distinguishes a capped run from a clean one.
+    # guardrail cap이 run을 일찍 끝낸 이유(#3875 Phase 2): token_capped / turn_capped /
+    # loop_capped. status는 completed/failed 그대로이고, 이 필드가 capped run과 정상 run을
+    # 구분하는 추가 신호다.
     stop_reason: NotRequired[str]
     created_at: str
 
 
 def merge_delegations(existing: list[DelegationEntry] | None, new: list[DelegationEntry] | None) -> list[DelegationEntry]:
-    """Reducer for the delegation ledger.
+    """delegation ledger용 reducer.
 
-    - new None/empty -> preserve existing.
-    - append entries, replacing same id with the latest version while preserving
-      first-seen order.
-    - terminal status is never overwritten by a non-terminal status.
+    - new가 None/빈 값 -> existing 보존.
+    - 항목을 덧붙이되, 같은 id는 최신 버전으로 교체하고 처음 등장한 순서를 유지한다.
+    - terminal status는 non-terminal status로 절대 덮어쓰지 않는다.
     """
     if not new:
         return existing or []
@@ -216,7 +212,7 @@ class SkillEntry(TypedDict):
 
 
 def _normalize_skill_entry(entry: Mapping[str, object]) -> SkillEntry:
-    """Drop legacy payload keys before storing skill_context back to state."""
+    """skill_context를 state에 다시 저장하기 전에 레거시 payload 키를 버린다."""
     description = entry.get("description")
     loaded_at = entry.get("loaded_at")
     return {
@@ -228,13 +224,13 @@ def _normalize_skill_entry(entry: Mapping[str, object]) -> SkillEntry:
 
 
 def merge_skill_context(existing: list[SkillEntry] | None, new: list[SkillEntry] | None) -> list[SkillEntry]:
-    """Reducer for the skill-context channel.
+    """skill-context channel용 reducer.
 
-    - new None/empty -> preserve existing.
-    - legacy entries are normalized to references; verbatim body keys are dropped.
-    - dedup by ``path``; later reads refresh recency and replace the reference.
-    - cap by keeping the most recently read entries. ``loaded_at`` is
-      observational only because message indices reset after compaction.
+    - new가 None/빈 값 -> existing 보존.
+    - 레거시 항목은 reference로 정규화하고, 본문을 그대로 담은 키는 버린다.
+    - ``path``로 중복을 제거한다. 나중에 읽으면 최신성이 갱신되고 reference가 교체된다.
+    - 가장 최근에 읽은 항목만 남겨 개수를 제한한다. compaction 후 message index가 초기화되므로
+      ``loaded_at``은 참고용일 뿐이다.
     """
     normalized_existing = [_normalize_skill_entry(entry) for entry in existing or []]
     if not new:
@@ -269,7 +265,7 @@ class ThreadState(AgentState):
     todos: Annotated[list | None, merge_todos]
     goal: Annotated[GoalState | None, merge_goal]
     uploaded_files: NotRequired[list[dict] | None]
-    viewed_images: Annotated[dict[str, ViewedImageData], merge_viewed_images]  # image_path -> metadata (no base64)
+    viewed_images: Annotated[dict[str, ViewedImageData], merge_viewed_images]  # image_path -> metadata (base64 없음)
     promoted: Annotated[PromotedTools | None, merge_promoted]
     delegations: Annotated[list[DelegationEntry], merge_delegations]
     skill_context: Annotated[list[SkillEntry], merge_skill_context]
@@ -300,18 +296,17 @@ def _index_messages(
 
 
 def _raise_null_write(has_messages: bool) -> None:
-    # ``add_messages(left, None)`` reports only ``left`` when the accumulated
-    # message list is non-empty; with an empty list, it reports only ``right``.
+    # ``add_messages(left, None)``은 누적된 message list가 비어 있지 않으면 ``left``만,
+    # 비어 있으면 ``right``만 보고한다.
     received = "left" if has_messages else "right"
     raise ValueError(f"Must specify non-null arguments for both 'left' and 'right'. Only received: '{received}'.")
 
 
 def merge_message_writes(state: list[AnyMessage], writes: Sequence[Any]) -> list[AnyMessage]:
-    """Fold DeltaChannel writes with ``add_messages`` semantics in linear time.
+    """DeltaChannel 쓰기를 ``add_messages`` 의미대로 선형 시간에 접는다.
 
-    LangGraph's private ``_messages_delta_reducer`` is also linear, but does
-    not preserve the public reducer's full coercion, ID, removal, and
-    ``REMOVE_ALL_MESSAGES`` behavior.
+    LangGraph의 비공개 ``_messages_delta_reducer``도 선형이지만, 공개 reducer의 coercion,
+    ID, 삭제, ``REMOVE_ALL_MESSAGES`` 동작을 온전히 보존하지는 않는다.
     """
     if not writes:
         return list(state)
@@ -364,7 +359,7 @@ def merge_message_writes(state: list[AnyMessage], writes: Sequence[Any]) -> list
 
 
 def delta_messages_field(snapshot_frequency: int = DEFAULT_CHECKPOINT_SNAPSHOT_FREQUENCY) -> Any:
-    """Messages field annotation with a ``DeltaChannel`` at the given cadence."""
+    """주어진 cadence의 ``DeltaChannel``을 붙인 messages 필드 annotation."""
     return Annotated[
         list[AnyMessage],
         DeltaChannel(merge_message_writes, snapshot_frequency=snapshot_frequency),
@@ -401,8 +396,8 @@ def get_thread_state_schema(mode: CheckpointChannelMode, snapshot_frequency: int
 
 @cache
 def _delta_thread_state_schema(snapshot_frequency: int) -> type:
-    """Delta thread schema keyed by cadence; the default keeps the static
-    ``DeltaThreadState`` identity so existing type checks keep holding."""
+    """cadence를 키로 하는 delta thread schema. 기본값에서는 정적 ``DeltaThreadState``의
+    identity를 유지해 기존 타입 검사가 계속 통과하게 한다."""
     if snapshot_frequency == DEFAULT_CHECKPOINT_SNAPSHOT_FREQUENCY:
         return DeltaThreadState
     annotations = get_type_hints(ThreadState, include_extras=True)

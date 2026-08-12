@@ -1,11 +1,11 @@
-"""describe_skill — deferred skill metadata retrieval at runtime.
+"""describe_skill — runtime에 skill metadata를 지연 조회한다.
 
-Builds the ``describe_skill`` tool as a closure over a :class:`SkillCatalog`.
-The tool returns structured metadata (description, allowed tools, file location)
-so the LLM can decide whether to ``read_file`` the full SKILL.md.
+``describe_skill`` tool을 :class:`SkillCatalog`에 대한 closure로 만든다. 이 tool은 구조화된
+metadata(description, allowed tools, 파일 위치)를 반환하므로, LLM이 전체 SKILL.md를
+``read_file``할지 판단할 수 있다.
 
-Mirrors ``build_tool_search_tool`` from ``tool_search.py``: same query syntax,
-same ``Command`` + ``ToolMessage`` return shape, same fail-safe degradation.
+``tool_search.py``의 ``build_tool_search_tool``과 동일한 구조다. query 문법, ``Command`` +
+``ToolMessage`` 반환 형태, fail-safe 축소 동작이 모두 같다.
 """
 
 from __future__ import annotations
@@ -29,19 +29,19 @@ from deerflow.skills.types import SkillCategory
 logger = logging.getLogger(__name__)
 
 
-# ── Setup ────────────────────────────────────────────────────────────────────
+# ── 설정 ───────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class SkillSearchSetup:
-    """Result of assembling skill search for one agent build.
+    """agent 빌드 한 번에 대해 skill search를 조립한 결과.
 
-    Mirrors ``DeferredToolSetup`` from ``tool_search.py``.
+    ``tool_search.py``의 ``DeferredToolSetup``과 동일한 구조다.
 
-    - **Empty** ``(None, frozenset())``: no skills available or skill search
-      disabled.  The agent falls back to the legacy full-metadata prompt.
-    - **Populated**: ``describe_skill_tool`` is appended to the agent's tools,
-      ``skill_names`` are rendered in ``<skill_index>`` instead of full metadata.
+    - **비어 있음** ``(None, frozenset())``: 사용 가능한 skill이 없거나 skill search가
+      비활성이다. agent는 기존 전체 metadata prompt로 fallback한다.
+    - **채워짐**: ``describe_skill_tool``이 agent tool 목록에 추가되고, 전체 metadata 대신
+      ``skill_names``가 ``<skill_index>``에 렌더링된다.
     """
 
     describe_skill_tool: BaseTool | None
@@ -53,11 +53,11 @@ def build_describe_skill_tool(
     *,
     container_base_path: str = DEFAULT_SKILLS_CONTAINER_PATH,
 ) -> BaseTool:
-    """Build the ``describe_skill`` tool as a closure over *catalog*.
+    """``describe_skill`` tool을 *catalog*에 대한 closure로 만든다.
 
-    The returned tool is a plain ``@tool``-decorated function that searches the
-    catalog and returns a ``Command`` wrapping a ``ToolMessage``.  No graph state
-    mutation is needed (unlike ``tool_search`` which promotes deferred tools).
+    반환되는 tool은 catalog를 검색해 ``ToolMessage``를 감싼 ``Command``를 돌려주는 평범한
+    ``@tool`` 함수다. deferred tool을 승격시키는 ``tool_search``와 달리 graph state 변경은
+    필요 없다.
     """
 
     @tool
@@ -65,18 +65,17 @@ def build_describe_skill_tool(
         name: str,
         tool_call_id: Annotated[str, InjectedToolCallId],
     ) -> Command:
-        """Fetch usage metadata for installed skills so you can decide whether to load them.
+        """설치된 skill의 사용 metadata를 가져와 로드할지 판단한다.
 
-        Skills appear by name in <skill_index> in the system prompt.  Until
-        fetched, only the name is known.  This tool matches a query against
-        installed skills and returns their full metadata — description, allowed
-        tools, and file location — so you can decide whether to load the
-        SKILL.md via read_file.
+        skill은 system prompt의 <skill_index>에 이름만 나타난다.  가져오기 전에는
+        이름만 알 수 있다.  이 tool은 query를 설치된 skill과 매칭해 전체 metadata —
+        description, allowed tools, 파일 위치 — 를 반환하므로, read_file로 SKILL.md를
+        로드할지 판단할 수 있다.
 
-        Query forms:
-          - "select:data-analysis,deep-research" -- fetch these exact skills (no cap)
-          - "chart visualization" -- keyword search, best matches (up to 5)
-          - "+podcast gen" -- require "podcast" in the name, rank by remaining terms (up to 5)
+        query 형식:
+          - "select:data-analysis,deep-research" -- 이 skill들을 정확히 가져온다 (개수 제한 없음)
+          - "chart visualization" -- keyword 검색, 가장 잘 맞는 것들 (최대 5개)
+          - "+podcast gen" -- 이름에 "podcast"를 요구하고, 나머지 단어로 순위를 매긴다 (최대 5개)
         """
         matched = catalog.search(name)
         if not matched:
@@ -105,11 +104,11 @@ def build_skill_search_setup(
     enabled: bool,
     container_base_path: str = DEFAULT_SKILLS_CONTAINER_PATH,
 ) -> SkillSearchSetup:
-    """Build the skill search setup from a filtered skill list.
+    """필터링된 skill 목록으로 skill search setup을 만든다.
 
-    Mirrors ``build_deferred_tool_setup`` from ``tool_search.py``.
+    ``tool_search.py``의 ``build_deferred_tool_setup``과 동일한 구조다.
 
-    Returns an empty setup when *enabled* is ``False`` or *skills* is empty.
+    *enabled*가 ``False``이거나 *skills*가 비어 있으면 빈 setup을 반환한다.
     """
     if not enabled or not skills:
         return SkillSearchSetup(None, frozenset())
@@ -124,18 +123,18 @@ def build_skill_search_setup(
     )
 
 
-# ── Rendering ────────────────────────────────────────────────────────────────
+# ── 렌더링 ──────────────────────────────────────────────────────────────────────
 
 
 def _render_skill_metadata(skills: list, container_base_path: str) -> str:
-    """Render structured metadata for a list of matched skills."""
+    """매칭된 skill 목록의 구조화된 metadata를 렌더링한다."""
     blocks: list[str] = []
     for s in skills:
         mutability = "[custom, editable]" if s.category == SkillCategory.CUSTOM else "[built-in]"
         tools_line = ", ".join(s.allowed_tools) if s.allowed_tools else "(all)"
         location = s.get_container_file_path(container_base_path)
-        # name/description/allowed-tools come from untrusted ``.skill`` frontmatter;
-        # escape so a value cannot forge a framework tag in the describe_skill output.
+        # name/description/allowed-tools는 신뢰할 수 없는 ``.skill`` frontmatter에서 온다.
+        # 값이 describe_skill 출력에서 framework tag를 위조하지 못하도록 escape한다.
         name = html.escape(s.name, quote=False)
         description = html.escape(s.description, quote=False)
         tools = html.escape(tools_line, quote=False)
@@ -144,7 +143,7 @@ def _render_skill_metadata(skills: list, container_base_path: str) -> str:
     return "\n\n".join(blocks)
 
 
-# ── Prompt rendering ─────────────────────────────────────────────────────────
+# ── Prompt 렌더링 ───────────────────────────────────────────────────────────────
 
 
 def get_skill_index_prompt_section(
@@ -153,12 +152,12 @@ def get_skill_index_prompt_section(
     container_base_path: str = DEFAULT_SKILLS_CONTAINER_PATH,
     skill_evolution_section: str = "",
 ) -> str:
-    """Generate ``<skill_system>`` with a name-only ``<skill_index>``.
+    """이름만 담은 ``<skill_index>``와 함께 ``<skill_system>``을 생성한다.
 
-    Mirrors ``get_deferred_tools_prompt_section`` from ``tool_search.py``.
-    The agent knows what exists and can use ``describe_skill`` to load metadata.
+    ``tool_search.py``의 ``get_deferred_tools_prompt_section``과 동일한 구조다. agent는 무엇이
+    존재하는지 알고, ``describe_skill``로 metadata를 불러올 수 있다.
 
-    Returns empty string when there are no skills.
+    skill이 없으면 빈 문자열을 반환한다.
     """
     if not skill_names:
         return ""

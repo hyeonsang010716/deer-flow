@@ -1,8 +1,8 @@
-"""Pure functions to convert LangChain message objects to OpenAI Chat Completions format.
+"""LangChain message 객체를 OpenAI Chat Completions 형식으로 바꾸는 순수 함수 모음.
 
-Utility for translating LangChain message types to OpenAI-compatible dicts.
-Not currently wired into RunJournal (which uses message.model_dump() directly),
-but available for consumers that need the OpenAI wire format.
+LangChain message 타입을 OpenAI 호환 dict로 변환하는 유틸리티다. 현재 RunJournal에는 연결되어
+있지 않지만(RunJournal은 message.model_dump()를 직접 쓴다), OpenAI wire format이 필요한
+consumer가 쓸 수 있다.
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ _ROLE_MAP = {
 
 
 def langchain_to_openai_message(message: Any) -> dict:
-    """Convert a single LangChain BaseMessage to an OpenAI message dict.
+    """LangChain BaseMessage 하나를 OpenAI message dict로 변환한다.
 
-    Handles:
+    처리 대상:
     - HumanMessage → {"role": "user", "content": "..."}
-    - AIMessage (text only) → {"role": "assistant", "content": "..."}
-    - AIMessage (with tool_calls) → {"role": "assistant", "content": null, "tool_calls": [...]}
-    - AIMessage (text + tool_calls) → both content and tool_calls present
-    - AIMessage (list content / multimodal) → content preserved as list
+    - AIMessage (텍스트만) → {"role": "assistant", "content": "..."}
+    - AIMessage (tool_calls 포함) → {"role": "assistant", "content": null, "tool_calls": [...]}
+    - AIMessage (텍스트 + tool_calls) → content와 tool_calls 모두 존재
+    - AIMessage (list content / multimodal) → content를 list 그대로 보존
     - SystemMessage → {"role": "system", "content": "..."}
     - ToolMessage → {"role": "tool", "tool_call_id": "...", "content": "..."}
     """
@@ -59,7 +59,7 @@ def langchain_to_openai_message(message: Any) -> dict:
                         },
                     }
                 )
-            # If no text content, set content to null per OpenAI spec
+            # 텍스트 content가 없으면 OpenAI 스펙대로 content를 null로 둔다
             result["content"] = content if (isinstance(content, list) and content) or (isinstance(content, str) and content) else None
             result["tool_calls"] = openai_tool_calls
         else:
@@ -67,15 +67,15 @@ def langchain_to_openai_message(message: Any) -> dict:
 
         return result
 
-    # user / system / unknown
+    # user / system / 알 수 없는 타입
     return {"role": role, "content": content}
 
 
 def _infer_finish_reason(message: Any) -> str:
-    """Infer OpenAI finish_reason from an AIMessage.
+    """AIMessage에서 OpenAI finish_reason을 추론한다.
 
-    Returns "tool_calls" if tool_calls present, else looks in
-    response_metadata.finish_reason, else returns "stop".
+    tool_calls가 있으면 "tool_calls"를, 없으면 response_metadata.finish_reason을 찾고,
+    그것도 없으면 "stop"을 반환한다.
     """
     tool_calls = getattr(message, "tool_calls", None) or []
     if tool_calls:
@@ -89,7 +89,7 @@ def _infer_finish_reason(message: Any) -> str:
 
 
 def langchain_to_openai_completion(message: Any) -> dict:
-    """Convert an AIMessage and its metadata to an OpenAI completion response dict.
+    """AIMessage와 그 metadata를 OpenAI completion 응답 dict로 변환한다.
 
     Returns:
         {
@@ -132,5 +132,5 @@ def langchain_to_openai_completion(message: Any) -> dict:
 
 
 def langchain_messages_to_openai(messages: list) -> list[dict]:
-    """Convert a list of LangChain BaseMessages to OpenAI message dicts."""
+    """LangChain BaseMessage 리스트를 OpenAI message dict 리스트로 변환한다."""
     return [langchain_to_openai_message(m) for m in messages]

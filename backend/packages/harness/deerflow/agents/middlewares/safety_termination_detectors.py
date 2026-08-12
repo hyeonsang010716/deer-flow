@@ -1,15 +1,12 @@
-"""Detectors for provider-side safety termination signals.
+"""provider 측 safety termination 신호를 감지하는 detector들.
 
-Different LLM providers signal "I stopped this response for safety reasons"
-through different fields with different values. This module defines a small
-strategy interface and three built-in detectors that cover the major
-providers DeerFlow supports today. New providers (Wenxin, Hunyuan, Bedrock
-adapters, in-house gateways, ...) can be added by implementing
-``SafetyTerminationDetector`` and wiring it through
-``config.yaml: safety_finish_reason.detectors``.
+LLM provider마다 "안전상의 이유로 이 응답을 중단했다"를 서로 다른 필드와 값으로 알린다. 이
+모듈은 작은 전략 인터페이스와, DeerFlow가 현재 지원하는 주요 provider를 커버하는 내장 detector
+세 개를 정의한다. 새 provider(Wenxin, Hunyuan, Bedrock adapter, 사내 gateway 등)는
+``SafetyTerminationDetector``를 구현하고 ``config.yaml: safety_finish_reason.detectors``로
+연결해 추가할 수 있다.
 
-The middleware that consumes these detectors lives in
-``safety_finish_reason_middleware.py``.
+이 detector들을 사용하는 middleware는 ``safety_finish_reason_middleware.py``에 있다.
 """
 
 from __future__ import annotations
@@ -22,18 +19,18 @@ from langchain_core.messages import AIMessage
 
 @dataclass(frozen=True)
 class SafetyTermination:
-    """A detected safety-related termination signal.
+    """감지된 safety 관련 termination 신호.
 
     Attributes:
-        detector: Name of the detector that produced this result. Used for
-            observability so operators can see which provider rule fired.
-        reason_field: The message metadata field that carried the signal
-            (e.g. ``finish_reason``, ``stop_reason``).
-        reason_value: The actual value of that field
-            (e.g. ``content_filter``, ``refusal``, ``SAFETY``).
-        extras: Provider-specific metadata that may help downstream
-            consumers (e.g. Azure OpenAI content_filter_results, Gemini
-            safety_ratings). Detectors are free to populate or skip this.
+        detector: 이 결과를 만든 detector의 이름. 운영자가 어떤 provider 규칙이 발동했는지
+            볼 수 있도록 observability 용도로 쓴다.
+        reason_field: 신호를 실은 메시지 metadata 필드
+            (예: ``finish_reason``, ``stop_reason``).
+        reason_value: 그 필드의 실제 값
+            (예: ``content_filter``, ``refusal``, ``SAFETY``).
+        extras: 하위 소비자에게 도움이 될 수 있는 provider별 metadata
+            (예: Azure OpenAI content_filter_results, Gemini safety_ratings).
+            detector는 이를 채워도 되고 생략해도 된다.
     """
 
     detector: str
@@ -44,30 +41,27 @@ class SafetyTermination:
 
 @runtime_checkable
 class SafetyTerminationDetector(Protocol):
-    """Strategy interface for provider safety termination detection."""
+    """provider safety termination 감지를 위한 전략 인터페이스."""
 
     name: str
 
     def detect(self, message: AIMessage) -> SafetyTermination | None:
-        """Return a SafetyTermination if *message* indicates provider safety
-        termination, otherwise return ``None``.
+        """*message*가 provider safety termination을 나타내면 SafetyTermination을,
+        아니면 ``None``을 반환한다.
 
-        Implementations must be side-effect free and tolerant of missing or
-        oddly-typed metadata — detectors run on every model response.
+        구현은 부수효과가 없어야 하고 metadata가 없거나 타입이 이상해도 견뎌야 한다.
+        detector는 모든 model 응답마다 실행되기 때문이다.
         """
         ...
 
 
 def _get_metadata_value(message: AIMessage, field_name: str) -> str | None:
-    """Read a string-typed value from either ``response_metadata`` or
-    ``additional_kwargs``.
+    """``response_metadata`` 또는 ``additional_kwargs``에서 문자열 값을 읽는다.
 
-    LangChain provider adapters are inconsistent about where they stash
-    provider stop signals. Most modern adapters use ``response_metadata``,
-    but some legacy / passthrough paths still surface them via
-    ``additional_kwargs``. We check both, in that order, and only accept
-    string values — Pydantic enums or dicts are ignored so we never raise
-    on malformed inputs.
+    LangChain provider adapter는 provider stop 신호를 어디에 담는지 일관적이지 않다. 최신
+    adapter 대부분은 ``response_metadata``를 쓰지만, 일부 legacy / passthrough 경로는 여전히
+    ``additional_kwargs``로 노출한다. 두 곳을 그 순서로 확인하고 문자열 값만 받아들인다.
+    Pydantic enum이나 dict는 무시해서 잘못된 입력에도 예외를 던지지 않는다.
     """
     for container_name in ("response_metadata", "additional_kwargs"):
         container = getattr(message, container_name, None) or {}
@@ -80,15 +74,13 @@ def _get_metadata_value(message: AIMessage, field_name: str) -> str | None:
 
 
 class OpenAICompatibleContentFilterDetector:
-    """OpenAI-compatible content_filter signal.
+    """OpenAI 호환 content_filter 신호.
 
-    Covers OpenAI, Azure OpenAI, Moonshot/Kimi, DeepSeek, Mistral, vLLM,
-    Qwen (OpenAI-compatible mode), and any other adapter that follows the
-    OpenAI ``finish_reason`` convention.
+    OpenAI, Azure OpenAI, Moonshot/Kimi, DeepSeek, Mistral, vLLM,
+    Qwen(OpenAI 호환 모드) 및 OpenAI ``finish_reason`` 관례를 따르는 모든 adapter를 다룬다.
 
-    Some Chinese providers ship custom OpenAI-compatible gateways that use
-    alternative tokens like ``sensitive`` or ``violation``. Extend the set
-    via the ``finish_reasons`` kwarg in config.
+    일부 중국 provider는 ``sensitive``나 ``violation`` 같은 다른 토큰을 쓰는 자체 OpenAI 호환
+    gateway를 제공한다. config의 ``finish_reasons`` kwarg로 집합을 확장한다.
     """
 
     name = "openai_compatible_content_filter"
@@ -103,8 +95,8 @@ class OpenAICompatibleContentFilterDetector:
             return None
 
         extras: dict[str, Any] = {}
-        # Azure OpenAI ships a structured content_filter_results block; carry it
-        # through so operators can see *what* was filtered without re-tracing.
+        # Azure OpenAI는 구조화된 content_filter_results 블록을 준다. 운영자가 다시 추적하지
+        # 않고도 *무엇이* 필터링됐는지 볼 수 있도록 그대로 전달한다.
         response_metadata = getattr(message, "response_metadata", None) or {}
         if isinstance(response_metadata, dict):
             filter_results = response_metadata.get("content_filter_results")
@@ -120,10 +112,10 @@ class OpenAICompatibleContentFilterDetector:
 
 
 class AnthropicRefusalDetector:
-    """Anthropic ``stop_reason == "refusal"`` signal.
+    """Anthropic ``stop_reason == "refusal"`` 신호.
 
-    Anthropic models surface safety refusals via a dedicated ``stop_reason``
-    rather than ``finish_reason``. See:
+    Anthropic 모델은 safety 거부를 ``finish_reason``이 아니라 전용 ``stop_reason``으로
+    노출한다. 참고:
     https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals
     """
 
@@ -145,49 +137,44 @@ class AnthropicRefusalDetector:
 
 
 class GeminiSafetyDetector:
-    """Gemini / Vertex AI safety-related finish reasons.
+    """Gemini / Vertex AI의 safety 관련 finish reason.
 
-    Gemini uses the same ``finish_reason`` field as OpenAI but with an
-    enumerated upper-case taxonomy. The default set covers every Gemini
-    finish_reason that means "the model stopped because the content/image
-    tripped a safety, blocklist, recitation, or PII filter" — i.e. cases
-    where any tool_calls returned alongside are likely truncated/
-    unreliable. Full enum:
+    Gemini는 OpenAI와 같은 ``finish_reason`` 필드를 쓰되 대문자 열거형 체계를 사용한다. 기본
+    집합은 "콘텐츠/이미지가 safety, blocklist, recitation, PII 필터에 걸려 모델이 멈췄다"를
+    뜻하는 모든 Gemini finish_reason을 다룬다. 즉 함께 반환된 tool_calls가 잘렸거나 신뢰할 수
+    없을 가능성이 큰 경우들이다. 전체 enum:
     https://docs.cloud.google.com/python/docs/reference/aiplatform/latest/google.cloud.aiplatform_v1.types.Candidate.FinishReason
 
-    Intentionally **excluded** from the default set:
-    - ``STOP``                       — normal termination.
-    - ``MAX_TOKENS``                 — output length truncation, not safety
-                                       (same root failure mode as
-                                       content_filter, but issue #3028
-                                       scopes it out; expose separately if
-                                       desired).
-    - ``LANGUAGE`` / ``NO_IMAGE``    — capability mismatches, unrelated to
-                                       safety; tool_calls would be absent
-                                       anyway.
+    기본 집합에서 의도적으로 **제외**한 값:
+    - ``STOP``                       — 정상 종료.
+    - ``MAX_TOKENS``                 — safety가 아니라 출력 길이 절단
+                                       (content_filter와 근본 실패 양상은 같지만
+                                       이슈 #3028의 범위 밖이다. 필요하면
+                                       별도로 노출한다).
+    - ``LANGUAGE`` / ``NO_IMAGE``    — safety와 무관한 능력 불일치. 어차피
+                                       tool_calls가 없다.
     - ``MALFORMED_FUNCTION_CALL`` /
-      ``UNEXPECTED_TOOL_CALL``       — tool-call protocol errors. The
-                                       tool_calls are *also* unreliable
-                                       here, but the failure category is
-                                       distinct from safety filtering;
-                                       handle in a dedicated detector to
-                                       keep observability records honest.
+      ``UNEXPECTED_TOOL_CALL``       — tool-call 프로토콜 오류. 여기서도
+                                       tool_calls를 신뢰할 수 없지만 실패
+                                       범주가 safety 필터링과 다르다.
+                                       observability 기록을 정직하게
+                                       유지하려면 전용 detector에서 다룬다.
     - ``OTHER`` / ``IMAGE_OTHER`` /
-      ``FINISH_REASON_UNSPECIFIED``  — too broad to enable by default;
-                                       opt in via ``finish_reasons=`` if
-                                       your provider abuses these.
+      ``FINISH_REASON_UNSPECIFIED``  — 기본 활성화하기에는 너무 광범위하다.
+                                       provider가 이를 남용하면
+                                       ``finish_reasons=``로 opt-in한다.
     """
 
     name = "gemini_safety"
 
     _DEFAULT_FINISH_REASONS = (
-        # Text safety
+        # 텍스트 safety
         "SAFETY",
         "BLOCKLIST",
         "PROHIBITED_CONTENT",
         "SPII",
         "RECITATION",
-        # Image safety (multimodal generation)
+        # 이미지 safety (멀티모달 생성)
         "IMAGE_SAFETY",
         "IMAGE_PROHIBITED_CONTENT",
         "IMAGE_RECITATION",
@@ -205,7 +192,7 @@ class GeminiSafetyDetector:
         extras: dict[str, Any] = {}
         response_metadata = getattr(message, "response_metadata", None) or {}
         if isinstance(response_metadata, dict):
-            # Gemini surfaces per-category scoring under safety_ratings.
+            # Gemini는 카테고리별 점수를 safety_ratings 아래에 노출한다.
             ratings = response_metadata.get("safety_ratings")
             if ratings:
                 extras["safety_ratings"] = ratings
@@ -219,7 +206,7 @@ class GeminiSafetyDetector:
 
 
 def default_detectors() -> list[SafetyTerminationDetector]:
-    """Built-in detector set used when no custom detectors are configured."""
+    """커스텀 detector가 설정되지 않았을 때 쓰는 내장 detector 집합."""
     return [
         OpenAICompatibleContentFilterDetector(),
         AnthropicRefusalDetector(),

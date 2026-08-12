@@ -1,4 +1,4 @@
-"""Pre-tool-call authorization middleware."""
+"""도구 호출 직전 인가를 수행하는 middleware."""
 
 from deerflow.guardrails.builtin import AllowlistProvider
 from deerflow.guardrails.middleware import GuardrailMiddleware

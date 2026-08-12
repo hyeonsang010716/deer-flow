@@ -1,34 +1,32 @@
-"""Persistent MCP session pool for stateful tool calls.
+"""stateful tool call을 위한 영속 MCP session pool.
 
-When MCP tools are loaded via langchain-mcp-adapters with ``session=None``,
-each tool call creates a new MCP session. For stateful servers like Playwright,
-this means browser state (opened pages, filled forms) is lost between calls.
+langchain-mcp-adapters로 MCP 도구를 ``session=None``으로 로드하면 tool call마다
+새 MCP session이 생성된다. Playwright 같은 stateful 서버에서는 호출 사이에
+브라우저 상태(열린 페이지, 입력한 폼)가 사라진다는 뜻이다.
 
-This module provides a session pool that maintains persistent MCP sessions,
-scoped by ``(server_name, scope_key)`` — typically scope_key is the thread_id —
-so that consecutive tool calls share the same session and server-side state.
-Sessions are evicted in LRU order when the pool reaches capacity.
+이 모듈은 ``(server_name, scope_key)``로 스코프된 영속 MCP session을 유지하는
+session pool을 제공한다(scope_key는 보통 thread_id). 덕분에 연속된 tool call이
+같은 session과 서버 측 상태를 공유한다. pool이 용량에 도달하면 LRU 순서로
+session을 evict한다.
 
-Lifecycle model (owner task)
+Lifecycle 모델 (owner task)
 ----------------------------
-An MCP ``ClientSession`` is implemented on top of an ``anyio`` task group, and
-anyio enforces that a cancel scope must be exited from the *same task* that
-entered it. Calling ``cm.__aexit__`` from any task other than the one that ran
-``cm.__aenter__`` raises::
+MCP ``ClientSession``은 ``anyio`` task group 위에 구현되어 있고, anyio는 cancel
+scope를 *진입한 task와 같은 task*에서 빠져나올 것을 강제한다. ``cm.__aenter__``를
+실행한 task가 아닌 곳에서 ``cm.__aexit__``를 호출하면 다음이 발생한다::
 
     RuntimeError: Attempted to exit cancel scope in a different task than it
     was entered in
 
-The sync-tool path (``make_sync_tool_wrapper``) drives each call through a fresh
-``asyncio.run`` event loop, so a session entered while answering one call would
-otherwise be exited while answering another — from a different task — and crash
-(GitHub issue #3379).
+sync tool 경로(``make_sync_tool_wrapper``)는 호출마다 새 ``asyncio.run`` event
+loop에서 실행되므로, 한 호출을 처리하며 진입한 session이 다른 호출을 처리하는
+도중에 — 즉 다른 task에서 — 종료되어 크래시가 난다(GitHub issue #3379).
 
-To make this impossible, every pooled session is owned by a dedicated
-``_run_session`` task. That task enters the context manager, hands the live
-session back to the caller, and then *waits* on a close event. All shutdown
-paths only ever **signal** that event; the owner task performs ``__aexit__``
-itself, guaranteeing enter and exit always happen in the same task.
+이를 원천 차단하기 위해 pool의 모든 session은 전용 ``_run_session`` task가
+소유한다. 그 task가 context manager에 진입하고, 살아 있는 session을 caller에게
+넘긴 뒤 close event를 *기다린다*. 모든 종료 경로는 그 event를 **신호**만 보내고,
+``__aexit__``는 owner task가 직접 수행하므로 진입과 종료가 항상 같은 task에서
+일어난다.
 """
 
 from __future__ import annotations
@@ -45,13 +43,13 @@ logger = logging.getLogger(__name__)
 
 
 class MCPSessionPool:
-    """Manages persistent MCP sessions scoped by ``(server_name, scope_key)``."""
+    """``(server_name, scope_key)``로 스코프된 영속 MCP session을 관리한다."""
 
     MAX_SESSIONS = 256
-    SESSION_CLOSE_TIMEOUT = 5.0  # seconds to wait when closing a session on a foreign loop
+    SESSION_CLOSE_TIMEOUT = 5.0  # 다른 loop의 session을 닫을 때 대기하는 초
 
     def __init__(self) -> None:
-        # Each entry: (session, owning_loop, owner_task, close_event).
+        # 각 항목: (session, owning_loop, owner_task, close_event).
         self._entries: OrderedDict[
             tuple[str, str],
             tuple[
@@ -61,9 +59,9 @@ class MCPSessionPool:
                 asyncio.Event,
             ],
         ] = OrderedDict()
-        # In-flight creations, keyed by (server, scope). Lets concurrent callers
-        # on the same loop share a single creation instead of each spawning a
-        # duplicate session. Value: (loop, ready_future, owner_task, close_event).
+        # 진행 중인 생성 작업. key는 (server, scope). 같은 loop의 동시 caller들이
+        # 각자 중복 session을 만들지 않고 하나의 생성 작업을 공유하게 한다.
+        # 값: (loop, ready_future, owner_task, close_event).
         self._inflight: dict[
             tuple[str, str],
             tuple[
@@ -73,8 +71,8 @@ class MCPSessionPool:
                 asyncio.Event,
             ],
         ] = {}
-        # threading.Lock is not bound to any event loop, so it is safe to
-        # acquire from both async paths and sync/worker-thread paths.
+        # threading.Lock은 어떤 event loop에도 묶이지 않으므로 async 경로와
+        # sync/worker-thread 경로 양쪽에서 안전하게 획득할 수 있다.
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -87,12 +85,11 @@ class MCPSessionPool:
         ready: asyncio.Future[ClientSession],
         close_evt: asyncio.Event,
     ) -> None:
-        """Own a single MCP session for its entire lifetime.
+        """MCP session 하나를 그 수명 전체 동안 소유한다.
 
-        Enters the session context manager, initializes it, publishes the live
-        session via ``ready``, then blocks until ``close_evt`` is set. The
-        context manager is *always* exited from this task, satisfying anyio's
-        cancel-scope same-task requirement.
+        session context manager에 진입해 초기화하고, ``ready``로 살아 있는 session을
+        공개한 뒤 ``close_evt``가 set될 때까지 블로킹한다. context manager는 *항상*
+        이 task에서 빠져나오므로 anyio의 cancel scope same-task 요구사항을 만족한다.
         """
         from langchain_mcp_adapters.sessions import create_session
 
@@ -100,15 +97,14 @@ class MCPSessionPool:
         try:
             session = await cm.__aenter__()
         except BaseException as e:
-            # Never entered the cancel scope, so there is nothing to exit.
+            # cancel scope에 진입한 적이 없으므로 빠져나올 것도 없다.
             if not ready.done():
                 ready.set_exception(e)
             return
 
-        # The context manager is now entered. From here on __aexit__ MUST run in
-        # this task — on init failure, on cancellation, or on the close signal —
-        # to satisfy anyio's same-task cancel-scope requirement and to avoid
-        # leaking the session/subprocess.
+        # 이제 context manager에 진입했다. 이후로는 초기화 실패, 취소, close 신호
+        # 어느 경우든 __aexit__가 반드시 이 task에서 실행되어야 anyio의 same-task
+        # cancel scope 요구사항을 만족하고 session/subprocess 누수를 막을 수 있다.
         try:
             await session.initialize()
             if not ready.done():
@@ -129,29 +125,28 @@ class MCPSessionPool:
         scope_key: str,
         connection: dict[str, Any],
     ) -> ClientSession:
-        """Get or create a persistent MCP session.
+        """영속 MCP session을 가져오거나 생성한다.
 
-        If an existing session was created in a different (or closed) event
-        loop, it is evicted and replaced with a fresh one owned by a task on
-        the current loop.
+        기존 session이 다른(또는 이미 닫힌) event loop에서 만들어진 것이면 evict하고,
+        현재 loop의 task가 소유하는 새 session으로 교체한다.
 
         Args:
-            server_name: MCP server name.
-            scope_key: Isolation key (typically thread_id).
-            connection: Connection configuration for ``create_session``.
+            server_name: MCP 서버 이름.
+            scope_key: 격리 key (보통 thread_id).
+            connection: ``create_session``에 넘길 연결 설정.
 
         Returns:
-            An initialized ``ClientSession``.
+            초기화된 ``ClientSession``.
         """
         key = (server_name, scope_key)
         current_loop = asyncio.get_running_loop()
 
-        # Phase 1: inspect/mutate the registry under the thread lock (no awaits).
-        # Decide one of three outcomes atomically: return an existing session,
-        # join an in-flight creation, or become the creator for this key.
-        # Each item: (loop, owner_task, close_event, cancel). ``cancel`` is True
-        # for in-flight creations, whose owner may be blocked inside
-        # ``initialize()`` where close_evt cannot wake it — it must be cancelled.
+        # Phase 1: thread lock 아래에서 registry를 조회/변경한다(await 없음).
+        # 세 결과 중 하나를 원자적으로 결정한다: 기존 session 반환, 진행 중인 생성에
+        # 합류, 또는 이 key의 생성자가 되기.
+        # 각 항목: (loop, owner_task, close_event, cancel). ``cancel``은 진행 중인
+        # 생성 작업에 대해 True다. 그 owner는 close_evt로 깨울 수 없는
+        # ``initialize()`` 안에서 블로킹되어 있을 수 있어 취소해야 한다.
         evicted: list[tuple[asyncio.AbstractEventLoop, asyncio.Task[Any], asyncio.Event, bool]] = []
         join: asyncio.Future[ClientSession] | None = None
         ready: asyncio.Future[ClientSession] | None = None
@@ -163,42 +158,40 @@ class MCPSessionPool:
                 if loop is current_loop and not loop.is_closed():
                     self._entries.move_to_end(key)
                     return session
-                # Session belongs to a different/closed event loop – evict it.
+                # 다른/닫힌 event loop에 속한 session이므로 evict한다.
                 self._entries.pop(key)
                 evicted.append((loop, ent_task, ent_close, False))
 
             inflight = self._inflight.get(key)
             if inflight is not None and inflight[0] is current_loop and not inflight[0].is_closed():
-                # Another caller on this loop is already creating the session;
-                # wait for the same result instead of building a duplicate.
+                # 이 loop의 다른 caller가 이미 session을 만들고 있으므로, 중복 생성
+                # 대신 같은 결과를 기다린다.
                 join = inflight[1]
             else:
                 if inflight is not None:
-                    # Stale in-flight creation owned by a different/closed loop.
-                    # Drop the record and tear its owner down; because that owner
-                    # may be blocked inside initialize() (where close_evt cannot
-                    # wake it), it must be cancelled. We then create a fresh
-                    # session here.
+                    # 다른/닫힌 loop가 소유한 오래된 진행 중 생성 작업. 기록을 버리고
+                    # owner를 정리한다. 그 owner는 close_evt로 깨울 수 없는
+                    # initialize() 안에서 블로킹되어 있을 수 있으므로 취소해야 한다.
+                    # 그런 다음 여기서 새 session을 만든다.
                     self._inflight.pop(key)
                     evicted.append((inflight[0], inflight[2], inflight[3], True))
-                # Become the creator: publish an in-flight record before any
-                # await so concurrent callers join us instead of racing.
+                # 생성자가 된다: await 전에 진행 중 기록을 먼저 공개해 동시 caller가
+                # 경쟁하지 않고 합류하게 한다.
                 ready = current_loop.create_future()
                 close_evt = asyncio.Event()
                 task = current_loop.create_task(self._run_session(connection, ready, close_evt))
                 self._inflight[key] = (current_loop, ready, task, close_evt)
 
-            # Evict LRU entries when at capacity.
+            # 용량에 도달하면 LRU 항목을 evict한다.
             while len(self._entries) >= self.MAX_SESSIONS:
                 oldest_key, (_, loop, ent_task, ent_close) = next(iter(self._entries.items()))
                 self._entries.pop(oldest_key)
                 evicted.append((loop, ent_task, ent_close, False))
 
-        # Phase 2: shut down evicted sessions/creations. Same-loop owners are
-        # awaited so they finish deterministically; foreign-loop owners are
-        # routed to their own loop. In every case the owner task — never this
-        # one — runs __aexit__. In-flight owners are cancelled (cancel=True) so a
-        # blocking initialize() cannot leave them hung.
+        # Phase 2: evict된 session/생성 작업을 종료한다. 같은 loop의 owner는 결정적으로
+        # 끝나도록 await하고, 다른 loop의 owner는 자기 loop로 라우팅한다. 어느 경우든
+        # __aexit__는 이 task가 아니라 owner task가 실행한다. 진행 중 owner는
+        # cancel=True로 취소해 블로킹된 initialize()가 그들을 멈춰 세우지 못하게 한다.
         for loop, ent_task, ent_close, cancel in evicted:
             if loop is current_loop and not loop.is_closed():
                 await self._shutdown(ent_close, ent_task, cancel)
@@ -207,31 +200,30 @@ class MCPSessionPool:
             else:
                 self._signal_close(loop, ent_close)
 
-        # Phase 2b: a concurrent creation for this key is already in progress on
-        # this loop — share its result rather than create a duplicate session.
+        # Phase 2b: 이 loop에서 같은 key의 생성이 이미 진행 중이므로, 중복 session을
+        # 만들지 않고 그 결과를 공유한다.
         if join is not None:
             return await asyncio.shield(join)
 
         assert ready is not None and close_evt is not None and task is not None
 
-        # Phase 3: wait for our owner task to publish the initialized session.
+        # Phase 3: owner task가 초기화된 session을 공개할 때까지 기다린다.
         try:
             session = await asyncio.shield(ready)
         except BaseException:
-            # Two distinct cases reach here:
+            # 여기에 도달하는 경우는 두 가지다.
             #
-            # 1. The owner task failed (e.g. connect/initialize error) and
-            #    reported it via ready.set_exception(). It is *already* in its
-            #    finally block running cm.__aexit__ in its own task, so we must
-            #    NOT cancel it — doing so would interrupt that cleanup. We only
-            #    wait for it to finish unwinding.
-            # 2. This call itself was cancelled (CancelledError). Because of the
-            #    shield, `ready` is still pending and the owner task is alive and
-            #    blocked. We signal close and cancel it so it exits the cancel
-            #    scope in its own task, then wait for it to finish.
+            # 1. owner task가 실패해(예: connect/initialize 오류) ready.set_exception()으로
+            #    보고한 경우. 이미 자신의 finally 블록에서 자기 task로 cm.__aexit__를
+            #    실행 중이므로 취소하면 **안 된다** — 그 정리 작업을 끊게 된다.
+            #    풀려서 끝날 때까지 기다리기만 한다.
+            # 2. 이 호출 자체가 취소된 경우(CancelledError). shield 덕분에 `ready`는
+            #    여전히 pending이고 owner task는 살아서 블로킹 중이다. close를 신호하고
+            #    취소해 owner가 자기 task에서 cancel scope를 빠져나오게 한 뒤 종료를
+            #    기다린다.
             #
-            # The session is never registered yet, so nobody else can close it;
-            # waiting here guarantees we never leak a session or owner task.
+            # session은 아직 등록되지 않아 아무도 닫을 수 없으므로, 여기서 기다리면
+            # session이나 owner task가 절대 누수되지 않는다.
             owner_already_failed = ready.done() and not ready.cancelled() and ready.exception() is not None
             if not owner_already_failed:
                 close_evt.set()
@@ -245,12 +237,11 @@ class MCPSessionPool:
                     self._inflight.pop(key)
             raise
 
-        # Phase 4: promote the in-flight creation to a registered entry — but
-        # only if our in-flight record is still the live one. A concurrent
-        # close_* / close_all may have removed it while we were initializing; in
-        # that case we must NOT resurrect the session into _entries. Instead we
-        # own the teardown: signal our owner task and wait for it to run
-        # __aexit__ in its own task, then surface the cancellation.
+        # Phase 4: 진행 중 생성 작업을 등록 항목으로 승격한다. 단 우리 진행 중 기록이
+        # 여전히 살아 있는 것일 때만이다. 초기화 도중 동시 close_* / close_all이 그
+        # 기록을 지웠을 수 있고, 그때는 session을 _entries로 되살리면 **안 된다**.
+        # 대신 우리가 teardown을 책임진다: owner task에 신호를 보내 자기 task에서
+        # __aexit__를 실행하도록 기다린 뒤 취소를 표면화한다.
         with self._lock:
             still_ours = self._inflight.get(key) == (current_loop, ready, task, close_evt)
             if still_ours:
@@ -263,22 +254,22 @@ class MCPSessionPool:
         return session
 
     # ------------------------------------------------------------------
-    # Cleanup helpers
+    # 정리 helper
     # ------------------------------------------------------------------
 
     @staticmethod
     def _signal_close(loop: asyncio.AbstractEventLoop, close_evt: asyncio.Event) -> None:
-        """Ask an owner task to shut down without waiting.
+        """owner task에 종료를 요청하고 기다리지 않는다.
 
-        ``asyncio.Event.set`` is not thread-safe, so it is scheduled on the
-        owning loop. A closed loop means the owner task is already gone.
+        ``asyncio.Event.set``은 thread-safe하지 않으므로 소유 loop에 스케줄한다.
+        loop가 닫혀 있다면 owner task는 이미 사라진 것이다.
         """
         if loop.is_closed():
             return
         try:
             loop.call_soon_threadsafe(close_evt.set)
         except RuntimeError:
-            # Loop was closed between the is_closed() check and now.
+            # is_closed() 검사와 지금 사이에 loop가 닫혔다.
             pass
 
     async def _shutdown(
@@ -287,12 +278,12 @@ class MCPSessionPool:
         task: asyncio.Task[Any],
         cancel: bool = False,
     ) -> None:
-        """Signal an owner task and wait for it to finish (runs on its loop).
+        """owner task에 신호를 보내고 종료를 기다린다(해당 loop 위에서 실행).
 
-        ``cancel=True`` is used for in-flight creations: the owner task may be
-        blocked inside ``initialize()`` where ``close_evt`` cannot wake it, so it
-        must be cancelled. Its ``finally`` block still runs ``__aexit__`` in its
-        own task, satisfying anyio's same-task cancel-scope requirement.
+        ``cancel=True``는 진행 중인 생성 작업에 쓴다. owner task가 ``close_evt``로
+        깨울 수 없는 ``initialize()`` 안에서 블로킹되어 있을 수 있어 취소해야 한다.
+        그래도 ``finally`` 블록이 자기 task에서 ``__aexit__``를 실행하므로 anyio의
+        same-task cancel scope 요구사항을 만족한다.
         """
         close_evt.set()
         if cancel:
@@ -309,7 +300,7 @@ class MCPSessionPool:
         close_evt: asyncio.Event,
         cancel: bool = False,
     ) -> None:
-        """Shut down one entry, routing the close to its owning loop."""
+        """항목 하나를 종료하되, close를 소유 loop로 라우팅한다."""
         if loop.is_closed():
             return
         current_loop = asyncio.get_running_loop()
@@ -322,15 +313,13 @@ class MCPSessionPool:
             except Exception:
                 logger.warning("Error closing MCP session on owning loop", exc_info=True)
         else:
-            # Owning loop exists but is neither the current loop nor running.
-            # We are inside an async context here, so run_until_complete() would
-            # raise "Cannot run the event loop while another loop is running";
-            # and the loop may belong to another thread, where driving it from
-            # here is unsafe. This branch is not expected in practice — a
-            # session's owning loop is either the long-lived gateway loop (which
-            # is running) or a short-lived asyncio.run loop (which is closed and
-            # caught above). Fall back to a best-effort thread-safe signal so the
-            # owner task tears down if/when its loop runs again.
+            # 소유 loop가 존재하지만 현재 loop도 아니고 실행 중도 아니다. 여기는 async
+            # context 안이므로 run_until_complete()는 "Cannot run the event loop while
+            # another loop is running"을 발생시키고, 그 loop가 다른 thread 소유일 수도
+            # 있어 여기서 구동하는 것은 안전하지 않다. 실제로는 도달하지 않는 분기다 —
+            # session의 소유 loop는 장수 gateway loop(실행 중)이거나 단명
+            # asyncio.run loop(닫혀 있어 위에서 걸러짐)이기 때문이다. 그 loop가 다시
+            # 돌 때 owner task가 정리되도록 best-effort thread-safe 신호로 폴백한다.
             logger.warning("Owning loop for MCP session is idle; signalling close best-effort. Session may leak until the loop runs again.")
             self._signal_close(loop, close_evt)
             if cancel:
@@ -340,7 +329,7 @@ class MCPSessionPool:
                     pass
 
     async def close_scope(self, scope_key: str) -> None:
-        """Close all sessions for a given scope (e.g. thread_id)."""
+        """주어진 scope(예: thread_id)의 모든 session을 닫는다."""
         with self._lock:
             keys = [k for k in self._entries if k[1] == scope_key]
             entries = [(self._entries.pop(k)) for k in keys]
@@ -352,7 +341,7 @@ class MCPSessionPool:
             await self._shutdown_entry(loop, task, close_evt, cancel=True)
 
     async def close_server(self, server_name: str) -> None:
-        """Close all sessions for a given server."""
+        """주어진 서버의 모든 session을 닫는다."""
         with self._lock:
             keys = [k for k in self._entries if k[0] == server_name]
             entries = [(self._entries.pop(k)) for k in keys]
@@ -364,7 +353,7 @@ class MCPSessionPool:
             await self._shutdown_entry(loop, task, close_evt, cancel=True)
 
     async def close_all(self) -> None:
-        """Close every managed session."""
+        """관리 중인 모든 session을 닫는다."""
         with self._lock:
             entries = list(self._entries.values())
             self._entries.clear()
@@ -376,23 +365,21 @@ class MCPSessionPool:
             await self._shutdown_entry(loop, task, close_evt, cancel=True)
 
     def close_all_sync(self) -> None:
-        """Close all sessions on their owning event loops (synchronous).
+        """모든 session을 각자의 소유 event loop에서 닫는다(동기).
 
-        Each session is closed by its owner task on the loop it was created in,
-        avoiding cross-loop and cross-task errors. Safe to call from any thread
-        without an active event loop.
+        각 session은 생성된 loop 위에서 자신의 owner task가 닫으므로 cross-loop /
+        cross-task 오류를 피한다. 활성 event loop가 없는 어떤 thread에서 호출해도
+        안전하다.
 
-        Closing semantics differ by where the owning loop runs:
+        닫기 의미는 소유 loop가 어디서 도는지에 따라 다르다.
 
-        * Owning loop is idle, or running on another thread — this call blocks
-          until teardown completes (or ``SESSION_CLOSE_TIMEOUT`` elapses).
-        * Owning loop is the one currently running on *this* thread — we cannot
-          block on it without deadlocking, so teardown is only *signalled* here
-          and completes asynchronously once control returns to that loop. The
-          caller must therefore keep that loop running afterwards; if it stops
-          the loop immediately, the owner task's ``__aexit__`` may not run. When
-          a deterministic close is required from inside a running loop, ``await
-          close_all()`` instead.
+        * 소유 loop가 유휴 상태이거나 다른 thread에서 도는 경우 — 이 호출은 teardown이
+          끝날 때까지(또는 ``SESSION_CLOSE_TIMEOUT``이 지날 때까지) 블로킹한다.
+        * 소유 loop가 *이* thread에서 현재 돌고 있는 loop인 경우 — 블로킹하면 deadlock이
+          되므로 여기서는 teardown을 *신호*만 하고, 제어가 그 loop로 돌아간 뒤 비동기로
+          완료된다. 따라서 caller는 이후에도 그 loop를 계속 돌려야 한다. 즉시 loop를
+          멈추면 owner task의 ``__aexit__``가 실행되지 않을 수 있다. 실행 중인 loop
+          안에서 결정적인 close가 필요하면 ``await close_all()``을 쓴다.
         """
         with self._lock:
             entries = list(self._entries.values())
@@ -400,8 +387,8 @@ class MCPSessionPool:
             inflight = list(self._inflight.values())
             self._inflight.clear()
 
-        # Entries are initialized (gentle close_evt path). In-flight creations
-        # may be blocked mid-init, so they are cancelled to unblock teardown.
+        # 등록된 항목은 초기화가 끝난 상태다(부드러운 close_evt 경로). 진행 중인 생성
+        # 작업은 초기화 도중 블로킹되어 있을 수 있어 teardown을 풀기 위해 취소한다.
         owners = [(loop, task, close_evt, False) for _s, loop, task, close_evt in entries]
         owners += [(loop, task, close_evt, True) for loop, _r, task, close_evt in inflight]
         try:
@@ -413,16 +400,15 @@ class MCPSessionPool:
                 continue
             try:
                 if loop is current_running_loop:
-                    # We are executing inside this loop's thread, so synchronously
-                    # waiting on run_coroutine_threadsafe(...).result() would
-                    # deadlock until timeout. Signal the owner task directly and
-                    # let it finish once this synchronous call returns control to
-                    # the running loop.
+                    # 이 loop의 thread 안에서 실행 중이므로
+                    # run_coroutine_threadsafe(...).result()를 동기로 기다리면 timeout까지
+                    # deadlock에 빠진다. owner task에 직접 신호만 보내고, 이 동기 호출이
+                    # 실행 중인 loop로 제어를 돌려준 뒤 끝내게 한다.
                     close_evt.set()
                     if cancel:
                         task.cancel()
                 elif loop.is_running():
-                    # Schedule the shutdown on the owning loop from this thread.
+                    # 이 thread에서 소유 loop에 shutdown을 스케줄한다.
                     future = asyncio.run_coroutine_threadsafe(self._shutdown(close_evt, task, cancel), loop)
                     future.result(timeout=self.SESSION_CLOSE_TIMEOUT)
                 else:
@@ -432,7 +418,7 @@ class MCPSessionPool:
 
 
 # ------------------------------------------------------------------
-# Module-level singleton
+# 모듈 수준 singleton
 # ------------------------------------------------------------------
 
 _pool: MCPSessionPool | None = None
@@ -440,13 +426,13 @@ _pool_lock = threading.Lock()
 
 
 def get_session_pool() -> MCPSessionPool:
-    """Return the global session-pool singleton."""
+    """전역 session pool singleton을 반환한다."""
     global _pool
-    # Build and return under the lock so racing cold-start callers construct
-    # exactly one pool and reset_session_pool() can't null the global between
-    # reading it and returning it (which previously could hand back None). The
-    # critical section is tiny and never awaits, so a threading.Lock is safe to
-    # hold from both the async and sync/worker-thread paths.
+    # lock 아래에서 생성하고 반환한다. 그래야 cold start에서 경쟁하는 caller들이 pool을
+    # 정확히 하나만 만들고, reset_session_pool()이 전역을 읽고 반환하는 사이에 None으로
+    # 만들지 못한다(이전에는 None이 반환될 수 있었다). critical section이 아주 짧고
+    # await하지 않으므로 async 경로와 sync/worker-thread 경로 양쪽에서 threading.Lock을
+    # 잡아도 안전하다.
     with _pool_lock:
         if _pool is None:
             _pool = MCPSessionPool()
@@ -454,7 +440,7 @@ def get_session_pool() -> MCPSessionPool:
 
 
 def reset_session_pool() -> None:
-    """Reset the singleton (used in tests and the MCP cache reset path)."""
+    """singleton을 리셋한다(테스트와 MCP cache 리셋 경로에서 사용)."""
     global _pool
     with _pool_lock:
         _pool = None

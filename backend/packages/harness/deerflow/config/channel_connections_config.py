@@ -1,4 +1,4 @@
-"""Configuration for user-owned IM channel connections."""
+"""사용자 소유 IM channel connection 설정."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class BindingCodeChannelConnectionConfig(BaseModel):
 
 
 class ChannelConnectionsConfig(BaseModel):
-    """Top-level config for browser-connectable IM channels."""
+    """브라우저에서 연결할 수 있는 IM channel의 최상위 설정."""
 
     enabled: bool = False
     require_bound_identity: bool = True

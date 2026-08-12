@@ -1,4 +1,4 @@
-"""Middleware for intercepting clarification requests and presenting them to the user."""
+"""clarification 요청을 가로채 사용자에게 제시하는 middleware."""
 
 import json
 import logging
@@ -16,14 +16,14 @@ from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
 
-# Whitelisted form field types; anything else degrades to "text" so a bad
-# model-provided type can never produce an unrenderable card.
+# 허용된 form field 타입. 그 외에는 "text"로 낮춰서, 모델이 잘못된 타입을 줘도 렌더링할 수
+# 없는 카드가 나오지 않게 한다.
 FORM_FIELD_TYPES = frozenset({"text", "textarea", "number", "select", "multi_select", "checkbox", "date"})
 _OPTION_FIELD_TYPES = frozenset({"select", "multi_select"})
 
-# Field names that collide with JavaScript Object.prototype properties. The
-# frontend stores form values in a plain object keyed by field name, so these
-# would read inherited prototype members instead of user input.
+# JavaScript Object.prototype 속성과 충돌하는 field 이름들. frontend는 form 값을 field 이름을
+# 키로 하는 평범한 객체에 저장하므로, 이런 이름은 사용자 입력 대신 상속된 prototype 멤버를
+# 읽게 된다.
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "__proto__",
@@ -42,59 +42,56 @@ _RESERVED_FIELD_NAMES = frozenset(
     }
 )
 
-# Hard caps so a runaway model cannot publish an unbounded form. Exceeding a
-# cap is a structural error: the whole form degrades to the legacy modes
-# instead of silently truncating business fields.
+# 폭주한 모델이 무한정 큰 form을 만들지 못하도록 하는 hard cap. 상한을 넘는 것은 구조적
+# 오류이므로, 업무 field를 조용히 잘라내는 대신 form 전체를 legacy 모드로 낮춘다.
 MAX_FORM_FIELDS = 16
 MAX_FIELD_OPTIONS = 24
 MAX_FIELD_TEXT_CHARS = 200
-# Total budget over the serialized normalized fields, in UTF-8 bytes. The
-# per-item caps alone still admit forms whose plain-text IM fallback exceeds
-# channel delivery limits (Slack truncates at 40k chars per message; Feishu
-# guides ~30KB per card), which would silently drop trailing fields — the very
-# thing atomic validation exists to prevent. 16KB keeps the fallback text of
-# any accepted form comfortably inside the strictest supported channel while
-# leaving headroom for question/context.
+# 정규화된 field 직렬화 결과에 대한 총 예산(UTF-8 바이트). 항목별 상한만으로는 평문 IM
+# fallback이 채널 전송 한도를 넘는 form도 통과한다(Slack은 메시지당 40k자에서 자르고, Feishu는
+# 카드당 약 30KB를 권장한다). 그러면 뒤쪽 field가 조용히 사라지는데, 이는 원자적 검증이 막으려는
+# 바로 그 상황이다. 16KB면 허용된 어떤 form의 fallback 텍스트도 가장 빡빡한 채널 안에 여유 있게
+# 들어가고 question/context 여유분도 남는다.
 MAX_FORM_SERIALIZED_BYTES = 16_384
 
 _XML_TAG_RE = re.compile(r"</?[A-Za-z_][\w:.-]*(?:\s[^<>]*?)?\s*/?>")
 
 
 class ClarificationMiddlewareState(AgentState):
-    """Compatible with the `ThreadState` schema."""
+    """`ThreadState` 스키마와 호환된다."""
 
     pass
 
 
 class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
-    """Intercepts clarification tool calls and interrupts execution to present questions to the user.
+    """clarification 도구 호출을 가로채고 실행을 중단해 사용자에게 질문을 제시한다.
 
-    When the model calls the `ask_clarification` tool, this middleware:
-    1. Intercepts the tool call before execution
-    2. Extracts the clarification question and metadata
-    3. Formats a user-friendly message
-    4. Returns a Command that interrupts execution and presents the question
-    5. Waits for user response before continuing
+    모델이 `ask_clarification` 도구를 호출하면 이 middleware는 다음을 수행한다.
 
-    This replaces the tool-based approach where clarification continued the conversation flow.
+    1. 실행 전에 도구 호출을 가로챈다.
+    2. clarification 질문과 metadata를 추출한다.
+    3. 사용자가 읽기 좋은 메시지로 포매팅한다.
+    4. 실행을 중단하고 질문을 제시하는 Command를 반환한다.
+    5. 사용자 응답을 기다린 뒤에 진행한다.
+
+    clarification이 대화 흐름을 그대로 이어가던 기존 도구 기반 방식을 대체한다.
     """
 
     state_schema = ClarificationMiddlewareState
 
     def _stable_message_id(self, tool_call_id: str, formatted_message: str) -> str:
-        """Build a deterministic message ID so retried clarification calls replace, not append."""
+        """재시도된 clarification 호출이 추가가 아니라 교체되도록 결정적 message ID를 만든다."""
         if tool_call_id:
             return f"clarification:{tool_call_id}"
         digest = sha256(formatted_message.encode("utf-8")).hexdigest()[:16]
         return f"clarification:{digest}"
 
     def _normalize_options(self, raw_options: Any) -> list[str]:
-        """Normalize tool-provided options into displayable string values."""
+        """도구가 준 options를 표시 가능한 문자열 값으로 정규화한다."""
         options = raw_options
 
-        # Some models (e.g. Qwen3-Max) serialize array parameters as JSON strings
-        # instead of native arrays. Deserialize and normalize so `options`
-        # is always a list for the rendering logic below.
+        # 일부 모델(예: Qwen3-Max)은 배열 파라미터를 네이티브 배열이 아니라 JSON 문자열로
+        # 직렬화한다. 아래 렌더링 로직에서 `options`가 항상 list가 되도록 역직렬화하고 정규화한다.
         if isinstance(options, str):
             try:
                 options = json.loads(options)
@@ -108,9 +105,8 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         elif not isinstance(options, list):
             options = [options]
 
-        # Trim, drop blanks, and dedupe (order-preserving): the frontend parser
-        # rejects the whole payload on blank option labels, so they must never
-        # be emitted.
+        # 공백 제거, 빈 값 삭제, 순서를 유지한 중복 제거. frontend 파서는 빈 option label이
+        # 하나라도 있으면 payload 전체를 거부하므로 절대 내보내면 안 된다.
         normalized: list[str] = []
         seen: set[str] = set()
         for option in options:
@@ -123,7 +119,7 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
 
     @staticmethod
     def _flatten_dict_option_values(value: dict[str, Any]) -> list[str | int | float]:
-        """Flatten scalar leaves from XML-to-dict option payloads in source order."""
+        """XML을 dict로 변환한 option payload에서 스칼라 leaf를 원본 순서대로 평탄화한다."""
         flattened: list[str | int | float] = []
 
         def collect(nested: Any) -> None:
@@ -141,7 +137,7 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
 
     @staticmethod
     def _normalize_bool(raw: Any) -> bool:
-        """Coerce a model-provided boolean; some models serialize booleans as strings or 1/0."""
+        """모델이 준 boolean을 강제 변환한다. 일부 모델은 boolean을 문자열이나 1/0으로 직렬화한다."""
         if isinstance(raw, bool):
             return raw
         if isinstance(raw, int | float):
@@ -151,13 +147,12 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         return False
 
     def _normalize_fields(self, raw_fields: Any) -> list[dict[str, Any]]:
-        """Normalize tool-provided form fields into the validated v2 field schema.
+        """도구가 준 form field를 검증된 v2 field 스키마로 정규화한다.
 
-        Validation is atomic: any structurally broken entry (non-dict, bad or
-        reserved or duplicate name, over-cap counts/lengths) invalidates the
-        whole form so the card can never render "complete" while silently
-        missing a required business field. Benign issues keep their local
-        degradation: unknown types and option-less selects become ``text``.
+        검증은 원자적이다. 구조적으로 깨진 항목(dict가 아님, 잘못되거나 예약되거나 중복된
+        이름, 개수·길이 상한 초과)이 하나라도 있으면 form 전체를 무효화한다. 필수 업무 field가
+        조용히 빠진 채로 카드가 "완전한" 것처럼 보이는 일을 막기 위해서다. 무해한 문제는 국소
+        강등으로 처리한다. 알 수 없는 타입과 option 없는 select는 ``text``가 된다.
         """
         fields = raw_fields
         if isinstance(fields, str):
@@ -189,9 +184,8 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
                 return []
 
             field_type = entry.get("type")
-            # isinstance guard first: `type: []` / `type: {}` are legal JSON
-            # from a model, and an unhashable membership probe would raise
-            # TypeError instead of degrading.
+            # isinstance 검사를 먼저 한다. 모델이 보내는 `type: []` / `type: {}`도 적법한
+            # JSON이라, 해시 불가 값으로 멤버십 검사를 하면 강등 대신 TypeError가 난다.
             if not isinstance(field_type, str) or field_type not in FORM_FIELD_TYPES:
                 field_type = "text"
 
@@ -229,17 +223,16 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         return normalized
 
     def _build_human_input_payload(self, args: dict[str, Any], *, tool_call_id: str, request_id: str, fields: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        """Build the structured UI payload while keeping ToolMessage.content as fallback.
+        """ToolMessage.content를 fallback으로 남긴 채 구조화된 UI payload를 만든다.
 
-        Protocol versioning: legacy modes (``free_text`` / ``choice_with_other``)
-        keep ``version: 1`` so their wire format is unchanged; the v2 ``form``
-        mode carries ``version: 2`` so older frontends reject the payload and
-        degrade to the plain-text ToolMessage content. Replies stay on the v1
-        response protocol (``text`` / ``option``) — the form card submits a
-        readable ``value`` summary, so no new response kind is introduced.
+        프로토콜 버전 관리: legacy 모드(``free_text`` / ``choice_with_other``)는 wire 포맷을
+        그대로 두기 위해 ``version: 1``을 유지하고, v2 ``form`` 모드는 ``version: 2``를 실어
+        구버전 frontend가 payload를 거부하고 평문 ToolMessage content로 강등되게 한다. 응답은
+        v1 응답 프로토콜(``text`` / ``option``)을 유지한다. form 카드가 읽기 좋은 ``value``
+        요약을 제출하므로 새 응답 종류를 도입하지 않는다.
 
-        ``fields`` accepts an already-normalized list so callers rendering both
-        the payload and the text fallback normalize only once.
+        ``fields``는 이미 정규화된 리스트를 받는다. payload와 텍스트 fallback을 함께 렌더링하는
+        호출자가 정규화를 한 번만 하도록 하기 위해서다.
         """
         if fields is None:
             fields = self._normalize_fields(args.get("fields"))
@@ -285,37 +278,37 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         return payload
 
     def _is_chinese(self, text: str) -> bool:
-        """Check if text contains Chinese characters.
+        """텍스트에 한자가 포함되어 있는지 확인한다.
 
         Args:
-            text: Text to check
+            text: 검사할 텍스트
 
         Returns:
-            True if text contains Chinese characters
+            한자가 포함되어 있으면 True
         """
         return any("\u4e00" <= char <= "\u9fff" for char in text)
 
     def _format_clarification_message(self, args: dict, fields: list[dict[str, Any]] | None = None) -> str:
-        """Format the clarification arguments into a user-friendly message.
+        """clarification 인자를 사용자가 읽기 좋은 메시지로 포매팅한다.
 
         Args:
-            args: The tool call arguments containing clarification details
-            fields: Already-normalized form fields, so callers rendering both
-                the payload and this fallback normalize only once
+            args: clarification 상세 정보를 담은 도구 호출 인자
+            fields: 이미 정규화된 form field. payload와 이 fallback을 함께 렌더링하는
+                호출자가 정규화를 한 번만 하도록 하기 위해 받는다.
 
         Returns:
-            Formatted message string
+            포매팅된 메시지 문자열
         """
         question = args.get("question", "")
-        # str() coercion keeps the icon lookup hashable — `clarification_type:
-        # []` is legal JSON from a model and would raise TypeError as a dict key.
+        # str()로 강제 변환해 아이콘 조회 키를 해시 가능하게 유지한다. 모델이 보내는
+        # `clarification_type: []`도 적법한 JSON이라 dict 키로 쓰면 TypeError가 난다.
         clarification_type = str(args.get("clarification_type", "missing_info"))
         context = args.get("context")
         if fields is None:
             fields = self._normalize_fields(args.get("fields"))
         options = self._normalize_options(args.get("options", []))
 
-        # Type-specific icons
+        # 타입별 아이콘
         type_icons = {
             "missing_info": "❓",
             "ambiguous_requirement": "🤔",
@@ -326,21 +319,21 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
 
         icon = type_icons.get(clarification_type, "❓")
 
-        # Build the message naturally
+        # 메시지를 자연스럽게 조립한다.
         message_parts = []
 
-        # Add icon and question together for a more natural flow
+        # 흐름이 자연스럽도록 아이콘과 질문을 함께 붙인다.
         if context:
-            # If there's context, present it first as background
+            # context가 있으면 배경 설명으로 먼저 보여 준다.
             message_parts.append(f"{icon} {context}")
             message_parts.append(f"\n{question}")
         else:
-            # Just the question with icon
+            # 아이콘과 질문만 보여 준다.
             message_parts.append(f"{icon} {question}")
 
-        # Form fields take precedence over options, mirroring the payload logic.
+        # payload 로직과 동일하게 form field가 options보다 우선한다.
         if fields:
-            message_parts.append("")  # blank line for spacing
+            message_parts.append("")  # 줄 간격용 빈 줄
             for i, field in enumerate(fields, 1):
                 line = f"  {i}. {field['label']}"
                 if field["required"]:
@@ -354,21 +347,19 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
             message_parts.append("")
             message_parts.append("Please reply with a value for each field.")
         elif options and len(options) > 0:
-            message_parts.append("")  # blank line for spacing
+            message_parts.append("")  # 줄 간격용 빈 줄
             for i, option in enumerate(options, 1):
                 message_parts.append(f"  {i}. {option}")
 
         return "\n".join(message_parts)
 
     def _is_disabled(self, request: ToolCallRequest) -> bool:
-        """Whether clarifications are suppressed for this run.
+        """이 run에서 clarification이 억제되는지 여부.
 
-        Non-interactive channels (e.g. GitHub webhooks) set
-        ``disable_clarification`` in the run context because a clarification
-        would dead-end the run — the human only "replies" via a later
-        webhook delivery, by which point the agent's turn is long over.
-        When set, we don't interrupt; we return a ToolMessage nudging the
-        agent to proceed with its best judgment instead.
+        비대화형 채널(예: GitHub webhook)은 run context에 ``disable_clarification``을 설정한다.
+        clarification이 run을 막다른 길로 만들기 때문이다. 사람은 나중에 도착하는 webhook으로만
+        "답변"하는데, 그때는 이미 에이전트의 turn이 한참 전에 끝난 뒤다. 이 값이 설정되어 있으면
+        중단하지 않고, 에이전트가 스스로 판단해 진행하도록 유도하는 ToolMessage를 반환한다.
         """
         runtime = getattr(request, "runtime", None)
         context = getattr(runtime, "context", None)
@@ -377,12 +368,11 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         return bool(context.get("disable_clarification"))
 
     def _handle_disabled_clarification(self, request: ToolCallRequest) -> ToolMessage:
-        """Suppress a clarification and tell the agent to proceed.
+        """clarification을 억제하고 에이전트에게 계속 진행하라고 알린다.
 
-        Returns a plain ToolMessage (not a ``Command(goto=END)``) so the
-        agent loop continues instead of ending — the agent receives this
-        as the tool result and generates again, ideally acting rather
-        than re-asking.
+        ``Command(goto=END)``가 아니라 평범한 ToolMessage를 반환하므로 에이전트 루프가 끝나지
+        않고 이어진다. 에이전트는 이를 도구 결과로 받아 다시 생성하며, 되묻는 대신 실제로
+        행동하는 것이 바람직한 동작이다.
         """
         tool_call_id = request.tool_call.get("id", "")
         logger.info("ask_clarification suppressed (disable_clarification set); instructing agent to proceed")
@@ -399,36 +389,34 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         )
 
     def _handle_clarification(self, request: ToolCallRequest) -> Command:
-        """Handle clarification request and return command to interrupt execution.
+        """clarification 요청을 처리하고 실행을 중단하는 Command를 반환한다.
 
         Args:
-            request: Tool call request
+            request: 도구 호출 요청
 
         Returns:
-            Command that interrupts execution with the formatted clarification message
+            포매팅된 clarification 메시지와 함께 실행을 중단하는 Command
         """
-        # Extract clarification arguments
+        # clarification 인자를 추출한다.
         args = request.tool_call.get("args", {})
         question = args.get("question", "")
 
         logger.info("Intercepted clarification request")
         logger.debug("Clarification question: %s", question)
 
-        # Normalize form fields once; both the text fallback and the payload
-        # consume the same result.
+        # form field는 한 번만 정규화한다. 텍스트 fallback과 payload가 같은 결과를 쓴다.
         fields = self._normalize_fields(args.get("fields"))
 
-        # Format the clarification message
+        # clarification 메시지를 포매팅한다.
         formatted_message = self._format_clarification_message(args, fields=fields)
 
-        # Get the tool call ID
+        # 도구 호출 ID를 가져온다.
         tool_call_id = request.tool_call.get("id", "")
 
         request_id = self._stable_message_id(tool_call_id, formatted_message)
         human_input_payload = self._build_human_input_payload(args, tool_call_id=tool_call_id, request_id=request_id, fields=fields)
 
-        # Create a ToolMessage with the formatted question
-        # This will be added to the message history
+        # 포매팅된 질문을 담은 ToolMessage를 만든다. 메시지 이력에 추가된다.
         tool_message = ToolMessage(
             id=request_id,
             content=formatted_message,
@@ -437,11 +425,11 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
             artifact={"human_input": human_input_payload},
         )
 
-        # Return a Command that:
-        # 1. Adds the formatted tool message
-        # 2. Interrupts execution by going to __end__
-        # Note: We don't add an extra AIMessage here - the frontend will detect
-        # and display ask_clarification tool messages directly
+        # 다음을 수행하는 Command를 반환한다.
+        # 1. 포매팅된 tool message를 추가한다.
+        # 2. __end__로 이동해 실행을 중단한다.
+        # 참고: 여기서 별도의 AIMessage를 추가하지 않는다. frontend가 ask_clarification tool
+        # message를 직접 감지해 표시한다.
         return Command(
             update={"messages": [tool_message]},
             goto=END,
@@ -453,18 +441,18 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Intercept ask_clarification tool calls and interrupt execution (sync version).
+        """ask_clarification 도구 호출을 가로채 실행을 중단한다(sync 버전).
 
         Args:
-            request: Tool call request
-            handler: Original tool execution handler
+            request: 도구 호출 요청
+            handler: 원래의 도구 실행 handler
 
         Returns:
-            Command that interrupts execution with the formatted clarification message
+            포매팅된 clarification 메시지와 함께 실행을 중단하는 Command
         """
-        # Check if this is an ask_clarification tool call
+        # ask_clarification 도구 호출인지 확인한다.
         if request.tool_call.get("name") != "ask_clarification":
-            # Not a clarification call, execute normally
+            # clarification 호출이 아니면 평소대로 실행한다.
             return handler(request)
 
         if self._is_disabled(request):
@@ -478,18 +466,18 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Intercept ask_clarification tool calls and interrupt execution (async version).
+        """ask_clarification 도구 호출을 가로채 실행을 중단한다(async 버전).
 
         Args:
-            request: Tool call request
-            handler: Original tool execution handler (async)
+            request: 도구 호출 요청
+            handler: 원래의 도구 실행 handler(async)
 
         Returns:
-            Command that interrupts execution with the formatted clarification message
+            포매팅된 clarification 메시지와 함께 실행을 중단하는 Command
         """
-        # Check if this is an ask_clarification tool call
+        # ask_clarification 도구 호출인지 확인한다.
         if request.tool_call.get("name") != "ask_clarification":
-            # Not a clarification call, execute normally
+            # clarification 호출이 아니면 평소대로 실행한다.
             return await handler(request)
 
         if self._is_disabled(request):

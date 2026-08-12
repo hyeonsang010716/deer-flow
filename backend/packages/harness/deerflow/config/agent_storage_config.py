@@ -1,20 +1,18 @@
-"""Custom-agent definition storage configuration.
+"""커스텀 agent 정의 저장소 설정.
 
-Controls where custom agent *definitions* (``config.yaml`` + ``SOUL.md``) are
-persisted. This is orthogonal to :class:`DatabaseConfig` (which governs the
-run/thread/event persistence layer) and to the deermem memory store.
+커스텀 agent의 *정의*(``config.yaml`` + ``SOUL.md``)를 어디에 보관할지 정한다.
+run/thread/event 영속 계층을 담당하는 :class:`DatabaseConfig` 나 deermem memory store와는 별개다.
 
-Backends:
-- file: Per-user files under ``{base_dir}/users/{user_id}/agents/{name}/``
-  (today's layout, unchanged). Single-node by construction — an agent created
-  on one node is invisible to other nodes without a shared mount. This is the
-  default so single-node and zero-config development are unaffected.
-- db: A row in the ``agents`` table of the existing SQL persistence layer,
-  shared by every node. Requires ``database.backend`` to be ``sqlite`` or
-  ``postgres`` (validated at startup; see the gateway ``deps`` module).
+백엔드:
+- file: ``{base_dir}/users/{user_id}/agents/{name}/`` 아래의 사용자별 파일
+  (현재 레이아웃 그대로). 구조상 단일 노드 전용이라, 공유 마운트가 없으면 한 노드에서 만든
+  agent가 다른 노드에는 보이지 않는다. 단일 노드와 무설정 개발 환경에 영향을 주지 않도록 기본값이다.
+- db: 기존 SQL 영속 계층의 ``agents`` 테이블 row로 저장하며 모든 노드가 공유한다.
+  ``database.backend`` 가 ``sqlite`` 또는 ``postgres`` 여야 한다(시작 시 검증한다. gateway
+  ``deps`` 모듈 참고).
 
-Agent *memory* (``memory.json``) is a separate concern handled by the deermem
-storage layer and is not affected by this switch.
+agent의 *memory*(``memory.json``)는 deermem 저장 계층이 담당하는 별개 관심사이며
+이 스위치의 영향을 받지 않는다.
 """
 
 from __future__ import annotations

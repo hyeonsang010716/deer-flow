@@ -1,9 +1,8 @@
-"""mem0 memory backend -- a stateless HTTP MemoryManager.
+"""mem0 memory 백엔드 — 상태를 갖지 않는 HTTP MemoryManager.
 
-All state lives server-side in mem0 (dedup, extraction, storage): this backend
-keeps no queue, watermark, or cache, so it is safe for multi-worker Gateway
-deployments. Identity maps 1:1: (user_id, agent_name) -> mem0 (user_id,
-agent_id); thread_id -> mem0 run_id.
+모든 상태(dedup, 추출, 저장)는 mem0 서버 쪽에 있다. 이 백엔드는 queue도 watermark도
+cache도 두지 않으므로 multi-worker Gateway 배포에서도 안전하다. 식별자는 1:1로
+대응한다: (user_id, agent_name) -> mem0 (user_id, agent_id), thread_id -> mem0 run_id.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import PrivateAttr
 
-# ABC contract -- the ONE allowed `from deerflow` import in this backend folder.
+# ABC 계약 — 이 백엔드 폴더에서 유일하게 허용되는 `from deerflow` import.
 from deerflow.agents.memory.manager import MemoryManager, MemoryManagerError
 
 from .client import Mem0APIError, Mem0Client
@@ -32,9 +31,9 @@ def _build_filters(
     agent_name: str | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Build a mem0 ``filters`` object from the available identity parts.
+    """주어진 식별자 조각들로 mem0 ``filters`` 객체를 만든다.
 
-    Returns None when no entity id is available (mem0 requires at least one).
+    entity id가 하나도 없으면 None을 반환한다(mem0는 최소 하나를 요구한다).
     """
     parts: list[dict[str, Any]] = []
     if user_id:
@@ -51,9 +50,9 @@ def _build_filters(
 
 
 def _to_fact(record: dict[str, Any]) -> dict[str, Any]:
-    """Map a mem0 record to the backend-neutral fact shape consumed by the
-    host (agents/memory/tools.py): id/content/category/confidence/createdAt/
-    source. mem0's relevance score doubles as confidence."""
+    """mem0 record를 host(agents/memory/tools.py)가 소비하는 백엔드 중립 fact 형태로
+    변환한다: id/content/category/confidence/createdAt/source.
+    mem0의 관련도 점수를 confidence로 그대로 쓴다."""
     categories = record.get("categories") or []
     metadata = record.get("metadata") or {}
     return {
@@ -67,18 +66,18 @@ def _to_fact(record: dict[str, Any]) -> dict[str, Any]:
 
 
 class Mem0Manager(MemoryManager):
-    """MemoryManager backed by the mem0 Platform API (or compatible server)."""
+    """mem0 Platform API(또는 호환 서버)를 백엔드로 쓰는 MemoryManager."""
 
-    # search() is overridden below -> flag must be True (contract invariant);
-    # this also enables memory mode="tool".
+    # 아래에서 search()를 override하므로 플래그는 True여야 한다(계약 불변식).
+    # 이 값은 memory mode="tool"도 함께 활성화한다.
     supports_search: ClassVar[bool] = True
-    # mem0 extracts/deduplicates facts from full conversations through add();
-    # its fact CRUD hooks are intentionally unsupported, so tool mode retains
-    # passive writes while exposing query-aware search.
+    # mem0는 add()로 전체 대화에서 fact를 추출하고 중복을 제거한다. fact CRUD 훅은
+    # 의도적으로 지원하지 않으므로, tool 모드에서도 passive 쓰기를 유지한 채
+    # query 기반 search만 노출한다.
     requires_passive_writes_in_tool_mode: ClassVar[bool] = True
 
     _config: Mem0Config = PrivateAttr()
-    _client: Any = PrivateAttr(default=None)  # Mem0Client; tests inject a fake
+    _client: Any = PrivateAttr(default=None)  # Mem0Client. 테스트는 fake를 주입한다.
 
     def model_post_init(self, __context: Any) -> None:
         self._config = Mem0Config.from_backend_config(self.backend_config)
@@ -96,17 +95,17 @@ class Mem0Manager(MemoryManager):
         mode: Literal["middleware", "tool"] = "middleware",
         **host_hooks: Any,
     ) -> Mem0Manager:
-        """Build the manager; ``fail_fast`` startup policy auth-checks via ping."""
+        """manager를 만든다. startup policy가 ``fail_fast``면 ping으로 인증을 확인한다."""
         mgr = cls(backend_config=backend_config, mode=mode)
         if mgr._config.startup_policy == "fail_fast":
             mgr._client.ping()
         return mgr
 
     def close(self) -> None:
-        """Release the underlying HTTP connection pool."""
+        """내부 HTTP connection pool을 해제한다."""
         self._client.close()
 
-    # ── Error policies ───────────────────────────────────────────────────
+    # ── 오류 정책 ────────────────────────────────────────────────────────
     def _read_or_fallback(self, fallback: Any, fn: Any) -> Any:
         try:
             return fn()
@@ -125,7 +124,7 @@ class Mem0Manager(MemoryManager):
                 return
             raise MemoryManagerError(f"mem0 write failed: {e}") from e
 
-    # ── Tier 1: write ────────────────────────────────────────────────────
+    # ── Tier 1: 쓰기 ─────────────────────────────────────────────────────
     def add(
         self,
         thread_id: str,
@@ -135,11 +134,11 @@ class Mem0Manager(MemoryManager):
         user_id: str | None = None,
         trace_id: str | None = None,
     ) -> None:
-        """Submit the filtered conversation to mem0 for server-side extraction.
+        """필터링한 대화를 mem0에 넘겨 서버 측 추출을 맡긴다.
 
-        Fire-and-forget: mem0 processes asynchronously (response event_id is
-        not polled). ``thread_id`` maps to mem0 ``run_id`` and always satisfies
-        mem0's at-least-one-entity-id requirement.
+        Fire-and-forget 방식이다. mem0가 비동기로 처리하며 응답의 event_id는 polling하지
+        않는다. ``thread_id``는 mem0 ``run_id``에 대응하므로 "entity id가 최소 하나"라는
+        mem0 요구 조건을 항상 만족한다.
         """
         kept = filter_messages_for_memory(messages)
         payload = [{"role": _ROLE_MAP[getattr(m, "type", "")], "content": extract_message_text(m).strip()} for m in kept if getattr(m, "type", "") in _ROLE_MAP]
@@ -173,7 +172,7 @@ class Mem0Manager(MemoryManager):
             trace_id=trace_id,
         )
 
-    # ── Tier 1: read-inject ──────────────────────────────────────────────
+    # ── Tier 1: 읽기-주입 ────────────────────────────────────────────────
     def get_context(
         self,
         user_id: str | None,
@@ -181,9 +180,8 @@ class Mem0Manager(MemoryManager):
         agent_name: str | None = None,
         thread_id: str | None = None,
     ) -> str:
-        """Query-less recall: the contract passes no current query, so inject
-        the bucket's most recent memories (top_k). Query-aware recall is
-        available via search() in mode="tool"."""
+        """query 없는 recall. 규약상 현재 query가 전달되지 않으므로 버킷에서 가장 최근
+        memory(top_k)를 주입한다. query 기반 recall은 mode="tool"의 search()로 쓴다."""
         filters = _build_filters(user_id=user_id, agent_name=agent_name, run_id=thread_id)
         if filters is None:
             return ""
@@ -212,10 +210,9 @@ class Mem0Manager(MemoryManager):
             line = f"- {text}"
             line_len = len(line)
             shortest_line = line_len if shortest_line is None else min(shortest_line, line_len)
-            # Truncate on entry boundaries: keep only memories that fit whole
-            # within the remaining budget (+1 for the joining newline), so the
-            # injection never ends mid-entry with a dangling partial line. An
-            # oversized entry is skipped -- a shorter later one may still fit.
+            # 항목 경계에서만 자른다. 남은 예산(줄바꿈 1자 포함)에 통째로 들어가는
+            # memory만 담아, 주입 결과가 항목 중간에서 끊긴 조각으로 끝나지 않게 한다.
+            # 너무 큰 항목은 건너뛴다. 뒤쪽의 짧은 항목은 여전히 들어갈 수 있다.
             added = line_len if not lines else line_len + 1
             if used + added > budget:
                 continue
@@ -223,9 +220,8 @@ class Mem0Manager(MemoryManager):
             used += added
         context = "\n".join(lines)
         if not context and shortest_line is not None:
-            # Every recalled memory was longer than the configured budget.
-            # Keep the entry-boundary guarantee and surface the config problem
-            # with a warning rather than injecting a partial fact.
+            # recall된 memory가 전부 설정된 예산보다 길었다. 부분 fact를 주입하는 대신
+            # 항목 경계 보장을 지키고 설정 문제를 warning으로 드러낸다.
             logger.warning(
                 "max_injection_chars=%d is smaller than the shortest recalled memory (%d chars); returning empty context",
                 budget,
@@ -247,7 +243,7 @@ class Mem0Manager(MemoryManager):
             thread_id=thread_id,
         )
 
-    # ── Tier 2: search ───────────────────────────────────────────────────
+    # ── Tier 2: 검색 ─────────────────────────────────────────────────────
     def search(
         self,
         query: str,
@@ -292,7 +288,7 @@ class Mem0Manager(MemoryManager):
             category=category,
         )
 
-    # ── Tier 2: management ───────────────────────────────────────────────
+    # ── Tier 2: 관리 ─────────────────────────────────────────────────────
     def get_memory(
         self,
         *,
@@ -319,8 +315,8 @@ class Mem0Manager(MemoryManager):
         user_id: str | None = None,
         agent_name: str | None = None,
     ) -> dict[str, Any]:
-        """Clear the bucket. agent_name=None clears the user's whole memory;
-        an explicit agent clears only that agent's bucket."""
+        """버킷을 비운다. agent_name=None이면 해당 user의 memory 전체를,
+        agent를 명시하면 그 agent의 버킷만 비운다."""
         if not user_id and not agent_name:
             return {"facts": []}
         self._write_or_drop(lambda: self._client.delete_all_memories(user_id=user_id, agent_id=agent_name, run_id=None))

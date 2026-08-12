@@ -1,9 +1,8 @@
-"""Embedded session wiring for the TUI.
+"""TUI용 embedded session 배선.
 
-Owns construction of the ``DeerFlowClient`` (with a persistent checkpointer),
-thread resolution for ``--continue`` / ``--resume`` (by id **or** title), and the
-shared-persistence writer that makes terminal sessions visible in the Web UI (see
-``deerflow.tui.persistence``).
+영속 checkpointer를 붙인 ``DeerFlowClient`` 생성, ``--continue`` / ``--resume``의 thread 해석
+(id **또는** 제목 기준), 그리고 터미널 session을 Web UI에 보이게 하는 공유 persistence writer를
+담당한다(``deerflow.tui.persistence`` 참고).
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # avoid importing the heavy client during pure planning
+if TYPE_CHECKING:  # 순수 planning 단계에서 무거운 client를 import하지 않기 위함
     from deerflow.client import DeerFlowClient
 
     from .cli import LaunchPlan
@@ -25,7 +24,7 @@ class Session:
     _loop: _LoopThread | None = None
 
     def resolve_thread(self, plan: LaunchPlan) -> str | None:
-        """Resolve the thread id to run against, honoring --resume / --continue."""
+        """--resume / --continue를 반영해 실행 대상 thread id를 해석한다."""
         if plan.thread_id:
             return self.resolve_ref(plan.thread_id)
         if plan.continue_recent:
@@ -35,16 +34,15 @@ class Session:
         return None
 
     def resolve_ref(self, ref: str) -> str:
-        """Resolve a thread reference (id or title) to a thread id.
+        """thread 참조(id 또는 제목)를 thread id로 해석한다.
 
-        Matches an existing thread by id first, then by exact title. Falls back to
-        the literal ref (treated as an id) when nothing matches, so an unknown id
-        still continues/creates that namespace — provided it satisfies the
-        canonical thread ID contract.
+        먼저 id로 기존 thread를 찾고, 그다음 제목이 정확히 일치하는지 본다. 아무것도 맞지 않으면
+        ref 문자열 자체를 id로 간주해 fallback하므로, 알 수 없는 id도 표준 thread ID 계약을
+        만족하는 한 그 네임스페이스를 이어가거나 새로 만든다.
         """
         try:
             threads = self.client.list_threads(limit=100).get("thread_list", [])
-        except Exception:  # noqa: BLE001 - resolution is best-effort
+        except Exception:  # noqa: BLE001 - 해석은 best-effort다
             return self._validated_literal_ref(ref)
         if any(t.get("thread_id") == ref for t in threads):
             return ref
@@ -55,7 +53,7 @@ class Session:
 
     @staticmethod
     def _validated_literal_ref(ref: str) -> str:
-        """Validate a literal ref before it is adopted as a thread id."""
+        """ref 문자열을 thread id로 채택하기 전에 검증한다."""
         from deerflow.utils.thread_id import validate_thread_id
 
         try:
@@ -67,7 +65,7 @@ class Session:
         return self.client.list_threads(limit=limit).get("thread_list", [])
 
     def close(self) -> None:
-        """Stop the background DB loop and dispose the engine (best-effort)."""
+        """background DB loop를 멈추고 engine을 정리한다(best-effort)."""
         loop = self._loop
         if loop is None:
             return
@@ -76,18 +74,17 @@ class Session:
             from deerflow.persistence.engine import close_engine
 
             loop.run(close_engine())
-        except Exception:  # noqa: BLE001 - teardown is best-effort
+        except Exception:  # noqa: BLE001 - teardown은 best-effort다
             pass
         loop.close()
 
 
 def open_session(persistence: bool = True) -> Session:
-    """Build an embedded session backed by the configured checkpointer.
+    """설정된 checkpointer를 백엔드로 쓰는 embedded session을 만든다.
 
-    ``persistence`` controls the shared ``threads_meta`` writer (and its background
-    DB loop/engine). Headless one-shots never use the writer, so they pass
-    ``persistence=False`` to avoid standing up an event loop + connection pool only
-    to discard it.
+    ``persistence``는 공유 ``threads_meta`` writer(및 그 background DB loop/engine)를 제어한다.
+    headless 일회성 실행은 writer를 쓰지 않으므로 ``persistence=False``를 넘겨, event loop와
+    connection pool을 세웠다가 바로 버리는 일을 피한다.
     """
     from deerflow.client import DeerFlowClient
     from deerflow.runtime.checkpointer.provider import get_checkpointer

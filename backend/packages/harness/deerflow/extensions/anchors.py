@@ -1,8 +1,7 @@
-"""Translating semantic placements into concrete stack indices.
+"""의미적 placement를 실제 stack index로 변환한다.
 
-This is the only module that knows the shape of DeerFlow's middleware stack.
-Restructuring the stack means updating the anchor table here; extensions,
-which declare only what they need to observe, stay untouched.
+DeerFlow middleware stack의 형태를 아는 유일한 module이다. stack을 재구성하면 여기 anchor
+테이블을 갱신하면 되고, 무엇을 관찰해야 하는지만 선언하는 extension은 손댈 필요가 없다.
 """
 
 from __future__ import annotations
@@ -24,13 +23,12 @@ _Side = Literal[
 
 @dataclass(frozen=True)
 class AnchorRule:
-    """One attempt at locating an insertion index.
+    """삽입 index를 찾는 한 번의 시도.
 
-    ``side`` "outer"/"inner" position relative to the first middleware whose
-    type is in ``types``; "outer_last"/"inner_last" use the last matching
-    middleware; "inner_last_after" additionally requires that match to follow
-    the last middleware in ``after_types``. "start"/"end" are the absolute
-    ends of the stack and ignore ``types``.
+    ``side``가 "outer"/"inner"이면 타입이 ``types``에 속하는 첫 middleware를 기준으로 위치를
+    잡고, "outer_last"/"inner_last"는 마지막으로 일치하는 middleware를 쓴다.
+    "inner_last_after"는 추가로 그 일치 지점이 ``after_types``의 마지막 middleware보다 뒤에
+    있어야 한다. "start"/"end"는 stack의 절대 양 끝이며 ``types``를 무시한다.
     """
 
     side: _Side
@@ -66,24 +64,24 @@ class AnchorRule:
 
 @dataclass(frozen=True)
 class PlacementAnchor:
-    """An ordered fallback chain of anchor rules."""
+    """anchor rule의 순서 있는 fallback chain."""
 
     chain: tuple[AnchorRule, ...]
 
     @classmethod
     def of(cls, *anchors: PlacementAnchor) -> PlacementAnchor:
-        """Concatenate anchors into one fallback chain."""
+        """여러 anchor를 하나의 fallback chain으로 이어붙인다."""
         rules: list[AnchorRule] = []
         for anchor in anchors:
             rules.extend(anchor.chain)
         return cls(tuple(rules))
 
     def resolve(self, middlewares: Sequence[object]) -> tuple[int, bool]:
-        """Return (index, used_primary_rule).
+        """(index, used_primary_rule)을 반환한다.
 
-        ``used_primary_rule`` is False when the first rule did not match, which
-        the caller reports as a diagnostic — a silently degraded placement
-        changes what the extension observes with no signal.
+        첫 rule이 일치하지 않으면 ``used_primary_rule``이 False가 되고, 호출자는 이를 diagnostic으로
+        보고한다. 조용히 낮아진 placement는 아무 신호 없이 extension이 관찰하는 대상을 바꾸기
+        때문이다.
         """
         for position, rule in enumerate(self.chain):
             index = rule.resolve(middlewares)

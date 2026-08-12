@@ -1,14 +1,14 @@
-"""Custom OpenAI Codex provider using ChatGPT Codex Responses API.
+"""ChatGPT Codex Responses API를 사용하는 custom OpenAI Codex provider.
 
-Uses Codex CLI OAuth tokens with chatgpt.com/backend-api/codex/responses endpoint.
-This is the same endpoint that the Codex CLI uses internally.
+Codex CLI OAuth token으로 chatgpt.com/backend-api/codex/responses endpoint를 호출한다.
+Codex CLI가 내부적으로 쓰는 것과 같은 endpoint다.
 
-Supports:
-- Auto-load credentials from ~/.codex/auth.json
-- Responses API format (not Chat Completions)
-- Tool calling
-- Streaming (required by the endpoint)
-- Retry with exponential backoff
+지원하는 것:
+- ~/.codex/auth.json에서 credential 자동 로드
+- Responses API 형식(Chat Completions 아님)
+- tool calling
+- streaming(이 endpoint가 요구한다)
+- exponential backoff retry
 """
 
 import json
@@ -30,11 +30,11 @@ CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
 def _build_usage_metadata(oai_usage: dict) -> dict:
-    """Convert Codex/Responses API usage dict to LangChain usage_metadata format.
+    """Codex/Responses API의 usage dict를 LangChain usage_metadata 형식으로 변환한다.
 
-    Maps OpenAI Responses API token usage fields to the dict structure that
-    LangChain AIMessage.usage_metadata expects. This avoids depending on
-    langchain_openai private helpers like ``_create_usage_metadata_responses``.
+    OpenAI Responses API의 token usage 필드를 LangChain AIMessage.usage_metadata가 기대하는
+    dict 구조로 매핑한다. ``_create_usage_metadata_responses`` 같은 langchain_openai 비공개
+    helper에 의존하지 않기 위해서다.
     """
     input_tokens = oai_usage.get("input_tokens", 0)
     output_tokens = oai_usage.get("output_tokens", 0)
@@ -59,9 +59,9 @@ MAX_RETRIES = 3
 
 
 class CodexChatModel(BaseChatModel):
-    """LangChain chat model using ChatGPT Codex Responses API.
+    """ChatGPT Codex Responses API를 사용하는 LangChain chat model.
 
-    Config example:
+    config 예시:
         - name: gpt-5.4
           use: deerflow.models.openai_codex_provider:CodexChatModel
           model: gpt-5.4
@@ -89,7 +89,7 @@ class CodexChatModel(BaseChatModel):
             raise ValueError("retry_max_attempts must be >= 1")
 
     def model_post_init(self, __context: Any) -> None:
-        """Auto-load Codex CLI credentials."""
+        """Codex CLI credential을 자동으로 로드한다."""
         self._validate_retry_config()
 
         cred = self._load_codex_auth()
@@ -103,12 +103,12 @@ class CodexChatModel(BaseChatModel):
         super().model_post_init(__context)
 
     def _load_codex_auth(self) -> CodexCliCredential | None:
-        """Load access_token and account_id from Codex CLI auth."""
+        """Codex CLI auth에서 access_token과 account_id를 로드한다."""
         return load_codex_cli_credential()
 
     @classmethod
     def _normalize_content(cls, content: Any) -> str:
-        """Flatten LangChain content blocks into plain text for Codex."""
+        """LangChain content block을 Codex용 평문 텍스트로 평탄화한다."""
         if isinstance(content, str):
             return content
 
@@ -135,9 +135,9 @@ class CodexChatModel(BaseChatModel):
             return str(content)
 
     def _convert_messages(self, messages: list[BaseMessage]) -> tuple[str, list[dict]]:
-        """Convert LangChain messages to Responses API format.
+        """LangChain message를 Responses API 형식으로 변환한다.
 
-        Returns (instructions, input_items).
+        (instructions, input_items)를 반환한다.
         """
         instructions_parts: list[str] = []
         input_items = []
@@ -178,7 +178,7 @@ class CodexChatModel(BaseChatModel):
         return instructions, input_items
 
     def _convert_tools(self, tools: list[dict]) -> list[dict]:
-        """Convert LangChain tool format to Responses API format."""
+        """LangChain tool 형식을 Responses API 형식으로 변환한다."""
         responses_tools = []
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
@@ -203,7 +203,7 @@ class CodexChatModel(BaseChatModel):
         return responses_tools
 
     def _call_codex_api(self, messages: list[BaseMessage], tools: list[dict] | None = None) -> dict:
-        """Call the Codex Responses API and return the completed response."""
+        """Codex Responses API를 호출하고 완료된 response를 반환한다."""
         instructions, input_items = self._convert_messages(messages)
 
         payload = {
@@ -246,7 +246,7 @@ class CodexChatModel(BaseChatModel):
         raise last_error
 
     def _stream_response(self, headers: dict, payload: dict) -> dict:
-        """Stream SSE from Codex API and collect the final response."""
+        """Codex API에서 SSE를 stream으로 받아 최종 response를 모은다."""
         completed_response = None
         streamed_output_items: dict[int, dict[str, Any]] = {}
 
@@ -270,8 +270,8 @@ class CodexChatModel(BaseChatModel):
         if not completed_response:
             raise RuntimeError("Codex API stream ended without response.completed event")
 
-        # ChatGPT Codex can emit the final assistant content only in stream events.
-        # When response.completed arrives, response.output may still be empty.
+        # ChatGPT Codex는 최종 assistant content를 stream event로만 보낼 수 있다.
+        # response.completed가 도착해도 response.output이 비어 있을 수 있다.
         if streamed_output_items:
             merged_output = []
             response_output = completed_response.get("output")
@@ -294,7 +294,7 @@ class CodexChatModel(BaseChatModel):
 
     @staticmethod
     def _parse_sse_data_line(line: str) -> dict[str, Any] | None:
-        """Parse a data line from the SSE stream, skipping terminal markers."""
+        """SSE stream의 data 줄을 파싱한다. 종료 marker는 건너뛴다."""
         if not line.startswith("data:"):
             return None
 
@@ -311,7 +311,7 @@ class CodexChatModel(BaseChatModel):
         return data if isinstance(data, dict) else None
 
     def _parse_tool_call_arguments(self, output_item: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        """Parse function-call arguments, surfacing malformed payloads safely."""
+        """function-call 인자를 파싱한다. 형식이 깨진 payload도 안전하게 드러낸다."""
         raw_arguments = output_item.get("arguments", "{}")
         if isinstance(raw_arguments, dict):
             return raw_arguments, None
@@ -340,7 +340,7 @@ class CodexChatModel(BaseChatModel):
         return parsed_arguments, None
 
     def _parse_response(self, response: dict) -> ChatResult:
-        """Parse Codex Responses API response into LangChain ChatResult."""
+        """Codex Responses API response를 LangChain ChatResult로 파싱한다."""
         content = ""
         tool_calls = []
         invalid_tool_calls = []
@@ -348,7 +348,7 @@ class CodexChatModel(BaseChatModel):
 
         for output_item in response.get("output", []):
             if output_item.get("type") == "reasoning":
-                # Extract reasoning summary text
+                # reasoning summary 텍스트를 추출한다
                 for summary_item in output_item.get("summary", []):
                     if isinstance(summary_item, dict) and summary_item.get("type") == "summary_text":
                         reasoning_content += summary_item.get("text", "")
@@ -410,13 +410,13 @@ class CodexChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        """Generate a response using Codex Responses API."""
+        """Codex Responses API로 response를 생성한다."""
         tools = kwargs.get("tools", None)
         response = self._call_codex_api(messages, tools=tools)
         return self._parse_response(response)
 
     def bind_tools(self, tools: list, **kwargs: Any) -> Any:
-        """Bind tools for function calling."""
+        """function calling을 위해 tool을 바인딩한다."""
         from langchain_core.runnables import RunnableBinding
         from langchain_core.tools import BaseTool
         from langchain_core.utils.function_calling import convert_to_openai_function

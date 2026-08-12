@@ -1,4 +1,4 @@
-"""Allow ``python -m deerflow.tui`` to launch the workbench."""
+"""``python -m deerflow.tui``로 workbench를 띄울 수 있게 한다."""
 
 from .cli import main
 

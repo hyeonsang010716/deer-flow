@@ -1,7 +1,7 @@
-"""Tool for discovering historical uploaded files in the current thread.
+"""현재 thread에 과거 업로드된 파일을 찾는 도구.
 
-Unlike ``<current_uploads>`` which lists only this run's newly uploaded files,
-this tool lets the agent discover files uploaded in previous turns on demand.
+이번 run에서 새로 업로드된 파일만 나열하는 ``<current_uploads>``와 달리, 이 도구는 agent가
+이전 턴에 업로드된 파일을 필요할 때 탐색할 수 있게 한다.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def _format_omitted_summary(omitted: list[str]) -> str:
 
 
 def _resolve_thread_id(runtime: Runtime) -> str | None:
-    """Resolve the current thread id from runtime context or RunnableConfig."""
+    """runtime context 또는 RunnableConfig에서 현재 thread id를 해석한다."""
     thread_id = runtime.context.get("thread_id") if runtime.context else None
     if thread_id:
         return thread_id
@@ -57,7 +57,7 @@ def _resolve_thread_id(runtime: Runtime) -> str | None:
 
 
 def _resolve_user_id(runtime: Runtime) -> str:
-    """Resolve the current user id."""
+    """현재 user id를 해석한다."""
     from deerflow.runtime.user_context import resolve_runtime_user_id
 
     return resolve_runtime_user_id(runtime) or get_effective_user_id()
@@ -70,7 +70,7 @@ def _list_uploaded_files_impl(
     *,
     _paths: Any | None = None,
 ) -> dict:
-    """Core implementation — testable without the @tool wrapper."""
+    """핵심 구현. @tool 래퍼 없이도 테스트할 수 있다."""
     if runtime is None:
         return {"files": [], "message": "No runtime context available."}
 
@@ -85,7 +85,7 @@ def _list_uploaded_files_impl(
     if not uploads_dir.exists():
         return {"files": [], "message": "No uploads directory for this thread."}
 
-    # Resolve the set of filenames uploaded in the current run so we can exclude them.
+    # 현재 run에서 업로드된 파일 이름 집합을 구해서 제외한다.
     current_run_filenames: set[str] = set()
     try:
         state = runtime.state
@@ -100,10 +100,10 @@ def _list_uploaded_files_impl(
             exc_info=True,
         )
 
-    # Normalize max_results
+    # max_results 정규화
     max_results = max(1, min(max_results, _MAX_MAX_RESULTS))
 
-    # Normalize include_outline
+    # include_outline 정규화
     if isinstance(include_outline, bool):
         outline_for_all: bool = include_outline
         outline_filenames: set[str] = set()
@@ -111,24 +111,23 @@ def _list_uploaded_files_impl(
         outline_for_all = False
         outline_filenames = set(include_outline)
 
-    # Collect historical files (sorted by mtime descending).
-    # Skip .md files that are conversion artifacts (have a same-stem non-.md sibling).
+    # 과거 파일을 수집한다(mtime 내림차순 정렬).
+    # 변환 결과물인 .md 파일(같은 stem의 .md가 아닌 형제 파일이 있는 경우)은 건너뛴다.
     candidates: list[tuple[float, Path, int]] = []
     try:
-        # Collect file entries once to build the name set and iterate.
+        # 이름 집합을 만들고 순회하기 위해 파일 entry를 한 번만 수집한다.
         entries = [e for e in os.scandir(uploads_dir) if e.is_file() and not e.is_symlink() and not is_upload_staging_file(e.name)]
         all_names: set[str] = {e.name for e in entries}
 
         for entry in entries:
             if entry.name in current_run_filenames:
                 continue
-            # Skip .md files that are conversion artifacts of another file.
-            # Known limitation: if a user manually uploads both report.pdf and
-            # report.md, the .md is hidden as a "conversion artifact".  This is
-            # acceptable for the MVP — triggering this requires uploading files
-            # whose stems collide with converted documents, which is rare.
+            # 다른 파일의 변환 결과물인 .md 파일은 건너뛴다.
+            # 알려진 한계: 사용자가 report.pdf와 report.md를 직접 함께 업로드하면 .md가
+            # "변환 결과물"로 취급되어 숨겨진다. MVP에서는 허용 가능한 수준이다. 이 상황은
+            # 변환된 문서와 stem이 겹치는 파일을 업로드해야 발생하므로 드물다.
             if entry.name.endswith(".md"):
-                stem = entry.name[:-3]  # remove ".md"
+                stem = entry.name[:-3]  # ".md" 제거
                 non_md_siblings = {n for n in all_names if n != entry.name and Path(n).stem == stem}
                 if non_md_siblings:
                     continue
@@ -140,7 +139,7 @@ def _list_uploaded_files_impl(
     if not candidates:
         return {"files": [], "message": "No historical uploaded files in this thread."}
 
-    # Sort by mtime descending (most recent first)
+    # mtime 내림차순 정렬(최신 우선)
     candidates.sort(key=lambda item: item[0], reverse=True)
 
     total_count = len(candidates)
@@ -200,19 +199,19 @@ def list_uploaded_files(
         "Maximum number of files to return (default 20, max 100).",
     ] = _DEFAULT_MAX_RESULTS,
 ) -> dict:
-    """Discover historical uploaded files available in this thread.
+    """이 thread에서 사용할 수 있는 과거 업로드 파일을 조회한다.
 
-    Returns files that were uploaded in PREVIOUS turns — files uploaded in the
-    current run are excluded (they are already listed in <current_uploads>).
+    이전 턴에 업로드된 파일을 반환한다 — 현재 run에서 업로드된 파일은 제외된다
+    (이미 <current_uploads>에 나열되어 있다).
 
-    Use this tool when:
-    - The user refers to previously uploaded files without naming them (e.g. "analyze those PDFs I uploaded before")
-    - You need to check what files are available in this thread
-    - You are starting work on a thread and want an overview of available data
+    이 tool을 사용해야 할 때:
+    - 사용자가 이름을 밝히지 않고 이전에 업로드한 파일을 언급할 때(예: "전에 업로드한 그 PDF들 분석해줘")
+    - 이 thread에 어떤 파일이 있는지 확인해야 할 때
+    - thread에서 작업을 시작하며 사용할 수 있는 데이터를 개괄해야 할 때
 
-    Skip this tool when:
-    - The user names a specific file — use read_file or grep directly with the path
-    - The file was uploaded in the current run — it's already in <current_uploads>
+    이 tool을 건너뛰어야 할 때:
+    - 사용자가 특정 파일을 지목했을 때 — 그 경로로 read_file이나 grep을 바로 사용하라
+    - 현재 run에서 업로드된 파일일 때 — 이미 <current_uploads>에 있다
     """
     return _list_uploaded_files_impl(
         include_outline=include_outline,

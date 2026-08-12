@@ -1,4 +1,4 @@
-"""Tool for creating and evolving custom skills."""
+"""custom skill을 생성하고 발전시키는 tool."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from deerflow.tools.types import Runtime
 
 logger = logging.getLogger(__name__)
 
-# Lock granularity: (user_id, skill_name) to avoid cross-user blocking.
+# lock 단위는 (user_id, skill_name)이다. user 간 blocking을 피하기 위함이다.
 _skill_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
 
 
@@ -64,8 +64,8 @@ def _history_record(*, action: str, file_path: str, prev_content: str | None, ne
 
 
 async def _scan_or_raise(content: str, *, executable: bool, location: str, static_findings: list[StaticFinding] | None = None) -> dict[str, Any]:
-    # In-graph: the graph root already attached tracing (see the INVARIANT in
-    # agents/lead_agent/agent.py), so the scan model must not attach it again.
+    # graph 내부 실행이다. graph root가 이미 tracing을 붙였으므로(agents/lead_agent/agent.py의
+    # INVARIANT 참고) scan model이 다시 붙이면 안 된다.
     result = await scan_skill_content(content, executable=executable, location=location, static_findings=static_findings or [], attach_tracing=False)
     if result.decision == "block":
         raise ValueError(f"Security scan blocked the write: {result.reason}")
@@ -122,16 +122,16 @@ async def _skill_manage_impl(
     replace: str | None = None,
     expected_count: int | None = None,
 ) -> str:
-    """Manage custom skills under skills/custom/.
+    """skills/custom/ 아래의 custom skill을 관리한다.
 
     Args:
-        action: One of create, patch, edit, delete, write_file, remove_file.
-        name: Skill name in hyphen-case.
-        content: New file content for create, edit, or write_file.
-        path: Supporting file path for write_file or remove_file.
-        find: Existing text to replace for patch.
-        replace: Replacement text for patch.
-        expected_count: Optional expected number of replacements for patch.
+        action: create, patch, edit, delete, write_file, remove_file 중 하나.
+        name: hyphen-case skill 이름.
+        content: create, edit, write_file에서 쓸 새 파일 내용.
+        path: write_file 또는 remove_file 대상 보조 파일 경로.
+        find: patch에서 교체할 기존 텍스트.
+        replace: patch에서 넣을 대체 텍스트.
+        expected_count: patch에서 기대하는 교체 횟수(선택).
     """
     name = SkillStorage.validate_skill_name(name)
     user_id = resolve_runtime_user_id(runtime)
@@ -252,9 +252,9 @@ async def _skill_manage_impl(
             return f"Removed '{path}' from custom skill '{name}'."
 
         if await _to_thread(skill_storage.public_skill_exists, name):
-            # public_skill_exists covers both built-in (PUBLIC) and legacy (LEGACY)
-            # skills; the UserScopedSkillStorage override distinguishes them in
-            # ensure_custom_skill_is_editable with category-specific messages.
+            # public_skill_exists는 built-in(PUBLIC)과 legacy(LEGACY) skill을 모두 포함한다.
+            # UserScopedSkillStorage override가 ensure_custom_skill_is_editable에서 category별
+            # 메시지로 둘을 구분한다.
             raise ValueError(f"'{name}' is a read-only skill (built-in or legacy shared). To customise it, create your own version with the same name.")
         raise ValueError(f"Unsupported action '{action}'.")
 
@@ -270,16 +270,16 @@ async def skill_manage_tool(
     replace: str | None = None,
     expected_count: int | None = None,
 ) -> str:
-    """Manage custom skills under skills/custom/.
+    """skills/custom/ 아래의 custom skill을 관리한다.
 
     Args:
-        action: One of create, patch, edit, delete, write_file, remove_file.
-        name: Skill name in hyphen-case.
-        content: New file content for create, edit, or write_file.
-        path: Supporting file path for write_file or remove_file.
-        find: Existing text to replace for patch.
-        replace: Replacement text for patch.
-        expected_count: Optional expected number of replacements for patch.
+        action: create, patch, edit, delete, write_file, remove_file 중 하나.
+        name: hyphen-case로 쓴 skill 이름.
+        content: create, edit, write_file에 사용할 새 파일 내용.
+        path: write_file 또는 remove_file 대상 supporting 파일 경로.
+        find: patch에서 교체할 기존 텍스트.
+        replace: patch에서 넣을 대체 텍스트.
+        expected_count: patch에서 기대하는 교체 횟수(선택).
     """
     return await _skill_manage_impl(
         runtime=runtime,

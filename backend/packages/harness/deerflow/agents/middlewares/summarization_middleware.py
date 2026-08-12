@@ -1,4 +1,4 @@
-"""Summarization middleware extensions for DeerFlow."""
+"""DeerFlow용 summarization 미들웨어 확장."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from deerflow.models import create_chat_model
 logger = logging.getLogger(__name__)
 _SUMMARY_TRIGGER_MESSAGE_NAME = "summary"
 _UNSET = object()
-# Valid non-generated summaries for the empty / too-long-to-summarize edges; these
-# short-circuit model invocation (and must not be treated as generation failures).
+# 비어 있거나 요약하기엔 너무 긴 경계 상황을 위한, 생성하지 않은 유효한 요약 문구.
+# model 호출을 건너뛰게 하며 생성 실패로 취급하면 안 된다.
 _CANNED_SUMMARIES = frozenset(
     {
         "No previous conversation history.",
@@ -33,18 +33,17 @@ _CANNED_SUMMARIES = frozenset(
 
 
 class SummaryGenerationError(RuntimeError):
-    """Summary generation failed after exhausting the run-model fallback.
+    """run model fallback까지 모두 소진한 뒤에도 요약 생성이 실패했음을 나타낸다.
 
-    Raised only when a caller opts in via ``raise_on_failure`` (the manual
-    ``/compact`` path) so a real failure is reported distinctly from "nothing to
-    compact". The automatic path leaves ``raise_on_failure`` False and swallows the
-    failure, leaving compaction state unchanged for the turn.
+    호출자가 ``raise_on_failure``로 명시적으로 선택한 경우(수동 ``/compact`` 경로)에만 발생시켜,
+    실제 실패를 "압축할 것이 없음"과 구분해 보고한다. 자동 경로는 ``raise_on_failure``를 False로 두고
+    실패를 삼켜, 그 턴의 compaction 상태를 그대로 둔다.
     """
 
 
 @dataclass(frozen=True)
 class SummarizationEvent:
-    """Context emitted before conversation history is summarized away."""
+    """대화 이력이 요약으로 대체되기 직전에 전달되는 context."""
 
     messages_to_summarize: tuple[AnyMessage, ...]
     preserved_messages: tuple[AnyMessage, ...]
@@ -55,7 +54,7 @@ class SummarizationEvent:
 
 @dataclass(frozen=True)
 class ContextCompactionResult:
-    """Result of summarizing old context and retaining the active tail."""
+    """오래된 context를 요약하고 활성 tail을 남긴 결과."""
 
     summary_text: str
     messages_to_summarize: tuple[AnyMessage, ...]
@@ -65,13 +64,13 @@ class ContextCompactionResult:
 
 @runtime_checkable
 class BeforeSummarizationHook(Protocol):
-    """Hook invoked before summarization removes messages from state."""
+    """summarization이 state에서 메시지를 제거하기 전에 호출되는 hook."""
 
     def __call__(self, event: SummarizationEvent) -> None: ...
 
 
 def _resolve_thread_id(runtime: Runtime) -> str | None:
-    """Resolve the current thread ID from runtime context or LangGraph config."""
+    """runtime context 또는 LangGraph config에서 현재 thread ID를 해석한다."""
     thread_id = runtime.context.get("thread_id") if runtime.context else None
     if thread_id is None:
         try:
@@ -83,7 +82,7 @@ def _resolve_thread_id(runtime: Runtime) -> str | None:
 
 
 def _resolve_agent_name(runtime: Runtime) -> str | None:
-    """Resolve the current agent name from runtime context or LangGraph config."""
+    """runtime context 또는 LangGraph config에서 현재 agent 이름을 해석한다."""
     agent_name = runtime.context.get("agent_name") if runtime.context else None
     if agent_name is None:
         try:
@@ -95,7 +94,7 @@ def _resolve_agent_name(runtime: Runtime) -> str | None:
 
 
 class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
-    """Summarization middleware with pre-compression hook dispatch."""
+    """압축 직전 hook 디스패치를 지원하는 summarization 미들웨어."""
 
     def __init__(
         self,
@@ -109,47 +108,40 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._before_summarization_hooks = before_summarization or []
-        # Model-ownership state. The model that actually executes the run is selected
-        # per run and is the authoritative source of truth, so the caller (lead /
-        # subagent / manual builders) supplies it directly as ``run_model_name``
-        # instead of the middleware re-deriving it from ``runtime.context`` /
-        # ``get_config()`` — those fields do not carry a custom agent's or a subagent's
-        # resolved model.
+        # model 소유권 상태. run을 실제로 실행하는 model은 run마다 선택되며 그것이 유일한 진실이다.
+        # 그래서 호출자(lead / subagent / 수동 빌더)가 ``run_model_name``으로 직접 넘기고, 미들웨어가
+        # ``runtime.context``나 ``get_config()``에서 다시 유도하지 않는다. 그 필드들은 custom agent나
+        # subagent가 해석한 model을 담지 않기 때문이다.
         #
-        # ``configured_model_name`` is the explicitly configured summary model
-        # (``None`` => summarize with the run's own model). ``run_model_name`` is the
-        # model the run executes with; when they differ and the summary provider is
-        # broken (expired key, quota, outage) the run's own working model can still
-        # compact.
+        # ``configured_model_name``은 명시적으로 설정된 요약 model이다(``None``이면 run 자신의 model로
+        # 요약한다). ``run_model_name``은 run이 실행에 쓰는 model이다. 둘이 다르고 요약 provider가
+        # 망가진 경우(키 만료, quota, 장애) run 자신의 정상 model로 compaction을 이어갈 수 있다.
         self._app_config = app_config
         self._configured_summary_model_name = configured_model_name
         self._run_model_name = run_model_name
-        # The summary LLM call runs inside a LangGraph middleware hook, so its token
-        # stream would otherwise be captured by the messages-tuple stream callback and
-        # broadcast to the frontend as a phantom AI message. Tag a dedicated model copy
-        # with TAG_NOSTREAM so the streaming handler skips it.
-        # Keep self.model untagged so the parent's profile / ls_params inspection still works.
+        # 요약 LLM 호출은 LangGraph 미들웨어 hook 안에서 실행되므로, 그대로 두면 token 스트림이
+        # messages-tuple 스트림 콜백에 잡혀 프론트엔드에 유령 AI 메시지로 방송된다. 별도 model 복사본에
+        # TAG_NOSTREAM을 달아 streaming handler가 건너뛰게 한다.
+        # 부모의 profile / ls_params 검사가 계속 동작하도록 self.model 자체에는 태그를 달지 않는다.
         self._summary_model = self._tag_nostream(self.model)
-        # ``self.model`` is the pre-built *anchor* model: it drives the parent's token
-        # counter / profile inspection and is reused verbatim by generation when a
-        # candidate matches its name. The factory builds it guarded and passes its name
-        # explicitly; direct construction (tests) mirrors the old factory choice
-        # (configured model, else default) so the passed ``model`` is the primary.
+        # ``self.model``은 미리 만들어 둔 *anchor* model이다. 부모의 token counter / profile 검사를
+        # 담당하고, 후보 이름이 일치하면 생성 단계에서 그대로 재사용된다. 팩토리는 이를 예외로 보호하며
+        # 만들고 이름을 명시적으로 넘긴다. 직접 생성하는 경우(테스트)에는 기존 팩토리 선택
+        # (설정된 model, 없으면 기본값)을 따르므로 넘겨받은 ``model``이 primary가 된다.
         if anchor_model_name is _UNSET:
             self._anchor_model_name = configured_model_name or self._default_model_name()
         else:
             self._anchor_model_name = anchor_model_name
-        # Nostream generation models built lazily by name and cached (None = a build
-        # that failed, so a broken candidate config is not retried every turn and does
-        # not escape the fail-open boundary).
+        # 이름별로 지연 생성해 캐시하는 nostream 생성 model. None은 생성 실패를 뜻하며, 잘못된 후보
+        # 설정을 매 턴 재시도하지 않고 fail-open 경계를 벗어나지도 않게 한다.
         self._model_cache: dict[str | None, Any] = {}
 
     def _tag_nostream(self, model: Any) -> Any:
-        """Return a copy of ``model`` carrying TAG_NOSTREAM without clobbering tags.
+        """기존 tag를 뭉개지 않으면서 TAG_NOSTREAM을 붙인 ``model`` 복사본을 반환한다.
 
-        lead_agent/agent.py binds "middleware:summarize" for RunJournal attribution;
-        RunnableBinding.with_config shallow-merges config, so existing tags must be
-        preserved explicitly instead of being overwritten with just [TAG_NOSTREAM].
+        lead_agent/agent.py는 RunJournal 귀속을 위해 "middleware:summarize"를 바인딩한다.
+        RunnableBinding.with_config는 config를 얕게 병합하므로, [TAG_NOSTREAM]만으로 덮어쓰지 말고
+        기존 tag를 명시적으로 보존해야 한다.
         """
         existing_tags = list((getattr(model, "config", None) or {}).get("tags") or [])
         merged_tags = [*existing_tags, TAG_NOSTREAM] if TAG_NOSTREAM not in existing_tags else existing_tags
@@ -162,14 +154,13 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         return models[0].name if models else None
 
     def _generation_candidate_names(self) -> list[str | None]:
-        """Ordered summary-generation candidates by name (deduplicated).
+        """요약 생성 후보를 이름 기준 순서대로(중복 제거해) 반환한다.
 
-        Explicit summary model: the configured model first, then the run's own model
-        as a distinct fallback. ``model_name: null``: the run's own model only — its
-        construction is the primary, so there is no eager dependency on
-        ``config.models[0]`` (a bare default is used only when no run model was
-        resolved). A ``None`` entry means "let ``create_chat_model`` pick the default",
-        which only occurs when nothing resolves a name.
+        요약 model이 명시된 경우: 설정된 model이 먼저이고, run 자신의 model이 별도 fallback이 된다.
+        ``model_name: null``인 경우: run 자신의 model만 쓴다. 그 생성이 primary이므로
+        ``config.models[0]``에 미리 의존하지 않는다(run model을 해석하지 못했을 때만 기본값을 쓴다).
+        ``None`` 항목은 "``create_chat_model``이 기본값을 고르게 하라"는 뜻이며, 어떤 이름도 해석되지
+        않을 때만 나타난다.
         """
         default = self._default_model_name()
         if self._configured_summary_model_name is not None:
@@ -186,12 +177,11 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         return deduped
 
     def _model_for(self, name: str | None) -> Any | None:
-        """The nostream summary model for ``name``, built lazily and guarded.
+        """``name``에 해당하는 nostream 요약 model을 예외로 보호하며 지연 생성해 반환한다.
 
-        Returns the pre-built anchor when ``name`` matches it (no rebuild), otherwise
-        constructs and caches. A construction failure is caught and cached as ``None``
-        so a broken candidate config never escapes the fail-open boundary, is never
-        retried this turn, and still lets the next candidate run.
+        ``name``이 anchor와 같으면 미리 만든 anchor를 그대로 반환하고(재생성 없음), 아니면 새로 만들어
+        캐시한다. 생성 실패는 잡아서 ``None``으로 캐시하므로, 잘못된 후보 설정이 fail-open 경계를
+        벗어나지 않고 이번 턴에 재시도되지도 않으며 다음 후보는 정상적으로 시도된다.
         """
         if name == self._anchor_model_name:
             return self._summary_model
@@ -220,10 +210,10 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         return await self._asummarize_with(messages_to_summarize)
 
     def _prepare_summary_prompt(self, messages_to_summarize: list[AnyMessage], previous_summary: str | None) -> str | None:
-        """Return the formatted prompt, or a canned string for the empty/too-long edges.
+        """포맷된 prompt를 반환하거나, 비었거나 너무 긴 경계 상황에서는 정해진 문구를 반환한다.
 
-        A non-``None`` return that is not a real prompt (the two canned strings) is a
-        valid summary and short-circuits generation; ``None`` means "build a prompt".
+        ``None``이 아니면서 실제 prompt가 아닌 반환값(두 개의 정해진 문구)은 유효한 요약이며 생성을
+        건너뛴다. ``None``은 "prompt를 만들라"는 뜻이다.
         """
         if not messages_to_summarize:
             return "No previous conversation history."
@@ -234,35 +224,32 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
 
     @staticmethod
     def _nonempty_summary(text: Any) -> str | None:
-        """Normalize a model response's text; a blank/whitespace-only body is a failure.
+        """model 응답 텍스트를 정규화한다. 비었거나 공백뿐인 본문은 실패로 본다.
 
-        Committing ``""`` as a summary would fire the before_summarization hooks and
-        remove all prior history for an empty replacement, so an empty body is treated
-        as generation failure (try the fallback, or leave state unchanged) rather than
-        a valid summary.
+        ``""``를 요약으로 확정하면 before_summarization hook이 실행되고 빈 대체물을 위해 이전 이력이
+        전부 제거된다. 그래서 빈 본문은 유효한 요약이 아니라 생성 실패로 취급한다(fallback을 시도하거나
+        state를 그대로 둔다).
         """
         stripped = text.strip() if isinstance(text, str) else ""
         return stripped or None
 
     def _summarize_with(self, messages_to_summarize: list[AnyMessage], previous_summary: str | None = None) -> str | None:
-        """Mirror the parent ``_create_summary`` but invoke the nostream-tagged model.
+        """부모의 ``_create_summary``와 동일하게 동작하되 nostream 태그가 붙은 model을 호출한다.
 
-        We do not swap ``self.model`` at the instance level: the agent/middleware is
-        cached and reused across concurrent runs, so a temporary swap would leak the
-        ``RunnableBinding`` to other coroutines during ``await`` and break parent logic
-        that inspects the raw model (``profile`` / ``_get_ls_params``).
+        ``self.model``을 인스턴스 수준에서 바꿔치기하지 않는다. agent와 미들웨어는 캐시되어 동시 run들이
+        공유하므로, 일시적 교체는 ``await`` 도중 ``RunnableBinding``을 다른 coroutine에 노출시키고
+        raw model을 검사하는 부모 로직(``profile`` / ``_get_ls_params``)을 깨뜨린다.
 
-        Generation uses the run's own model (``model_name: null``) or the explicitly
-        configured summary model, falling back to the run model on failure so a broken
-        summary provider cannot disable compaction while a working model is available.
+        생성에는 run 자신의 model(``model_name: null``) 또는 명시적으로 설정된 요약 model을 쓰고,
+        실패하면 run model로 fallback한다. 덕분에 요약 provider가 망가져도 정상 model이 있는 한
+        compaction이 멈추지 않는다.
         """
         prompt = self._prepare_summary_prompt(messages_to_summarize, previous_summary)
         if prompt is None or prompt in _CANNED_SUMMARIES:
             return prompt
-        # Walk the ordered candidates; each attempt owns its full lifecycle (lazy
-        # guarded construction -> invoke -> text extraction -> non-empty validation),
-        # and any failure at any stage falls through to the next candidate. When all
-        # candidates fail the caller leaves compaction state unchanged.
+        # 후보를 순서대로 시도한다. 각 시도는 전체 생명주기(보호된 지연 생성 -> invoke -> 텍스트 추출 ->
+        # 비어 있지 않은지 검증)를 스스로 담당하며, 어느 단계에서 실패하든 다음 후보로 넘어간다.
+        # 모든 후보가 실패하면 호출자는 compaction 상태를 그대로 둔다.
         names = self._generation_candidate_names()
         for index, name in enumerate(names):
             text = self._invoke_summary(self._model_for(name), prompt, last=index == len(names) - 1)
@@ -271,7 +258,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         return None
 
     async def _asummarize_with(self, messages_to_summarize: list[AnyMessage], previous_summary: str | None = None) -> str | None:
-        """Async counterpart of :meth:`_summarize_with` using the nostream model."""
+        """nostream model을 쓰는 :meth:`_summarize_with`의 async 버전."""
         prompt = self._prepare_summary_prompt(messages_to_summarize, previous_summary)
         if prompt is None or prompt in _CANNED_SUMMARIES:
             return prompt
@@ -283,12 +270,11 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         return None
 
     def _invoke_summary(self, model: Any | None, prompt: str, *, last: bool = False) -> str | None:
-        """Invoke ``model`` for a summary; ``None`` on error or a blank response.
+        """``model``을 호출해 요약을 얻는다. 오류이거나 응답이 비었으면 ``None``을 반환한다.
 
-        Text extraction / non-empty validation runs *inside* the try: reading the
-        response's ``.text`` is part of consuming the provider result, so a failing
-        accessor must convert to a candidate failure (fall through) rather than escape
-        the fail-open boundary.
+        텍스트 추출과 비어 있지 않은지 검증은 try *안에서* 수행한다. 응답의 ``.text``를 읽는 것도
+        provider 결과를 소비하는 과정의 일부이므로, 접근자 실패는 fail-open 경계를 벗어나지 않고
+        후보 실패(다음 후보로 진행)로 변환되어야 한다.
         """
         if model is None:
             return None
@@ -300,7 +286,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
             return None
 
     async def _ainvoke_summary(self, model: Any | None, prompt: str, *, last: bool = False) -> str | None:
-        """Async counterpart of :meth:`_invoke_summary`."""
+        """:meth:`_invoke_summary`의 async 버전."""
         if model is None:
             return None
         try:
@@ -402,16 +388,14 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
                     strategy="first",
                 )
 
-        # Escape < > & before embedding into the <existing_summary>/<new_messages>
-        # blocks. new_messages is get_buffer_string over the raw state["messages"]
-        # tail (InputSanitizationMiddleware only overrides the ModelRequest, never
-        # state, so the summarizer sees genuine user text); existing_summary is the
-        # prior turn's summary_text. An unescaped value like "</new_messages>..."
-        # would close the block and forge an authority section for the extraction
-        # LLM. Same block-breakout defense #4162 applied to the <conversation> block
-        # and #4097 to the <memory> block. Escape after trimming so a trailing "..."
-        # cannot split an entity; quote=False because content lands in element-text
-        # position (never an attribute value).
+        # <existing_summary>/<new_messages> 블록에 넣기 전에 < > &를 이스케이프한다. new_messages는
+        # raw state["messages"] tail에 get_buffer_string을 적용한 것이고(InputSanitizationMiddleware는
+        # ModelRequest만 덮어쓰고 state는 건드리지 않으므로 summarizer는 실제 사용자 텍스트를 본다),
+        # existing_summary는 이전 턴의 summary_text다. "</new_messages>..." 같은 값이 이스케이프되지 않으면
+        # 블록을 닫고 추출용 LLM에 권위 있는 섹션을 위조할 수 있다. #4162가 <conversation> 블록에,
+        # #4097이 <memory> 블록에 적용한 것과 같은 block-breakout 방어다. 끝의 "..."가 엔티티를 쪼개지
+        # 않도록 trimming 이후에 이스케이프하며, 내용이 속성값이 아니라 요소 텍스트 위치에 들어가므로
+        # quote=False를 쓴다.
         parts: list[str] = []
         if trimmed_previous_summary:
             parts.extend(
@@ -435,14 +419,13 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         return "\n".join(parts)
 
     def _build_summary_prompt(self, messages_to_summarize: list[AnyMessage], previous_summary: str | None = None) -> str | None:
-        """Build the summary prompt, returning ``None`` when trimming leaves nothing."""
+        """요약 prompt를 만든다. trimming 후 남는 것이 없으면 ``None``을 반환한다."""
         trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
         if not trimmed_messages:
             trimmed_messages = messages_to_summarize[-1:]
         if not trimmed_messages:
             return None
-        # Format messages to avoid token inflation from metadata when str() is called on
-        # message objects.
+        # 메시지 객체에 str()을 호출할 때 metadata 때문에 token이 부풀지 않도록 별도로 포맷한다.
         formatted_messages = get_buffer_string(trimmed_messages)
         formatted_messages = self._build_summary_input_text(formatted_messages, previous_summary=previous_summary)
         if not formatted_messages:
@@ -488,13 +471,12 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         force: bool = False,
         raise_on_failure: bool = False,
     ) -> ContextCompactionResult | None:
-        """Summarize old context and retain the active tail.
+        """오래된 context를 요약하고 활성 tail을 남긴다.
 
-        ``force`` bypasses the automatic trigger threshold (a manual caller always
-        wants to compact). ``raise_on_failure`` is a *separate* concern: when set (the
-        manual ``/compact`` path), a generation failure raises ``SummaryGenerationError``
-        so it can be reported distinctly from "nothing to compact"; the automatic path
-        leaves it False and swallows the failure, retrying on a later triggered turn.
+        ``force``는 자동 트리거 임계값을 건너뛴다(수동 호출자는 항상 압축을 원한다).
+        ``raise_on_failure``는 *별개* 관심사다. 설정하면(수동 ``/compact`` 경로) 생성 실패 시
+        ``SummaryGenerationError``를 발생시켜 "압축할 것이 없음"과 구분해 보고할 수 있다. 자동 경로는
+        False로 두고 실패를 삼킨 뒤 나중에 트리거되는 턴에서 재시도한다.
         """
         prepared = self._prepare_compaction(state, force=force)
         if prepared is None:
@@ -505,10 +487,9 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
             if raise_on_failure:
                 raise SummaryGenerationError("summary generation failed")
             return None
-        # Fire hooks only once a replacement summary exists — flushing pre-compaction
-        # messages into durable memory for a summary that never materializes would
-        # duplicate that work on the next attempt. Messages are still removed after
-        # this returns (in _maybe_summarize), so hooks run before they are gone.
+        # 대체 요약이 만들어진 뒤에만 hook을 실행한다. 끝내 생성되지 않을 요약을 위해 압축 이전 메시지를
+        # durable memory로 flush하면 다음 시도에서 같은 작업을 중복하게 된다. 메시지 제거는 이 함수가
+        # 반환된 뒤(_maybe_summarize에서) 일어나므로 hook은 메시지가 사라지기 전에 실행된다.
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
         return ContextCompactionResult(
             summary_text=summary,
@@ -525,7 +506,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         force: bool = False,
         raise_on_failure: bool = False,
     ) -> ContextCompactionResult | None:
-        """Async counterpart of :meth:`compact_state` (see it for ``raise_on_failure``)."""
+        """:meth:`compact_state`의 async 버전(``raise_on_failure`` 설명은 그쪽 참고)."""
         prepared = self._prepare_compaction(state, force=force)
         if prepared is None:
             return None
@@ -535,7 +516,7 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
             if raise_on_failure:
                 raise SummaryGenerationError("summary generation failed")
             return None
-        # Fire hooks only once a replacement summary exists (see compact_state).
+        # 대체 요약이 만들어진 뒤에만 hook을 실행한다(compact_state 참고).
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
         return ContextCompactionResult(
             summary_text=summary,
@@ -573,46 +554,41 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         messages_to_summarize: list[AnyMessage],
         preserved_messages: list[AnyMessage],
     ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-        """Keep hidden dynamic-context reminders and their ID-swap peers out of summary compression.
+        """숨겨진 dynamic-context reminder와 ID-swap 짝을 요약 압축 대상에서 제외한다.
 
-        These reminders carry the current date and optional memory. If summarization
-        removes them, DynamicContextMiddleware can lose the already-injected reminder
-        and inject a replacement into the wrong point of the conversation.
+        이 reminder들은 현재 날짜와 선택적 memory를 담는다. summarization이 이를 제거하면
+        DynamicContextMiddleware는 이미 주입한 reminder를 잃고 대체본을 대화의 엉뚱한 지점에 주입할 수 있다.
 
-        The ID-swap triplet produced by ``_make_reminder_and_user_messages`` contains
-        three messages: ``SystemMessage(id=X)`` and ``HumanMessage(id=X__memory)`` are
-        both tagged with ``dynamic_context_reminder=True``, but ``HumanMessage(id=X__user)``
-        carries the original user content and is **not** tagged. Without peer rescue,
-        ``__user`` would stay in ``to_summarize`` and be compressed into prose — orphaning
-        the tagged messages and losing the user question from the model's direct context.
+        ``_make_reminder_and_user_messages``가 만드는 ID-swap 삼중 항목은 메시지 세 개로 구성된다.
+        ``SystemMessage(id=X)``와 ``HumanMessage(id=X__memory)``는 ``dynamic_context_reminder=True``로
+        태깅되지만, 원본 사용자 내용을 담은 ``HumanMessage(id=X__user)``는 태깅되지 **않는다**.
+        짝을 함께 구제하지 않으면 ``__user``가 ``to_summarize``에 남아 산문으로 압축되고, 태깅된 메시지들이
+        고아가 되며 사용자 질문이 모델의 직접 context에서 사라진다.
 
-        This method rescues tagged reminders and also rescues any untagged messages whose
-        ``id`` shares the same ``stable_id`` prefix (i.e. ``X__user``, ``X__memory``).
+        이 메서드는 태깅된 reminder를 구제하고, ``id``가 같은 ``stable_id`` prefix를 공유하는 태깅되지 않은
+        메시지(``X__user``, ``X__memory``)도 함께 구제한다.
         """
         reminders = [msg for msg in messages_to_summarize if is_dynamic_context_reminder(msg)]
         if not reminders:
             return messages_to_summarize, preserved_messages
 
-        # Collect the base IDs (the stable_id prefix) from tagged reminders.
-        # For a reminder with id="ctx-001__memory", the base is "ctx-001".
-        # For a reminder with id="ctx-001" (SystemMessage), the base is "ctx-001".
-        # removesuffix is suffix-only — it won't strip a "__" that sits in the
-        # middle of a stable_id (e.g. "ctx__001" stays intact, unlike rsplit
-        # which would mis-derive "ctx").  Only known ID-swap suffixes (__memory,
-        # __user) are stripped; __user is not tagged so won't appear in reminders,
-        # but is included defensively.
+        # 태깅된 reminder에서 base ID(stable_id prefix)를 모은다.
+        # id="ctx-001__memory"인 reminder의 base는 "ctx-001"이다.
+        # id="ctx-001"인 reminder(SystemMessage)의 base도 "ctx-001"이다.
+        # removesuffix는 접미사만 제거하므로 stable_id 중간의 "__"는 건드리지 않는다
+        # (예: "ctx__001"은 그대로 남는다. rsplit이었다면 "ctx"로 잘못 유도했을 것이다).
+        # 알려진 ID-swap 접미사(__memory, __user)만 제거한다. __user는 태깅되지 않아 reminders에
+        # 나타나지 않지만 방어적으로 포함한다.
         reminder_base_ids: set[str] = set()
         for msg in reminders:
             if msg.id:
                 base = msg.id.removesuffix("__memory").removesuffix("__user")
                 reminder_base_ids.add(base)
 
-        # Single-pass partition: walk messages_to_summarize in chronological order
-        # and rescue both tagged reminders and untagged ID-swap peers (whose id
-        # starts with a known base + "__").  This preserves the original message
-        # order within rescued — critical when multiple triplets land in one
-        # summarization window — and eliminates the need for id(m)-based dedup
-        # that the previous reminders+peers concatenation required.
+        # 한 번의 순회로 분할한다. messages_to_summarize를 시간 순서대로 훑으며 태깅된 reminder와
+        # 태깅되지 않은 ID-swap 짝(알려진 base + "__"로 시작하는 id)을 모두 구제한다. 이렇게 하면 구제된
+        # 메시지들 사이의 원래 순서가 보존되고(한 summarization 구간에 여러 삼중 항목이 들어올 때 중요하다),
+        # 기존의 reminders+peers 연결 방식이 필요로 하던 id(m) 기반 중복 제거도 없어진다.
         rescued: list[AnyMessage] = []
         remaining: list[AnyMessage] = []
         for msg in messages_to_summarize:
@@ -648,15 +624,14 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
 
 
 def _build_summary_anchor(candidate_names: list[str | None], app_config: Any) -> tuple[Any | None, str | None]:
-    """Build the first constructible model among ``candidate_names`` (guarded).
+    """``candidate_names`` 중 가장 먼저 생성 가능한 model을 예외로 보호하며 만든다.
 
-    The returned model is tagged for RunJournal attribution but *not* TAG_NOSTREAM (the
-    middleware wraps a nostream copy). It becomes the parent's token-counter / profile
-    anchor and is reused for generation when a candidate matches its name. A per-name
-    construction failure is swallowed and the next candidate tried, so a broken primary
-    constructor neither breaks agent construction nor skips the healthy run model; a
-    trailing ``None`` name asks ``create_chat_model`` for its own default. Returns
-    ``(None, None)`` when nothing can be constructed.
+    반환되는 model에는 RunJournal 귀속용 tag가 붙지만 TAG_NOSTREAM은 붙지 *않는다*(미들웨어가 nostream
+    복사본을 따로 감싼다). 이 model이 부모의 token counter / profile anchor가 되고, 후보 이름이 일치하면
+    생성 단계에서 재사용된다. 이름별 생성 실패는 삼키고 다음 후보를 시도하므로, primary 생성자가 망가져도
+    agent 생성이 깨지지 않고 정상적인 run model을 건너뛰지도 않는다. 마지막의 ``None`` 이름은
+    ``create_chat_model``에 자체 기본값을 요청한다는 뜻이다. 아무것도 만들 수 없으면 ``(None, None)``을
+    반환한다.
     """
     tried: set[str | None] = set()
     for name in candidate_names:
@@ -679,26 +654,21 @@ def create_summarization_middleware(
     skip_memory_flush: bool = False,
     run_model_name: str | None = None,
 ) -> DeerFlowSummarizationMiddleware | None:
-    """Create the configured summarization middleware.
+    """설정에 따른 summarization 미들웨어를 생성한다.
 
-    Both the lead-agent automatic path and the manual context-compaction path
-    use this factory so model resolution, hooks, prompt config, and retention
-    defaults cannot drift.
+    lead-agent 자동 경로와 수동 context compaction 경로가 모두 이 팩토리를 쓰므로 model 해석, hook,
+    prompt 설정, 보존 기본값이 서로 어긋날 수 없다.
 
-    ``run_model_name`` is the model the run actually executes with, resolved by the
-    caller (the lead / subagent / manual builders each already resolve it) and passed
-    in as the authoritative source of truth for ``model_name: null`` summarization and
-    the explicit-summary-model fallback. The middleware does not re-derive it from
-    ``runtime.context`` / ``get_config()``, which do not carry a custom agent's or a
-    subagent's resolved model.
+    ``run_model_name``은 run이 실제로 실행에 쓰는 model이며, 호출자(lead / subagent / 수동 빌더 각각이
+    이미 해석한다)가 넘긴다. ``model_name: null`` 요약과 명시적 요약 model의 fallback에서 이것이 유일한
+    진실이다. 미들웨어는 ``runtime.context``나 ``get_config()``에서 다시 유도하지 않는다. 그 값들은
+    custom agent나 subagent가 해석한 model을 담지 않기 때문이다.
 
-    ``skip_memory_flush`` omits the ``memory_flush_hook`` that otherwise
-    flushes pre-compaction messages into the durable memory queue. The lead
-    chain keeps it (research should persist); the subagent chain sets it so a
-    subagent's INTERNAL turns (the "Task" human message + intermediate AI/tool
-    turns) are not written into the PARENT thread's durable memory — the hook
-    is keyed by ``thread_id`` and subagents share the parent's ``thread_id``
-    (#3875 Phase 3 review).
+    ``skip_memory_flush``는 압축 이전 메시지를 durable memory 큐로 flush하는 ``memory_flush_hook``을
+    생략한다. lead chain은 이를 유지하고(리서치 결과는 남아야 한다), subagent chain은 이를 설정한다.
+    subagent의 내부 턴("Task" human 메시지와 중간 AI/tool 턴)이 부모 thread의 durable memory에 기록되지
+    않게 하기 위함이다. hook은 ``thread_id``를 키로 쓰고 subagent는 부모의 ``thread_id``를 공유한다
+    (#3875 Phase 3 리뷰).
     """
     resolved_app_config = app_config or get_app_config()
     config = resolved_app_config.summarization
@@ -714,13 +684,12 @@ def create_summarization_middleware(
             trigger = config.trigger.to_tuple()
 
     default_name = resolved_app_config.models[0].name if getattr(resolved_app_config, "models", None) else None
-    # Build the anchor (token-counter / profile model, reused for generation) guarded,
-    # rather than eagerly building the configured/default model and letting a broken
-    # constructor escape. Candidates in order: the primary generation model (configured
-    # summary model, else the run's own model), then the run model, then the default,
-    # then ``None`` (create_chat_model's default) as a last resort. So the null case
-    # builds from ``run_model_name`` — not ``config.models[0]`` — and a broken primary
-    # falls through to the healthy run model instead of failing agent construction.
+    # anchor(token counter / profile용이며 생성에도 재사용되는 model)를 예외로 보호하며 만든다.
+    # 설정된 model이나 기본 model을 그냥 만들었다가 망가진 생성자가 밖으로 새어 나가게 두지 않는다.
+    # 후보 순서: primary 생성 model(설정된 요약 model, 없으면 run 자신의 model), run model, 기본값,
+    # 마지막으로 ``None``(create_chat_model의 기본값). 따라서 null인 경우 ``config.models[0]``이 아니라
+    # ``run_model_name``에서 생성되며, primary가 망가져도 agent 생성이 실패하는 대신 정상적인 run model로
+    # 넘어간다.
     primary_name = config.model_name or run_model_name or default_name
     anchor_model, anchor_name = _build_summary_anchor(
         [primary_name, run_model_name or default_name, default_name, None],

@@ -1,9 +1,8 @@
-"""The Textual application — a terminal workbench over the embedded harness.
+"""Textual 애플리케이션 — 임베디드 harness 위에 올린 터미널 workbench.
 
-The app keeps a single immutable :class:`ViewState` and re-renders it through the
-pure renderers. Agent runs execute on a worker *thread* (``DeerFlowClient.stream``
-is a synchronous generator); each yielded action is marshalled back onto the UI
-thread via ``call_from_thread`` and folded into the reducer.
+앱은 불변 :class:`ViewState` 하나를 유지하고 순수 renderer로 다시 그린다. agent run은 worker
+*thread*에서 실행된다(``DeerFlowClient.stream``이 동기 generator이기 때문). 산출된 각 action은
+``call_from_thread``로 UI thread에 전달되어 reducer에 반영된다.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ SelectScreen OptionList {
 
 
 class SelectScreen(ModalScreen):
-    """A centered modal that returns the id of the chosen option (or None)."""
+    """선택한 옵션의 id(또는 None)를 반환하는 가운데 정렬 modal."""
 
     BINDINGS = [Binding("escape", "cancel", "Close")]
 
@@ -161,9 +160,9 @@ class DeerFlowTUI(App):
         Binding("ctrl+c", "interrupt", "Interrupt / Quit", priority=True, show=True),
         Binding("ctrl+l", "redraw", "Redraw", show=False),
         Binding("ctrl+u", "clear_composer", "Clear input", show=False),
-        # Up/Down drive the palette when it's open, otherwise input history.
-        # Tab/Enter/Esc only act when the palette is open. check_action gates all
-        # of these so they never steal keys from a modal overlay or the composer.
+        # 위/아래는 palette가 열려 있으면 palette를, 아니면 입력 history를 움직인다.
+        # Tab/Enter/Esc는 palette가 열려 있을 때만 동작한다. check_action이 이들을 모두
+        # 통제하므로 modal overlay나 composer의 키를 가로채지 않는다.
         Binding("down", "nav_down", show=False, priority=True),
         Binding("up", "nav_up", show=False, priority=True),
         Binding("tab", "palette_complete", show=False, priority=True),
@@ -194,7 +193,7 @@ class DeerFlowTUI(App):
         self._history = InputHistory()
         self._transcript_dirty = False
 
-    # ----- composition --------------------------------------------------- #
+    # ----- 구성 ------------------------------------------------------------ #
 
     def compose(self) -> ComposeResult:
         yield Static(id="header")
@@ -208,12 +207,12 @@ class DeerFlowTUI(App):
         self._load_session_info()
         self._refresh_all()
         self.set_interval(0.1, self._tick_spinner)
-        self.set_interval(0.06, self._flush_transcript)  # coalesce streaming re-renders
+        self.set_interval(0.06, self._flush_transcript)  # streaming 재렌더링을 합친다
         self.query_one("#composer", Input).focus()
         if self.plan and getattr(self.plan, "message", None):
             self._send_to_agent(self.plan.message)
 
-    # ----- session info -------------------------------------------------- #
+    # ----- 세션 정보 --------------------------------------------------------- #
 
     def _load_session_info(self) -> None:
         self._conv_thread_id = self.session.resolve_thread(self.plan) if self.plan else None
@@ -221,7 +220,7 @@ class DeerFlowTUI(App):
         try:
             models = client.list_models().get("models", [])
             self._model = next((m.get("display_name") or m.get("name") for m in models if m.get("name")), "")
-        except Exception:  # noqa: BLE001 - header is best-effort
+        except Exception:  # noqa: BLE001 - header는 best-effort다
             self._model = ""
         try:
             skills = client.list_skills(enabled_only=True).get("skills", [])
@@ -233,7 +232,7 @@ class DeerFlowTUI(App):
             self._skill_names = []
             self._skills = 0
 
-    # ----- input --------------------------------------------------------- #
+    # ----- 입력 ------------------------------------------------------------ #
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -250,25 +249,25 @@ class DeerFlowTUI(App):
             from .command_registry import build_registry, filter_commands
 
             items = filter_commands(build_registry(self._skills_meta), value[1:])
-            # The candidate set changed, so the previous highlight index is stale —
-            # reset to the top rather than clamping to a now-different command.
+            # 후보 집합이 바뀌었으므로 이전 하이라이트 인덱스는 낡았다. 이제는 다른 명령을
+            # 가리키게 클램프하는 대신 맨 위로 되돌린다.
             self._palette_index = 0
             self._open_palette(items)
         else:
             self._close_palette()
 
-    # ----- slash command palette ----------------------------------------- #
+    # ----- 슬래시 명령 palette ------------------------------------------------ #
 
     def check_action(self, action: str, parameters):  # noqa: D401 - Textual hook
         custom = {"nav_up", "nav_down", "palette_complete", "palette_accept", "escape"}
         if action in custom:
-            # A modal overlay (e.g. the model/thread picker) is on top — never
-            # intercept its keys; let the overlay handle them natively.
+            # modal overlay(예: model/thread picker)가 위에 있으면 그 키를 절대 가로채지 않고
+            # overlay가 직접 처리하게 둔다.
             if len(self.screen_stack) > 1:
                 return None
-            # nav (history), Tab and Esc are always consumed (Tab can't move focus
-            # off the composer; Esc closes the palette or interrupts a run). Enter
-            # falls through to the Input when the palette is closed so it submits.
+            # nav(history), Tab, Esc는 항상 소비한다(Tab은 composer 밖으로 포커스를 옮기지
+            # 못하고, Esc는 palette를 닫거나 run을 중단한다). Enter는 palette가 닫혀 있으면
+            # Input으로 흘러가 제출된다.
             if action in {"nav_up", "nav_down", "palette_complete", "escape"}:
                 return True
             return True if self._palette_open else None
@@ -331,9 +330,9 @@ class DeerFlowTUI(App):
             self._render_palette()
 
     def action_palette_complete(self) -> None:
-        # When the palette is open, Tab completes the highlighted command.
-        # When it's closed, Tab is a no-op here (consumed) so focus stays in the
-        # composer instead of moving to the scroll region.
+        # palette가 열려 있으면 Tab은 하이라이트된 명령을 자동 완성한다. 닫혀 있으면 여기서
+        # Tab은 아무 일도 하지 않고(소비만 한다) 포커스가 scroll 영역으로 넘어가지 않고
+        # composer에 남는다.
         if self._palette_open:
             self._fill_from_palette()
 
@@ -342,7 +341,7 @@ class DeerFlowTUI(App):
         if item is None:
             return
         if getattr(item, "category", "") == "skill":
-            # Skills need a task argument; fill and let the user keep typing.
+            # skill은 task 인자가 필요하므로, 채워 넣고 사용자가 계속 입력하게 둔다.
             self._fill_from_palette()
             return
         self._close_palette()
@@ -368,8 +367,8 @@ class DeerFlowTUI(App):
         if res.kind == "unknown":
             self._dispatch(SystemMessage(f"Unknown command /{res.name}. Try /help.", tone="error"))
             return
-        # plain message or skill activation (/skill task) both go to the agent,
-        # which applies skill-activation semantics on the raw text.
+        # 일반 메시지와 skill 활성화(/skill task) 모두 agent로 보낸다. agent가 원문 텍스트에
+        # skill-activation 의미를 적용한다.
         self._send_to_agent(text)
 
     def _dispatch_still_working(self) -> None:
@@ -377,11 +376,10 @@ class DeerFlowTUI(App):
 
     def _handle_builtin(self, name: str, args: str) -> None:
         if name == "quit":
-            # Mirror action_interrupt (Ctrl+C): an active run must be interrupted
-            # before we tear the app down. Otherwise the worker thread is left
-            # running against an app that no longer exists — its next
-            # call_from_thread fails silently and the in-flight turn (plus any
-            # post-run persistence, e.g. thread title) is quietly abandoned.
+            # action_interrupt(Ctrl+C)와 동일하게, 앱을 종료하기 전에 진행 중인 run을 중단해야
+            # 한다. 그러지 않으면 worker thread가 이미 사라진 앱을 상대로 계속 돌면서 다음
+            # call_from_thread가 조용히 실패하고, 진행 중이던 턴과 run 이후 저장 작업(예:
+            # thread 제목)이 소리 없이 버려진다.
             if self._streaming:
                 self._interrupt_run()
             self.exit()
@@ -428,7 +426,7 @@ class DeerFlowTUI(App):
         else:
             self._dispatch(SystemMessage(f"/{name} is not available yet.", tone="info"))
 
-    # ----- overlays + info commands -------------------------------------- #
+    # ----- overlay + 정보 명령 ----------------------------------------------- #
 
     def _open_model_picker(self) -> None:
         try:
@@ -472,7 +470,7 @@ class DeerFlowTUI(App):
         self.push_screen(SelectScreen("Resume thread", options), on_choice)
 
     def _resume_thread(self, ref: str) -> None:
-        """/resume [id-or-title]: switch to a thread, or open the picker if blank."""
+        """/resume [id-or-title]: 해당 thread로 전환하고, 인자가 없으면 picker를 연다."""
         ref = ref.strip()
         if not ref:
             self._open_thread_switcher()
@@ -577,7 +575,7 @@ class DeerFlowTUI(App):
         names = ", ".join(f.get("filename", "?") for f in uploads)
         self._dispatch(SystemMessage(f"Uploads ({len(uploads)}): {names}"))
 
-    # ----- agent run ----------------------------------------------------- #
+    # ----- agent 실행 ------------------------------------------------------ #
 
     def _send_to_agent(self, text: str) -> None:
         if self._streaming:
@@ -601,9 +599,9 @@ class DeerFlowTUI(App):
 
         writer = getattr(self.session, "writer", None)
         if writer is not None:
-            # Make this terminal session visible in the Web UI sidebar by writing a
-            # threads_meta row under the local default user (best-effort, no-op on
-            # memory backends). Done on this worker thread to keep the UI responsive.
+            # 로컬 default 사용자 아래에 threads_meta row를 써서 이 터미널 세션이 Web UI
+            # 사이드바에 보이게 한다(best-effort이며 memory backend에서는 no-op). UI 반응성을
+            # 유지하려고 이 worker thread에서 수행한다.
             writer.ensure_created(thread_id, assistant_id="lead-agent", metadata={"source": "tui"})
 
         latest_title: str | None = None
@@ -614,8 +612,8 @@ class DeerFlowTUI(App):
                 latest_title = action.title
             self.call_from_thread(self._on_action, action)
 
-        # Only persist a title for a run that completed normally — an interrupted
-        # run may only have emitted the title middleware's first, truncated guess.
+        # 정상 종료된 run의 제목만 저장한다 — 중단된 run은 title middleware의 첫 번째 잘린
+        # 추측만 내보냈을 수 있다.
         if writer is not None and latest_title and not self._cancelled:
             writer.set_title(thread_id, latest_title)
 
@@ -626,11 +624,11 @@ class DeerFlowTUI(App):
             self._transcript_dirty = True
         elif isinstance(action, RunEnded):
             self._streaming = False
-            # Flush now so the finished message snaps to its Markdown rendering.
+            # 완료된 메시지가 Markdown 렌더링으로 즉시 바뀌도록 지금 flush한다.
             self._transcript_dirty = False
             self._refresh_transcript()
         else:
-            # Coalesce rapid streaming deltas; _flush_transcript renders them.
+            # 빠르게 들어오는 streaming delta를 합친다. 렌더링은 _flush_transcript가 한다.
             self._transcript_dirty = True
         self._refresh_status()
 
@@ -639,7 +637,7 @@ class DeerFlowTUI(App):
             self._transcript_dirty = False
             self._refresh_transcript()
 
-    # ----- key actions --------------------------------------------------- #
+    # ----- 키 동작 ---------------------------------------------------------- #
 
     def action_interrupt(self) -> None:
         if self._streaming:
@@ -667,7 +665,7 @@ class DeerFlowTUI(App):
     def action_clear_composer(self) -> None:
         self.query_one("#composer", Input).value = ""
 
-    # ----- rendering ----------------------------------------------------- #
+    # ----- 렌더링 ----------------------------------------------------------- #
 
     def _dispatch(self, action) -> None:
         self.state = reduce(self.state, action)
@@ -711,7 +709,7 @@ class DeerFlowTUI(App):
 
 
 def run_tui(plan) -> int:
-    """Construct the embedded session and run the app. Returns a process exit code."""
+    """임베디드 세션을 구성하고 앱을 실행한다. 프로세스 종료 코드를 반환한다."""
     from .session import open_session
 
     session = open_session()
@@ -719,7 +717,7 @@ def run_tui(plan) -> int:
     try:
         app.run()
     finally:
-        # Stop the background DB loop + dispose the engine so repeated run_tui
-        # calls in one process don't leak loops / connection pools.
+        # 한 프로세스에서 run_tui를 반복 호출해도 loop나 connection pool이 새지 않도록
+        # 백그라운드 DB loop를 멈추고 engine을 정리한다.
         session.close()
     return 0

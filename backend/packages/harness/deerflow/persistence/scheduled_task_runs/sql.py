@@ -15,18 +15,17 @@ ACTIVE_RUN_STATUSES: tuple[str, ...] = ("queued", "running")
 
 
 class ActiveScheduledRunConflict(Exception):
-    """A concurrent dispatch already holds the task's single active-run slot.
+    """동시에 실행된 다른 dispatch가 이미 해당 task의 유일한 active-run 슬롯을 차지했다.
 
-    Raised by :meth:`ScheduledTaskRunRepository.create` when inserting an
-    active (queued/running) run row would violate the partial unique index
-    ``uq_scheduled_task_run_active`` (at most one active run per ``task_id``).
-    This is the atomic counterpart to the non-atomic ``has_active_runs`` check
-    in ``ScheduledTaskService.dispatch_task``: two dispatches can both pass that
-    check, but only one can insert the active row — the loser lands here.
+    active(queued/running) run row를 삽입하면 partial unique index
+    ``uq_scheduled_task_run_active``(``task_id``당 active run 최대 1개)를 위반할 때
+    :meth:`ScheduledTaskRunRepository.create`가 발생시킨다. ``ScheduledTaskService.dispatch_task``의
+    비원자적 ``has_active_runs`` 검사에 대응하는 원자적 장치다. 두 dispatch가 그 검사를 모두
+    통과할 수 있지만 active row를 삽입할 수 있는 것은 하나뿐이고, 진 쪽이 여기에 도달한다.
 
-    Translating the SQLAlchemy ``IntegrityError`` into a domain exception at
-    the repository boundary keeps the service layer free of ``sqlalchemy.exc``
-    coupling (mirrors ``deerflow.runtime.ConflictError`` for the runs table).
+    repository 경계에서 SQLAlchemy ``IntegrityError``를 도메인 예외로 변환하면 service
+    레이어가 ``sqlalchemy.exc``에 결합되지 않는다(runs 테이블의
+    ``deerflow.runtime.ConflictError``와 같은 방식).
     """
 
     def __init__(self, task_id: str) -> None:
@@ -71,11 +70,10 @@ class ScheduledTaskRunRepository:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
-                # Only active-status inserts can trip the partial unique index
-                # ``uq_scheduled_task_run_active``; a terminal-status row (e.g.
-                # a "skipped" tombstone) is outside its predicate and cannot
-                # conflict, so any IntegrityError there is a genuine fault and
-                # is re-raised untranslated.
+                # partial unique index ``uq_scheduled_task_run_active``에 걸릴 수 있는 것은
+                # active 상태 삽입뿐이다. 종료 상태 row(예: "skipped" tombstone)는 그 조건
+                # 밖이라 충돌할 수 없으므로, 거기서 나온 IntegrityError는 진짜 오류이며
+                # 변환하지 않고 그대로 다시 던진다.
                 if status in ACTIVE_RUN_STATUSES:
                     raise ActiveScheduledRunConflict(task_id) from None
                 raise
@@ -98,7 +96,7 @@ class ScheduledTaskRunRepository:
             return [self._row_to_dict(row) for row in result.scalars()]
 
     async def count_active_runs(self) -> int:
-        """Global count of queued/running rows, used to bound cross-task concurrency."""
+        """queued/running row의 전역 개수. task 간 동시성을 제한하는 데 쓴다."""
         stmt = select(func.count()).select_from(ScheduledTaskRunRow).where(ScheduledTaskRunRow.status.in_(ACTIVE_RUN_STATUSES))
         async with self._sf() as session:
             result = await session.execute(stmt)
@@ -120,9 +118,8 @@ class ScheduledTaskRunRepository:
             if row is None:
                 return
             if protect_terminal and row.status in TERMINAL_RUN_STATUSES:
-                # The launch-path "running" write lost the race against the
-                # completion hook; keep the terminal status/error and only
-                # backfill bookkeeping the completion write could not know.
+                # launch 경로의 "running" 쓰기가 completion hook과의 경쟁에서 졌다. 종료
+                # 상태/에러는 유지하고, completion 쓰기가 알 수 없었던 기록만 채워 넣는다.
                 if row.run_id is None and run_id is not None:
                     row.run_id = run_id
                 if row.started_at is None and started_at is not None:
@@ -152,11 +149,10 @@ class ScheduledTaskRunRepository:
             return result.scalars().first() is not None
 
     async def mark_stale_active_runs(self, *, error: str) -> int:
-        """Fail-fast bookkeeping for runs orphaned by a process crash.
+        """프로세스 크래시로 고아가 된 run을 즉시 정리하는 기록 작업.
 
-        Agent runs execute in-process, so any ``queued``/``running`` row found
-        at scheduler startup belongs to a run whose process is gone. Only valid
-        under the MVP's single-scheduler-instance assumption.
+        agent run은 in-process로 실행되므로, scheduler 시작 시 발견되는 ``queued``/``running``
+        row는 프로세스가 사라진 run에 속한다. MVP의 단일 scheduler 인스턴스 가정에서만 유효하다.
         """
         stmt = select(ScheduledTaskRunRow).where(ScheduledTaskRunRow.status.in_(ACTIVE_RUN_STATUSES))
         now = datetime.now(UTC)

@@ -20,32 +20,31 @@ logger = logging.getLogger(__name__)
 
 
 class SandboxMiddlewareState(AgentState):
-    """Compatible with the `ThreadState` schema."""
+    """`ThreadState` schema와 호환된다."""
 
     sandbox: SandboxStateField
     thread_data: NotRequired[ThreadDataState | None]
 
 
 class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
-    """Create a sandbox environment and assign it to an agent.
+    """sandbox 환경을 만들어 agent에 할당한다.
 
-    Lifecycle Management:
-    - With lazy_init=True (default): Sandbox is acquired on first tool call
-    - With lazy_init=False: Sandbox is acquired on first agent invocation (before_agent)
-    - Sandbox is reused across multiple turns within the same thread
-    - Sandbox is NOT released after each agent call to avoid wasteful recreation
-    - Cleanup happens at application shutdown via SandboxProvider.shutdown()
+    생명주기 관리:
+    - lazy_init=True(기본): 첫 tool call 때 sandbox를 획득한다
+    - lazy_init=False: 첫 agent 호출(before_agent) 때 sandbox를 획득한다
+    - sandbox는 같은 thread의 여러 턴에 걸쳐 재사용된다
+    - 불필요한 재생성을 피하려고 agent 호출마다 sandbox를 release하지 않는다
+    - 정리는 애플리케이션 종료 시 SandboxProvider.shutdown()에서 이뤄진다
     """
 
     state_schema = SandboxMiddlewareState
 
     def __init__(self, lazy_init: bool = True):
-        """Initialize sandbox middleware.
+        """sandbox middleware를 초기화한다.
 
         Args:
-            lazy_init: If True, defer sandbox acquisition until first tool call.
-                      If False, acquire sandbox eagerly in before_agent().
-                      Default is True for optimal performance.
+            lazy_init: True면 sandbox 획득을 첫 tool call까지 미룬다. False면
+                      before_agent()에서 즉시 획득한다. 성능을 위해 기본값은 True다.
         """
         super().__init__()
         self._lazy_init = lazy_init
@@ -67,11 +66,11 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     def before_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
-        # Skip acquisition if lazy_init is enabled
+        # lazy_init이 켜져 있으면 획득을 건너뛴다
         if self._lazy_init:
             return super().before_agent(state, runtime)
 
-        # Eager initialization (original behavior)
+        # 즉시 초기화(원래 동작)
         if "sandbox" not in state or state["sandbox"] is None:
             thread_id = (runtime.context or {}).get("thread_id")
             if thread_id is None:
@@ -83,12 +82,12 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @override
     async def abefore_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
-        # Skip acquisition if lazy_init is enabled
+        # lazy_init이 켜져 있으면 획득을 건너뛴다
         if self._lazy_init:
             return await super().abefore_agent(state, runtime)
 
-        # Eager initialization (original behavior), but use the async provider
-        # hook so blocking sandbox startup/polling runs outside the event loop.
+        # 즉시 초기화(원래 동작). 단 blocking sandbox 시작/폴링이 event loop 밖에서 돌도록
+        # async provider hook을 쓴다.
         if "sandbox" not in state or state["sandbox"] is None:
             thread_id = (runtime.context or {}).get("thread_id")
             if thread_id is None:
@@ -104,8 +103,8 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         if sandbox is not None:
             sandbox_id = sandbox["sandbox_id"]
             if fork_restored:
-                # The wrapped value replays the parent thread's sandbox state;
-                # releasing it here would evict the parent's warm sandbox.
+                # 감싸인 값은 부모 thread의 sandbox 상태를 재현한 것이므로, 여기서 release하면
+                # 부모의 warm sandbox가 회수된다.
                 logger.info(f"Not releasing fork-restored sandbox {sandbox_id}")
                 return None
             logger.info(f"Releasing sandbox {sandbox_id}")
@@ -118,7 +117,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             get_sandbox_provider().release(sandbox_id)
             return None
 
-        # No sandbox to release
+        # release할 sandbox가 없다
         return super().after_agent(state, runtime)
 
     @override
@@ -127,8 +126,8 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         if sandbox is not None:
             sandbox_id = sandbox["sandbox_id"]
             if fork_restored:
-                # The wrapped value replays the parent thread's sandbox state;
-                # releasing it here would evict the parent's warm sandbox.
+                # 감싸인 값은 부모 thread의 sandbox 상태를 재현한 것이므로, 여기서 release하면
+                # 부모의 warm sandbox가 회수된다.
                 logger.info(f"Not releasing fork-restored sandbox {sandbox_id}")
                 return None
             logger.info(f"Releasing sandbox {sandbox_id}")
@@ -141,22 +140,20 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
             await self._release_sandbox_async(sandbox_id)
             return None
 
-        # No sandbox to release
+        # release할 sandbox가 없다
         return await super().aafter_agent(state, runtime)
 
     # ------------------------------------------------------------------
-    # Tool-call wrappers: persist lazily-acquired sandbox state into the
-    # graph state via Command(update=...).
+    # tool-call wrapper: lazy하게 획득한 sandbox 상태를 Command(update=...)로 graph state에
+    # 반영한다.
     #
-    # Background:
-    #   ``ensure_sandbox_initialized*`` in ``deerflow.sandbox.tools`` mutates
-    #   ``runtime.state["sandbox"]`` directly. That mutation is local to the
-    #   current tool invocation and is NOT picked up by LangGraph's channel
-    #   reducer, so subsequent graph steps (and downstream consumers such as
-    #   ``ToolOutputBudgetMiddleware`` and the sub-agent ``task_tool``)
-    #   cannot observe the sandbox id. Wrapping the tool call lets us detect
-    #   a fresh lazy init by diffing the state snapshot before/after the
-    #   handler and emit a proper state update via ``Command``.
+    # 배경:
+    #   ``deerflow.sandbox.tools``의 ``ensure_sandbox_initialized*``는
+    #   ``runtime.state["sandbox"]``를 직접 변경한다. 그 변경은 현재 tool 호출에 국한되며
+    #   LangGraph의 channel reducer가 인식하지 못하므로, 이후 graph step과 하위
+    #   소비자(``ToolOutputBudgetMiddleware``, subagent ``task_tool`` 등)가 sandbox id를 볼 수
+    #   없다. tool call을 감싸면 handler 전후의 state snapshot을 비교해 새로 일어난 lazy init을
+    #   감지하고 ``Command``로 제대로 된 state 업데이트를 낼 수 있다.
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -171,13 +168,13 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @staticmethod
     def _attach_sandbox_update(result: ToolMessage | Command, sandbox_id: str) -> ToolMessage | Command:
-        """Wrap or merge ``result`` so that ``sandbox.sandbox_id`` is persisted.
+        """``sandbox.sandbox_id``가 반영되도록 ``result``를 감싸거나 병합한다.
 
         - ``ToolMessage`` -> ``Command(update={"sandbox": ..., "messages": [msg]})``
-        - ``Command`` with dict update -> merge ``sandbox`` key, preserve all
-          existing fields (``messages``, ``goto``, ``graph``, ``resume``, ...).
-        - ``Command`` with non-dict / None update -> leave it untouched to
-          avoid silent data loss on unknown update shapes.
+        - dict update를 가진 ``Command`` -> ``sandbox`` 키를 병합하고 기존 필드
+          (``messages``, ``goto``, ``graph``, ``resume`` 등)는 모두 보존한다.
+        - dict가 아니거나 None인 update를 가진 ``Command`` -> 알 수 없는 update 형태에서 데이터가
+          조용히 유실되지 않도록 그대로 둔다.
         """
         sandbox_update = {"sandbox": {"sandbox_id": sandbox_id}}
 
@@ -192,7 +189,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
 
     @staticmethod
     def _read_sandbox_id_from_request(request: ToolCallRequest) -> str | None:
-        """Read sandbox_id from runtime.state (where ensure_sandbox_initialized writes)."""
+        """runtime.state에서 sandbox_id를 읽는다(ensure_sandbox_initialized가 쓰는 위치)."""
         runtime = request.runtime
         if runtime is None or runtime.state is None:
             return None

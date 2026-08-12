@@ -1,8 +1,8 @@
-"""Synchronous httpx client for the mem0 REST API (v3; delete is v1).
+"""mem0 REST API용 동기 httpx client (v3, delete만 v1).
 
-The MemoryManager contract is synchronous (DeerMem's LLM calls are sync too),
-so this client is a plain ``httpx.Client``. It is constructed with an
-optional ``transport`` so tests can inject ``httpx.MockTransport``.
+MemoryManager 규약이 동기이므로(DeerMem의 LLM 호출도 동기다) 이 client는 평범한
+``httpx.Client``다. 테스트가 ``httpx.MockTransport``를 주입할 수 있도록
+``transport``를 선택 인자로 받는다.
 """
 
 from __future__ import annotations
@@ -14,15 +14,15 @@ import httpx
 
 
 class Mem0APIError(RuntimeError):
-    """Any mem0 request failure (transport, 4xx/5xx)."""
+    """모든 mem0 요청 실패(transport, 4xx/5xx)."""
 
 
 class Mem0AuthError(Mem0APIError):
-    """401 -- missing or invalid API key."""
+    """401 — API key가 없거나 유효하지 않다."""
 
 
 class Mem0Client:
-    """Thin wrapper over the mem0 endpoints DeerFlow uses."""
+    """DeerFlow가 쓰는 mem0 엔드포인트만 감싼 얇은 wrapper."""
 
     def __init__(
         self,
@@ -66,7 +66,7 @@ class Mem0Client:
         agent_id: str | None = None,
         run_id: str | None = None,
     ) -> dict[str, Any]:
-        """Queue extraction (async server-side; response carries an event_id)."""
+        """추출 작업을 큐에 넣는다(서버 측 비동기 처리, 응답에 event_id가 담긴다)."""
         body: dict[str, Any] = {"messages": messages}
         if user_id:
             body["user_id"] = user_id
@@ -94,7 +94,7 @@ class Mem0Client:
         page_size: int = 200,
         max_items: int | None = None,
     ) -> list[dict[str, Any]]:
-        """List memories across pages until exhausted or ``max_items`` reached."""
+        """페이지가 소진되거나 ``max_items``에 도달할 때까지 memory를 나열한다."""
         results: list[dict[str, Any]] = []
         page = 1
         while True:
@@ -120,9 +120,9 @@ class Mem0Client:
         self._request("DELETE", "/v1/memories/", params=params)
 
     def ping(self) -> None:
-        """Startup auth check: a 1-item list scoped to a sentinel user id.
+        """시작 시 인증 확인: sentinel user id로 범위를 좁힌 1건 조회.
 
-        Proves the API key works without touching real data (the sentinel
-        bucket is always empty).
+        sentinel 버킷은 항상 비어 있으므로 실제 데이터를 건드리지 않고 API key가
+        유효한지만 확인한다.
         """
         self.list_memories(filters={"user_id": "__deerflow_startup_check__"}, page_size=1, max_items=1)

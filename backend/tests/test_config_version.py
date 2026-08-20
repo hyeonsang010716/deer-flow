@@ -126,13 +126,13 @@ def test_newer_user_version_no_warning(caplog):
         assert "outdated" not in caplog.text
 
 
-def test_version_26_config_upgrades_to_checkpoint_channel_mode(tmp_path, caplog):
-    """A v26 user config must be flagged outdated and merge the new persisted field.
+def test_outdated_config_merges_new_database_fields(tmp_path, caplog):
+    """A v26 user config must be flagged outdated and merge new persisted fields.
 
-    `database.checkpoint_channel_mode` shipped with config_version 27; the
-    upgrade path must add it with the safe default (``full``) without touching
-    the user's existing database backend settings. Uses the repository's real
-    config.example.yaml and the real config-upgrade script.
+    `database.checkpoint_graph_cache` shipped after config_version 26; the
+    upgrade path must add it without touching the user's existing database
+    backend settings. Uses the repository's real config.example.yaml and the
+    real config-upgrade script.
     """
     import subprocess
 
@@ -140,7 +140,7 @@ def test_version_26_config_upgrades_to_checkpoint_channel_mode(tmp_path, caplog)
     example_src = repo_root / "config.example.yaml"
     example_data = yaml.safe_load(example_src.read_text(encoding="utf-8"))
     expected_version = example_data["config_version"]
-    assert expected_version > 26, "config.example.yaml must be bumped past 26 for checkpoint_channel_mode"
+    assert expected_version > 26, "config.example.yaml must be bumped past 26"
 
     config_path = tmp_path / "config.yaml"
     (tmp_path / "config.example.yaml").write_text(example_src.read_text(encoding="utf-8"), encoding="utf-8")
@@ -168,7 +168,7 @@ def test_version_26_config_upgrades_to_checkpoint_channel_mode(tmp_path, caplog)
 
     upgraded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert upgraded["config_version"] == expected_version
-    assert upgraded["database"]["checkpoint_channel_mode"] == "full"
+    assert upgraded["database"]["checkpoint_graph_cache"]["accessor_graph_max"] == 64
     assert upgraded["database"]["backend"] == "sqlite"
     assert upgraded["database"]["sqlite_dir"] == "custom-data"
 

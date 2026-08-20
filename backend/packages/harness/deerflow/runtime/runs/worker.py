@@ -35,18 +35,11 @@ from langgraph.types import Overwrite
 
 from deerflow.agents.goal_state import GoalEvaluation, GoalState
 from deerflow.config.app_config import AppConfig
-from deerflow.config.database_config import CheckpointChannelMode
 from deerflow.constants import TOOL_RESULTS_DIRNAME
-from deerflow.runtime.checkpoint_mode import (
-    aensure_checkpoint_mode_compatible,
-    inject_checkpoint_mode,
-)
 from deerflow.runtime.checkpoint_state import (
     CheckpointStateAccessor,
     build_state_mutation_graph,
-    graph_reducer_channels,
     graph_state_schema,
-    graph_writable_channels,
 )
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY
 from deerflow.runtime.goal import (
@@ -421,10 +414,6 @@ class RunContext:
     thread_store: Any | None = field(default=None)
     app_config: AppConfig | None = field(default=None)
     extensions: Any | None = field(default=None)
-    checkpoint_channel_mode: CheckpointChannelMode = "full"
-    # 시작 시 고정된 delta snapshot 주기. ``None``은 "이 프로세스에서 고정되지
-    # 않음"(embedded/테스트)을 뜻하며 config 기본값으로 해석된다.
-    checkpoint_snapshot_frequency: int | None = None
     on_run_completed: Any | None = field(default=None)
 
 
@@ -676,38 +665,12 @@ async def run_agent(
                 await thread_store.update_status(thread_id, "running")
             except Exception:
                 logger.debug("Failed to update thread_meta status for %s (non-fatal)", thread_id)
-        mode = ctx.checkpoint_channel_mode
-        inject_checkpoint_mode(config, mode)
         checkpoint_config = {
             "configurable": {
                 "thread_id": thread_id,
                 "checkpoint_ns": "",
             }
         }
-        if checkpointer is not None:
-            await aensure_checkpoint_mode_compatible(
-                checkpointer,
-                checkpoint_config,
-                mode,
-            )
-            configurable = config["configurable"]
-            selected_configurable = {
-                "thread_id": thread_id,
-                "checkpoint_ns": configurable.get("checkpoint_ns", ""),
-            }
-            for selector_key in ("checkpoint_id", "checkpoint_map"):
-                if selector_key in configurable:
-                    selected_configurable[selector_key] = configurable[selector_key]
-            selected_checkpoint_config = {
-                "configurable": selected_configurable,
-            }
-            if selected_checkpoint_config != checkpoint_config:
-                await aensure_checkpoint_mode_compatible(
-                    checkpointer,
-                    selected_checkpoint_config,
-                    mode,
-                )
-
         persist_completion = True
 
         if event_store is not None:
@@ -812,15 +775,11 @@ async def run_agent(
             agent,
             checkpointer,
             store=store,
-            mode=mode,
         )
 
         # 이 run이 thread를 변경하기 전에 run 이전 rollback 지점(materialize된 state와 raw
-        # pending writes)을 캡처한다. raw checkpoint blob으로는 Delta 채널 메시지를 복원할
-        # 수 없으므로(그 checkpoint에는 channel_values가 없다) rollback은 graph를 통해 run
-        # 이전 계보를 fork하며, materialize된 메시지가 미리 필요하다. 캡처가 실패하면
-        # rollback을 비활성화한다. 비어 있거나 일부만 있는 메시지 이력을 복원하면 thread가
-        # 조용히 잘려나가기 때문이다.
+        # pending writes)을 캡처한다. 캡처가 실패하면 rollback을 비활성화한다. 비어 있거나
+        # 일부만 있는 메시지 이력을 복원하면 thread가 조용히 잘려나가기 때문이다.
         if checkpointer is not None:
             # 앞서 성공한 run이 active admission slot을 반납한 뒤에도 duration metadata를
             # 계속 저장 중일 수 있다. 그 checkpoint lock을 공유해서 rollback snapshot과
@@ -834,23 +793,6 @@ async def run_agent(
                 if rollback_point is not None:
                     pre_run_checkpoint_id = rollback_point.config.get("configurable", {}).get("checkpoint_id")
                     pre_existing_message_ids = _collect_pre_existing_message_ids({"messages": list(rollback_point.messages)})
-
-                # 오래된 checkpoint에서 재개하는 것은 fork이고, delta fork는 버려진 형제의
-                # write를 state로 다시 materialize한다 (#4458). rollback 지점을 캡처한
-                # *뒤에* 선형 head write로 재작성해서, rollback을 동반한 취소가 되돌려진
-                # head가 아니라 진짜 run 이전 head를 복원하게 한다.
-                resumed_messages = await _linearize_delta_checkpoint_resume(
-                    accessor=accessor,
-                    checkpointer=checkpointer,
-                    config=config,
-                    thread_id=thread_id,
-                    run_id=run_id,
-                )
-            if resumed_messages is not None:
-                # 이제 graph는 선택된 state에서 시작하므로, 현재 run의 메시지 경계는
-                # rollback용으로 캡처한 head가 아니라 그 state다.
-                pre_existing_message_ids = _collect_pre_existing_message_ids({"messages": list(resumed_messages)})
-                initial_runnable_config = RunnableConfig(**config)
 
         runtime_ctx[CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY] = frozenset(pre_existing_message_ids)
         _install_runtime_context(config, runtime_ctx)
@@ -1254,11 +1196,10 @@ def _goal_instance_matches(left: GoalState | None, right: GoalState | None) -> b
 
 
 async def _materialized_checkpoint_messages(accessor: CheckpointStateAccessor, thread_id: str) -> list[Any]:
-    """모드에 맞는 accessor로 ``messages``를 읽는다.
+    """accessor를 통해 materialize된 ``messages``를 읽는다.
 
-    delta 모드에서 raw ``channel_values``를 읽으면 sentinel만 보인다. materialize된
-    읽기만 리스트를 복원한다. raw checkpoint 튜플은 튜플 수준 metadata(checkpoint id,
-    ``pending_writes``)에는 여전히 유효하다.
+    raw checkpoint 튜플은 튜플 수준 metadata(checkpoint id, ``pending_writes``)에는 여전히
+    유효하지만, 메시지 자체는 이 경로로 읽는다.
     """
     snapshot = await accessor.aget({"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}})
     values = getattr(snapshot, "values", None) or {}
@@ -1597,13 +1538,11 @@ async def _publish_restored_checkpoint_values(
 class RollbackPoint:
     """취소 이후 thread를 복원하는 데 쓰는, materialize된 run 이전 state.
 
-    raw checkpoint blob으로는 Delta 채널 메시지를 복원할 수 없으므로(그 checkpoint에는
-    materialize된 값이 없다), rollback은 raw pending writes에 더해 그 메시지와 delta
-    모드에서 materialize된 비메시지 state까지 보존한다.
+    rollback은 캡처된 run 이전 checkpoint를 fork하고 그 위에 raw pending writes를 다시
+    붙인다. 나머지 채널은 그 부모에서 상속된다.
     """
 
     config: dict[str, Any]
-    state_values: dict[str, Any]
     messages: tuple[Any, ...]
     metadata: dict[str, Any]
     pending_writes: tuple[tuple[str, str, Any], ...]
@@ -1627,7 +1566,6 @@ async def _capture_rollback_point(
     checkpoint_tuple = await _call_checkpointer_method(checkpointer, "aget_tuple", "get_tuple", snapshot_config)
     raw_values = getattr(snapshot, "values", None) or {}
     messages = raw_values.get("messages") if isinstance(raw_values, dict) else None
-    state_values = copy.deepcopy({key: value for key, value in raw_values.items() if key != "messages"}) if accessor.mode == "delta" and isinstance(raw_values, dict) else {}
     return RollbackPoint(
         config={
             "configurable": {
@@ -1636,124 +1574,10 @@ async def _capture_rollback_point(
                 "checkpoint_id": configurable.get("checkpoint_id"),
             }
         },
-        state_values=state_values,
         messages=tuple(messages or ()),
         metadata=dict(getattr(snapshot, "metadata", None) or {}),
         pending_writes=tuple(getattr(checkpoint_tuple, "pending_writes", ()) or ()),
     )
-
-
-def _complete_state_replacement_values(
-    *,
-    mutation_graph: Any,
-    selected_values: dict[str, Any],
-    current_values: dict[str, Any],
-    run_id: str,
-    operation: str,
-) -> dict[str, Any]:
-    """graph의 실제 schema를 통해 전체 state 교체 값을 만든다."""
-    writable_fields = graph_writable_channels(mutation_graph)
-    reducer_fields = graph_reducer_channels(mutation_graph)
-    if writable_fields is None or reducer_fields is None:
-        raise RuntimeError(f"Run {run_id} could not inspect the state schema for {operation}")
-
-    replacement_values: dict[str, Any] = {}
-    for field_name in writable_fields:
-        if field_name in selected_values:
-            replacement = copy.deepcopy(selected_values[field_name])
-        elif field_name in current_values:
-            # LangGraph에는 공개된 "채널 해제" 업데이트가 없다. 새 채널은 schema 기본값이
-            # 있으면 그것을 노출하고(예: [] / {}), optional이거나 달리 생성할 수 없는
-            # 채널은 None으로 초기화된다.
-            channel = mutation_graph.channels.get(field_name)
-            replacement = copy.deepcopy(channel.get()) if channel is not None and channel.is_available() else None
-        else:
-            continue
-        replacement_values[field_name] = Overwrite(replacement) if field_name in reducer_fields else replacement
-    return replacement_values
-
-
-async def _linearize_delta_checkpoint_resume(
-    *,
-    accessor: CheckpointStateAccessor,
-    checkpointer: Any,
-    config: dict[str, Any],
-    thread_id: str,
-    run_id: str,
-) -> list[Any] | None:
-    """delta 모드의 checkpoint fork를 동등한 선형 write로 대체한다.
-
-    오래된 checkpoint에서 재개하면 계보가 fork되는데, ``delta`` 모드에서는 그 fork의
-    state를 올바르게 materialize할 수 없다. delta 이력 순회는 경로상의 각 조상에 저장된
-    ``pending_writes`` 항목을 **전부** 모으는데, 공유된 부모는 버려진 형제 자식의 write도
-    함께 갖고 있기 때문이다. 그 write들이 fork로 replay되므로, run은 자신이 대체하려던
-    답변이 여전히 들어 있는 메시지 목록에서 시작한다. 분기된 thread에서 재생성할 때
-    새로고침 후 예전 assistant 메시지가 새 것 옆에 다시 나타나는 형태로 드러났다 (#4458).
-    postgres, sqlite, in-memory saver에서 모두 재현되었다. ``full`` 모드는 checkpoint가
-    완전한 ``channel_values``를 담고 있어 replay가 필요 없으므로 영향받지 않는다.
-
-    write-to-child 소유권은 upstream 계약(`BaseCheckpointSaver.get_delta_channel_history`와
-    이를 override하는 saver들)의 몫이므로 여기서 다시 구현하지 않는다. 대신 fork를 그
-    의미대로 표현한다. 요청된 checkpoint의 state를 materialize한 다음, 다른 자식이 없는
-    **현재 head**에 교체 의미로 쓰고 선형으로 진행한다. materialize된 모든 채널이
-    복원되며, 더 새로운 head에만 존재하는 채널은 schema 기본값(생성 가능한 기본값이 없으면
-    ``None``)으로 초기화된다. 버려진 turn은 재작성된 head의 조상으로 checkpoint 이력에
-    남는다.
-
-    재개가 선형화되었으면 materialize된 메시지를, 할 일이 없었으면(full 모드, checkpoint
-    선택자 없음, 비 root namespace, 또는 이미 head를 가리키는 선택자) ``None``을 반환한다.
-    실패는 그대로 전파한다. 조용히 fork로 되돌아가면 이 함수가 막으려는 손상된 이력이
-    저장되기 때문이다. worker 호출 지점은 rollback 캡처와 이 재작성 전체에 걸쳐
-    ``_checkpoint_thread_lock``을 잡고 있다. 재진입 불가능한 그 lock을 이 헬퍼 안에서 다시
-    잡으면 안 된다.
-    """
-    if checkpointer is None or accessor.mode != "delta":
-        return None
-    configurable = config.get("configurable")
-    if not isinstance(configurable, dict):
-        return None
-    checkpoint_id = configurable.get("checkpoint_id")
-    if not isinstance(checkpoint_id, str) or not checkpoint_id:
-        return None
-    if configurable.get("checkpoint_ns"):
-        # subgraph namespace는 자체 계보를 갖는다. Gateway는 root checkpoint만 선택하므로
-        # 그 외에는 건드리지 않는다.
-        return None
-
-    head_config: dict[str, Any] = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
-    head = await accessor.aget(head_config)
-    if _checkpoint_id(head) == checkpoint_id:
-        # head를 선택하는 것은 이미 선형이다. 아직 형제가 존재할 수 없다.
-        return None
-
-    source_config: dict[str, Any] = {"configurable": {"thread_id": thread_id, "checkpoint_ns": "", "checkpoint_id": checkpoint_id}}
-    snapshot = await accessor.aget(source_config)
-    values = getattr(snapshot, "values", None) or {}
-    messages = values.get("messages") if isinstance(values, dict) else None
-    if not isinstance(messages, list):
-        raise RuntimeError(f"Run {run_id} could not materialize resume checkpoint {checkpoint_id}")
-
-    # thread의 실제 schema를 통해 써서 모든 애플리케이션·middleware 채널이 복원될 수 있게
-    # 한다. reducer 채널은 이미 집계된 값을 다시 병합하지 않고 교체하려면 Overwrite가
-    # 필요하다.
-    mutation_graph = build_state_mutation_graph("checkpoint_resume", accessor.mode, graph_state_schema(getattr(accessor, "graph", None)))
-    selected_values = dict(values)
-    head_values = getattr(head, "values", None) or {}
-    head_values = dict(head_values) if isinstance(head_values, dict) else {}
-    replacement_values = _complete_state_replacement_values(
-        mutation_graph=mutation_graph,
-        selected_values=selected_values,
-        current_values=head_values,
-        run_id=run_id,
-        operation="checkpoint resume",
-    )
-
-    mutation_accessor = CheckpointStateAccessor.bind(mutation_graph, checkpointer, mode=accessor.mode)
-    await mutation_accessor.aupdate(head_config, replacement_values, as_node="checkpoint_resume")
-    configurable.pop("checkpoint_id", None)
-    configurable.pop("checkpoint_map", None)
-    logger.info("Run %s linearized a delta-mode resume of checkpoint %s onto thread %s", run_id, checkpoint_id, thread_id)
-    return list(messages)
 
 
 async def _rollback_to_pre_run_checkpoint(
@@ -1767,11 +1591,9 @@ async def _rollback_to_pre_run_checkpoint(
 ) -> bool:
     """run 이전 state 전체를 복원하고 완료되었는지 보고한다.
 
-    full 모드는 캡처된 run 이전 checkpoint를 fork하고 messages를 덮어쓴다. 나머지 채널은
-    그 부모에서 상속된다. delta 모드는 취소된 경로가 같은 부모에 write를 붙인 뒤에는
-    안전하게 fork할 수 없으므로, 대신 캡처된 모든 채널을 현재 head에 교체해 쓴다. 두 write
-    모두 state 전용 mutation graph를 쓰며, 그 합성 ``rollback_restore`` node는 즉시 끝나고
-    agent 작업을 예약하지 않는다.
+    캡처된 run 이전 checkpoint를 fork하고 messages를 덮어쓴다. 나머지 채널은 그 부모에서
+    상속된다. write는 state 전용 mutation graph를 쓰며, 그 합성 ``rollback_restore`` node는
+    즉시 끝나고 agent 작업을 예약하지 않는다.
     """
     if checkpointer is None:
         logger.info("Run %s rollback requested but no checkpointer is configured", run_id)
@@ -1799,28 +1621,10 @@ async def _rollback_to_pre_run_checkpoint(
 
     # thread의 실제 schema로 컴파일해서 middleware가 기여한 채널이 살아남게 한다(기본
     # ThreadState fallback은 그것들을 조용히 버린다).
-    mutation_graph = build_state_mutation_graph("rollback_restore", accessor.mode, graph_state_schema(getattr(accessor, "graph", None)))
-    mutation_accessor = CheckpointStateAccessor.bind(mutation_graph, checkpointer, mode=accessor.mode)
-    if accessor.mode == "delta":
-        # delta rollback fork는 checkpoint 재개와 같은 write 소유권 문제를 갖는다. 캡처된
-        # 부모가 이제 취소된 형제의 write를 갖고 있기 때문이다. 대신 현재 head에 선형으로
-        # 복원한다.
-        restore_config: dict[str, Any] = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
-        current = await accessor.aget(restore_config)
-        raw_current_values = getattr(current, "values", None) or {}
-        current_values = dict(raw_current_values) if isinstance(raw_current_values, dict) else {}
-        selected_values = copy.deepcopy(rollback_point.state_values)
-        selected_values["messages"] = list(rollback_point.messages)
-        replacement_values = _complete_state_replacement_values(
-            mutation_graph=mutation_graph,
-            selected_values=selected_values,
-            current_values=current_values,
-            run_id=run_id,
-            operation="rollback",
-        )
-    else:
-        restore_config = rollback_point.config
-        replacement_values = {"messages": Overwrite(list(rollback_point.messages))}
+    mutation_graph = build_state_mutation_graph("rollback_restore", graph_state_schema(getattr(accessor, "graph", None)))
+    mutation_accessor = CheckpointStateAccessor.bind(mutation_graph, checkpointer)
+    restore_config = rollback_point.config
+    replacement_values = {"messages": Overwrite(list(rollback_point.messages))}
 
     restored_config = await mutation_accessor.aupdate(
         restore_config,
@@ -2093,8 +1897,8 @@ async def _ensure_interrupted_title(*, checkpointer: Any, thread_id: str, app_co
         metadata["writes"] = {"runtime_interrupt_title": {"title": title}}
 
         checkpoint_ns = _checkpoint_namespace(latest_tuple)
-        # 이 write가 파생된 checkpoint를 부모로 삼는다. 부모 없는 raw write는 Delta 채널
-        # replay 계보를 끊고 full 모드 이력 순회도 잘라먹는다.
+        # 이 write가 파생된 checkpoint를 부모로 삼는다. 부모 없는 raw write는 checkpoint
+        # 이력 순회를 잘라먹는다.
         write_config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": latest_identity}}
         await _call_checkpointer_method(
             checkpointer,

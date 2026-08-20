@@ -676,23 +676,26 @@ async def test_produced_artifact_delivery_fails_closed_when_receipt_cannot_be_pe
 
 
 @pytest.mark.anyio
-async def test_delivery_event_emitted_when_checkpoint_preflight_fails(monkeypatch):
+async def test_delivery_event_emitted_when_the_agent_cannot_be_built():
+    """A run that dies before the graph starts still owes a zero-delivery receipt.
+
+    The journal is created ahead of fallible pre-stream work, so an agent-factory
+    failure (bad model config, MCP outage) must terminalize with a receipt rather
+    than leaving the run without one.
+    """
     run_manager = RunManager()
-    run_manager.update_run_completion = AsyncMock(wraps=run_manager.update_run_completion)
     record = await run_manager.create("thread-1")
     store = MemoryRunEventStore()
-    compatibility_check = AsyncMock(side_effect=RuntimeError("incompatible checkpoint"))
-    monkeypatch.setattr("deerflow.runtime.runs.worker.aensure_checkpoint_mode_compatible", compatibility_check)
 
-    def unexpected_agent_factory(**kwargs):
-        raise AssertionError("agent must not be built after preflight failure")
+    def failing_agent_factory(**kwargs):
+        raise RuntimeError("agent factory unavailable")
 
     await run_agent(
         _make_bridge(),
         run_manager,
         record,
-        ctx=RunContext(checkpointer=object(), event_store=store),
-        agent_factory=unexpected_agent_factory,
+        ctx=RunContext(checkpointer=None, event_store=store),
+        agent_factory=failing_agent_factory,
         graph_input={},
         config={},
     )
@@ -702,7 +705,6 @@ async def test_delivery_event_emitted_when_checkpoint_preflight_fails(monkeypatc
     assert delivery[0]["content"] == {"presented": 0, "paths": [], "by_tool": {}}
     fetched = await run_manager.get(record.run_id)
     assert fetched.status == RunStatus.error
-    run_manager.update_run_completion.assert_not_awaited()
 
 
 @pytest.mark.anyio

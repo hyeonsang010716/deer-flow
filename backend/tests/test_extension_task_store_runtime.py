@@ -82,8 +82,6 @@ def test_gateway_run_context_captures_the_app_extension_snapshot(monkeypatch):
             state=SimpleNamespace(
                 extensions=loaded,
                 run_events_config=None,
-                checkpoint_channel_mode="full",
-                checkpoint_snapshot_frequency=None,
             )
         )
     )

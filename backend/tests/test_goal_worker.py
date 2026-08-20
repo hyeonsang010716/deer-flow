@@ -15,8 +15,8 @@ from deerflow.runtime.runs.schemas import DisconnectMode, RunStatus
 
 def _full_accessor(checkpointer) -> CheckpointStateAccessor:
     """Bind a full-mode accessor over a state-only graph for materialized reads."""
-    graph = build_state_mutation_graph("goal_evaluator", "full")
-    return CheckpointStateAccessor.bind(graph, checkpointer, mode="full")
+    graph = build_state_mutation_graph("goal_evaluator")
+    return CheckpointStateAccessor.bind(graph, checkpointer)
 
 
 class _CollectingBridge:
@@ -220,14 +220,13 @@ async def test_goal_worker_clears_goal_when_evaluator_is_satisfied(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_goal_worker_evaluates_materialized_messages_in_delta_mode(monkeypatch):
-    """Delta checkpoints store no ``channel_values.messages``; the goal flow must
-    read messages through the mode-matched accessor or it sees an empty list,
-    loses the durable-receipt check, and stands down every continuation.
+async def test_goal_worker_evaluates_materialized_messages(monkeypatch):
+    """The goal flow must read messages through the accessor; a raw checkpoint
+    read would lose the durable-receipt check and stand down every continuation.
     """
     checkpointer = InMemorySaver()
     thread_id = "delta-goal-thread"
-    accessor = CheckpointStateAccessor.bind(build_state_mutation_graph("goal_evaluator", "delta"), checkpointer, mode="delta")
+    accessor = CheckpointStateAccessor.bind(build_state_mutation_graph("goal_evaluator"), checkpointer)
     await accessor.aupdate(
         {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
         {

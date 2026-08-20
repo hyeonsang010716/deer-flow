@@ -105,57 +105,6 @@ def _write_extensions_config(path: Path) -> None:
     path.write_text(json.dumps({"mcpServers": {}, "skills": {}}), encoding="utf-8")
 
 
-def test_checkpoint_channel_mode_defaults_to_full() -> None:
-    assert DatabaseConfig().checkpoint_channel_mode == "full"
-
-
-@pytest.mark.parametrize("mode", ["full", "delta"])
-def test_checkpoint_channel_mode_accepts_supported_values(mode: str) -> None:
-    assert DatabaseConfig(checkpoint_channel_mode=mode).checkpoint_channel_mode == mode
-
-
-def test_checkpoint_channel_mode_rejects_unknown_value() -> None:
-    with pytest.raises(ValidationError):
-        DatabaseConfig(checkpoint_channel_mode="auto")
-
-
-def test_checkpoint_delta_defaults_to_production_cadence() -> None:
-    assert DatabaseConfig().checkpoint_delta.snapshot_frequency == 10
-
-
-def test_checkpoint_delta_accepts_custom_snapshot_frequency() -> None:
-    assert DatabaseConfig(checkpoint_delta={"snapshot_frequency": 250}).checkpoint_delta.snapshot_frequency == 250
-
-
-@pytest.mark.parametrize("value", [0, -1])
-def test_checkpoint_delta_rejects_non_positive_snapshot_frequency(value: int) -> None:
-    with pytest.raises(ValidationError):
-        DatabaseConfig(checkpoint_delta={"snapshot_frequency": value})
-
-
-def test_legacy_snapshot_frequency_maps_to_nested_key(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level("WARNING"):
-        config = DatabaseConfig(checkpoint_delta_snapshot_frequency=1000)
-    assert config.checkpoint_delta.snapshot_frequency == 1000
-    assert "checkpoint_delta_snapshot_frequency is deprecated" in caplog.text
-
-
-def test_nested_snapshot_frequency_wins_over_legacy_key(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level("WARNING"):
-        config = DatabaseConfig(
-            checkpoint_delta_snapshot_frequency=1000,
-            checkpoint_delta={"snapshot_frequency": 250},
-        )
-    assert config.checkpoint_delta.snapshot_frequency == 250
-    assert "the nested key wins" in caplog.text
-
-
-@pytest.mark.parametrize("value", [0, -1])
-def test_legacy_snapshot_frequency_rejects_non_positive_value(value: int) -> None:
-    with pytest.raises(ValidationError):
-        DatabaseConfig(checkpoint_delta_snapshot_frequency=value)
-
-
 def test_checkpoint_graph_cache_defaults() -> None:
     assert DatabaseConfig().checkpoint_graph_cache.accessor_graph_max == 64
 

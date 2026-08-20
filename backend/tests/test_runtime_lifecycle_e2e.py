@@ -100,7 +100,7 @@ class _ScriptedAgent:
         # Gateway read paths consume graph-materialized snapshots
         # (``aget_state``/``get_state_history``), so the double delegates those
         # reads to a real state-only graph bound to the same checkpointer.
-        self._state_graph = build_state_mutation_graph("scripted_state", "full")
+        self._state_graph = build_state_mutation_graph("scripted_state")
 
     def _bound_state_graph(self):
         self._state_graph.checkpointer = self.checkpointer

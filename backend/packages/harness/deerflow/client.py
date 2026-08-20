@@ -34,7 +34,7 @@ from langchain_core.runnables import RunnableConfig
 
 from deerflow.agents.lead_agent.agent import _authorize_model_name, build_middlewares
 from deerflow.agents.lead_agent.prompt import apply_prompt_template, get_enabled_skills_for_config
-from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
+from deerflow.agents.thread_state import ThreadState
 from deerflow.authz.principal import build_principal_from_context
 from deerflow.config.agents_config import AGENT_NAME_PATTERN
 from deerflow.config.app_config import get_app_config, is_trace_correlation_enabled, reload_app_config
@@ -48,12 +48,6 @@ from deerflow.config.extensions_config import (
 from deerflow.config.paths import get_paths
 from deerflow.models import create_chat_model
 from deerflow.runtime import CheckpointStateAccessor
-from deerflow.runtime.checkpoint_mode import (
-    ensure_checkpoint_mode_compatible,
-    freeze_checkpoint_channel_mode,
-    freeze_checkpoint_snapshot_frequency,
-    inject_checkpoint_mode,
-)
 from deerflow.runtime.goal import DEFAULT_MAX_GOAL_CONTINUATIONS, build_goal_state, goal_thread_lock, read_thread_goal, write_thread_goal
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.describe import build_skill_search_setup
@@ -192,8 +186,6 @@ class DeerFlowClient:
         if config_path is not None:
             reload_app_config(config_path)
         self._app_config = get_app_config()
-        self._checkpoint_channel_mode = freeze_checkpoint_channel_mode(self._app_config.database.checkpoint_channel_mode)
-        self._checkpoint_snapshot_frequency = freeze_checkpoint_snapshot_frequency(self._app_config.database.checkpoint_delta.snapshot_frequency)
 
         if agent_name is not None and not AGENT_NAME_PATTERN.match(agent_name):
             raise ValueError(f"Invalid agent name '{agent_name}'. Must match pattern: {AGENT_NAME_PATTERN.pattern}")
@@ -274,8 +266,6 @@ class DeerFlowClient:
             cfg.get("max_total_subagents"),
             self._agent_name,
             frozenset(self._available_skills) if self._available_skills is not None else None,
-            self._checkpoint_channel_mode,
-            self._checkpoint_snapshot_frequency,
             authorization_identity,
         )
 
@@ -340,21 +330,17 @@ class DeerFlowClient:
             # 만들기 때문이다. 모델에 다시 붙이면 span이 중복된다.
             "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled, attach_tracing=False),
             "tools": final_tools,
-            "middleware": normalize_middleware_state_schemas(
-                build_middlewares(
-                    config,
-                    model_name=model_name,
-                    agent_name=self._agent_name,
-                    available_skills=self._available_skills,
-                    custom_middlewares=self._middlewares,
-                    app_config=self._app_config,
-                    deferred_setup=deferred_setup,
-                    mcp_routing_middleware=mcp_routing_middleware,
-                    user_id=effective_user_id,
-                    authorization_provider=_authz_provider,
-                ),
-                self._checkpoint_channel_mode,
-                self._checkpoint_snapshot_frequency,
+            "middleware": build_middlewares(
+                config,
+                model_name=model_name,
+                agent_name=self._agent_name,
+                available_skills=self._available_skills,
+                custom_middlewares=self._middlewares,
+                app_config=self._app_config,
+                deferred_setup=deferred_setup,
+                mcp_routing_middleware=mcp_routing_middleware,
+                user_id=effective_user_id,
+                authorization_provider=_authz_provider,
             ),
             "system_prompt": apply_prompt_template(
                 subagent_enabled=subagent_enabled,
@@ -368,7 +354,7 @@ class DeerFlowClient:
                 user_id=effective_user_id,
                 skill_names=skill_setup.skill_names or None,
             ),
-            "state_schema": get_thread_state_schema(self._checkpoint_channel_mode, self._checkpoint_snapshot_frequency),
+            "state_schema": ThreadState,
         }
         checkpointer = self._checkpointer
         if checkpointer is None:
@@ -625,11 +611,7 @@ class DeerFlowClient:
         if self._agent is None:
             raise RuntimeError("Agent was not initialized")
 
-        accessor = CheckpointStateAccessor.bind(
-            self._agent,
-            checkpointer,
-            mode=self._checkpoint_channel_mode,
-        )
+        accessor = CheckpointStateAccessor.bind(self._agent, checkpointer)
         # 한 번의 streaming walk로 checkpoint id별 pending_writes를 모은다.
         # 스냅샷마다 get_tuple을 부르면 checkpoint당 round-trip이 한 번씩 든다.
         pending_writes_by_checkpoint: dict[str, list] = {}
@@ -792,24 +774,6 @@ class DeerFlowClient:
         thread_id = resolve_thread_id(thread_id)
 
         config = self._get_runnable_config(thread_id, **kwargs)
-        inject_checkpoint_mode(config, self._checkpoint_channel_mode)
-        checkpoint_config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": "",
-            }
-        }
-        checkpointer = self._checkpointer
-        if checkpointer is None:
-            from deerflow.runtime.checkpointer import get_checkpointer
-
-            checkpointer = get_checkpointer()
-        if checkpointer is not None:
-            ensure_checkpoint_mode_compatible(
-                checkpointer,
-                checkpoint_config,
-                self._checkpoint_channel_mode,
-            )
 
         # tracing callback과 Langfuse trace metadata를 graph 호출 루트에 주입해서 embedded
         # client가 gateway worker와 같은 동작을 하게 한다. ``stream()`` 한 번이 모든 노드 /

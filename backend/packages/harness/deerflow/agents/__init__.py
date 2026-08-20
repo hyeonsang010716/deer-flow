@@ -7,7 +7,6 @@ __all__ = [
     "Prev",
     "make_lead_agent",
     "SandboxState",
-    "DeltaThreadState",
     "ThreadState",
 ]
 
@@ -28,11 +27,10 @@ def __getattr__(name: str):
         prime_enabled_skills_cache()
         globals()[name] = make_lead_agent
         return make_lead_agent
-    if name in {"DeltaThreadState", "SandboxState", "ThreadState"}:
-        from .thread_state import DeltaThreadState, SandboxState, ThreadState
+    if name in {"SandboxState", "ThreadState"}:
+        from .thread_state import SandboxState, ThreadState
 
         exports = {
-            "DeltaThreadState": DeltaThreadState,
             "SandboxState": SandboxState,
             "ThreadState": ThreadState,
         }

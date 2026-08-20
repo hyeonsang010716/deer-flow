@@ -21,8 +21,7 @@ from deerflow.agents.features import RuntimeFeatures
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
 from deerflow.agents.middlewares.tool_error_handling_middleware import ToolErrorHandlingMiddleware
-from deerflow.agents.thread_state import adapt_state_schema_for_mode, get_thread_state_schema, normalize_middleware_state_schemas
-from deerflow.config.database_config import CheckpointChannelMode
+from deerflow.agents.thread_state import ThreadState
 from deerflow.tools.builtins import ask_clarification_tool
 
 if TYPE_CHECKING:
@@ -70,8 +69,6 @@ def create_deerflow_agent(
     extra_middleware: list[AgentMiddleware] | None = None,
     plan_mode: bool = False,
     state_schema: type | None = None,
-    checkpoint_channel_mode: CheckpointChannelMode = "full",
-    checkpoint_snapshot_frequency: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     name: str = "default",
 ) -> CompiledStateGraph:
@@ -101,14 +98,6 @@ def create_deerflow_agent(
         작업 추적용 TodoMiddleware를 활성화한다.
     state_schema:
         LangGraph state 타입. 기본값은 ``ThreadState``다.
-    checkpoint_channel_mode:
-        누적 channel의 checkpoint 표현 방식. 기본값은 full-state 호환 schema다.
-        ``"delta"``는 보호된 persistence 경로(mode marker + 호환성 gate)를 요구하므로 이
-        factory에서 *checkpointer*와 함께 주면 거부한다. checkpointer가 없으면 graph는
-        일시적이므로 delta를 허용한다.
-    checkpoint_snapshot_frequency:
-        ``"delta"`` 모드의 DeltaChannel snapshot 주기. ``None``이면 프로세스에 고정된 값을
-        쓰고, 없으면 config 기본값으로 넘어간다. ``"full"`` 모드에서는 무시된다.
     checkpointer:
         선택적 persistence backend.
     name:
@@ -121,14 +110,6 @@ def create_deerflow_agent(
     """
     if middleware is not None and features is not None:
         raise ValueError("Cannot specify both 'middleware' and 'features'.  Use one or the other.")
-    if checkpoint_channel_mode == "delta" and checkpointer is not None:
-        raise ValueError(
-            "create_deerflow_agent does not support checkpoint_channel_mode='delta' with a checkpointer: "
-            "persisted graphs built here bypass checkpoint mode marker injection and the fail-closed "
-            "compatibility gate (see deerflow.runtime.checkpoint_mode), so a mixed-mode store would "
-            "silently corrupt thread state.  Use the guarded application paths (make_lead_agent or "
-            "DeerFlowClient) for delta persistence; delta without a checkpointer is ephemeral and allowed."
-        )
     if middleware is not None and extra_middleware:
         raise ValueError("Cannot use 'extra_middleware' with 'middleware' (full takeover).")
     if extra_middleware:
@@ -137,7 +118,7 @@ def create_deerflow_agent(
                 raise TypeError(f"extra_middleware items must be AgentMiddleware instances, got {type(mw).__name__}")
 
     effective_tools: list[BaseTool] = list(tools or [])
-    effective_state = get_thread_state_schema(checkpoint_channel_mode, checkpoint_snapshot_frequency) if state_schema is None else adapt_state_schema_for_mode(state_schema, checkpoint_channel_mode, checkpoint_snapshot_frequency)
+    effective_state = ThreadState if state_schema is None else state_schema
 
     if middleware is not None:
         effective_middleware = list(middleware)
@@ -155,12 +136,6 @@ def create_deerflow_agent(
             if t.name not in existing_names:
                 effective_tools.append(t)
                 existing_names.add(t.name)
-
-    effective_middleware = normalize_middleware_state_schemas(
-        effective_middleware,
-        checkpoint_channel_mode,
-        checkpoint_snapshot_frequency,
-    )
 
     return create_agent(
         model=model,

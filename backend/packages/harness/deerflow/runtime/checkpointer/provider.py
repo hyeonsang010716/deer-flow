@@ -29,7 +29,6 @@ from langgraph.types import Checkpointer
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.checkpointer_config import CheckpointerConfig, ensure_config_loaded, get_checkpointer_config
 from deerflow.persistence.postgres_schema import dsn_with_search_path, ensure_postgres_schema
-from deerflow.runtime.checkpoint_mode import frozen_checkpoint_channel_mode
 from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resolve_sqlite_conn_str
 
 logger = logging.getLogger(__name__)
@@ -154,40 +153,6 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
 _checkpointer: Checkpointer | None = None
 _checkpointer_ctx = None  # connection을 살려두는 열린 context manager
 _checkpointer_lock = threading.Lock()
-_checkpointer_cache = None  # 래핑된 동기 saver들이 공유하는 MemoryCheckpointHistoryCache singleton
-_checkpointer_cache_prefix: str | None = None  # singleton을 만들 때 쓴 key prefix
-
-
-def _wrap_sync_if_delta(saver: Checkpointer, app_config: AppConfig) -> Checkpointer:
-    """유효 모드가 ``delta``이면 *saver*를 delta history cache로 감싼다.
-
-    프로세스에 고정된 모드가 우선이고, 아직 고정된 값이 없으면
-    ``database.checkpoint_channel_mode``로 fallback한다. 동기 경로(TUI/embedded)에서는
-    memory cache backend만 지원한다 — 어차피 프로세스 로컬이기 때문이다.
-    """
-    global _checkpointer_cache, _checkpointer_cache_prefix
-    # ``_checkpointer_cache`` singleton은 ``checkpointer_context()`` 경로에서
-    # ``_checkpointer_lock``을 잡지 않은 채 재할당된다(``get_checkpointer()`` 경로에서는
-    # lock 안에서 재할당). 이 경쟁은 의도적이고 무해하다: 최악의 경우 두 wrapper가 각자
-    # 새 memory cache를 갖게 될 뿐이며, 마지막 writer가 이기고 cache는 성능 전용이다.
-    db_config = getattr(app_config, "database", None)
-    mode = frozen_checkpoint_channel_mode() or (db_config.checkpoint_channel_mode if db_config is not None else "full")
-    if mode != "delta":
-        return saver
-    cache_config = app_config.database.checkpoint_cache
-    if cache_config.type == "redis":
-        raise ValueError("database.checkpoint_cache.type 'redis' is not supported on the sync checkpointer path (TUI/embedded); use 'memory'.")
-    from deerflow.runtime.checkpoint_cache.memory import MemoryCheckpointHistoryCache
-    from deerflow.runtime.checkpoint_cache.provider import checkpoint_cache_key_prefix
-    from deerflow.runtime.checkpointer.cached_saver import CachedHistorySaver
-
-    key_prefix = checkpoint_cache_key_prefix(app_config)
-    # 용량이나 namespace가 바뀌면 다시 만든다: 낡은 prefix 아래의 항목은 접근할 수 없고
-    # thread 삭제 시 정리 대상에도 들어가지 않는다.
-    if _checkpointer_cache is None or _checkpointer_cache._max_entries != cache_config.max_entries or _checkpointer_cache_prefix != key_prefix:
-        _checkpointer_cache = MemoryCheckpointHistoryCache(max_entries=cache_config.max_entries)
-        _checkpointer_cache_prefix = key_prefix
-    return CachedHistorySaver(saver, _checkpointer_cache, key_prefix=key_prefix)
 
 
 def get_checkpointer() -> Checkpointer:
@@ -210,27 +175,12 @@ def get_checkpointer() -> Checkpointer:
     # 역전을 피하기 위해 전체 config는 이 provider lock 바깥에서 해석한다.
     config = _get_checkpointer_config()
 
-    # ``get_app_config()``는 config reload를 유발할 수 있고, 그 안의
-    # ``_apply_singleton_configs``가 ``_checkpointer_lock``을 잡는
-    # ``reset_checkpointer()``를 호출한다. 위의 ``_get_checkpointer_config()``와 똑같이
-    # (재진입 불가 lock이므로) 아래에서 lock을 잡기 전에 먼저 해석한다.
-    try:
-        app_config = get_app_config()
-    except FileNotFoundError:
-        app_config = None
-
     with _checkpointer_lock:
         if _checkpointer is not None:
             return _checkpointer
 
         checkpointer_ctx = _sync_checkpointer_cm(config)
         checkpointer = checkpointer_ctx.__enter__()
-        try:
-            if app_config is not None:
-                checkpointer = _wrap_sync_if_delta(checkpointer, app_config)
-        except Exception:
-            checkpointer_ctx.__exit__(None, None, None)
-            raise
         _checkpointer_ctx = checkpointer_ctx
         _checkpointer = checkpointer
 
@@ -243,7 +193,7 @@ def reset_checkpointer() -> None:
     열려 있는 backend connection을 닫고 캐시된 인스턴스를 비운다. 테스트나 설정 변경
     직후에 유용하다.
     """
-    global _checkpointer, _checkpointer_ctx, _checkpointer_cache, _checkpointer_cache_prefix
+    global _checkpointer, _checkpointer_ctx
     with _checkpointer_lock:
         if _checkpointer_ctx is not None:
             try:
@@ -252,8 +202,6 @@ def reset_checkpointer() -> None:
                 logger.warning("Error during checkpointer cleanup", exc_info=True)
             _checkpointer_ctx = None
         _checkpointer = None
-        _checkpointer_cache = None
-        _checkpointer_cache_prefix = None
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +225,6 @@ def checkpointer_context() -> Iterator[Checkpointer]:
     ``InMemorySaver``를 yield한다.
     """
 
-    app_config = get_app_config()
-    config = _resolve_checkpointer_config(app_config)
+    config = _resolve_checkpointer_config(get_app_config())
     with _sync_checkpointer_cm(config) as saver:
-        yield _wrap_sync_if_delta(saver, app_config)
+        yield saver

@@ -32,7 +32,7 @@ import logging
 import os
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from deerflow.config.postgres_schema import POSTGRES_SCHEMA_PATTERN, validate_postgres_schema
 
@@ -52,32 +52,6 @@ def resolve_checkpoint_graph_cache_max(database_config: Any, field_name: str, de
     return value
 
 
-CheckpointChannelMode = Literal["full", "delta"]
-
-DEFAULT_CHECKPOINT_SNAPSHOT_FREQUENCY = 10
-
-
-class CheckpointDeltaConfig(BaseModel):
-    """``checkpoint_channel_mode: delta``용 튜닝 값.
-
-    ``full`` 모드에서는 무시한다. 모드 자체와 마찬가지로 이 값들은 재시작이 필요하고,
-    하나의 checkpoint database를 공유하는 모든 프로세스에서 일치해야 한다: snapshot
-    주기는 checkpoint에 저장되지 않고 컴파일된 graph의 channel table에 박히므로, 값이
-    다른 프로세스는 같은 thread에 다른 주기를 적용하게 된다.
-    """
-
-    snapshot_frequency: int = Field(
-        default=DEFAULT_CHECKPOINT_SNAPSHOT_FREQUENCY,
-        ge=1,
-        description=(
-            "DeltaChannel snapshot cadence: a full messages snapshot is stored "
-            "every N per-step writes (higher = smaller checkpoints, slower "
-            "materialization). Restart is required, and all processes sharing "
-            "one checkpoint database must use the same value."
-        ),
-    )
-
-
 class CheckpointGraphCacheConfig(BaseModel):
     """프로세스 로컬 컴파일 checkpoint graph cache의 크기 상한.
 
@@ -94,69 +68,14 @@ class CheckpointGraphCacheConfig(BaseModel):
     )
 
 
-class CheckpointCacheConfig(BaseModel):
-    """delta history cache 정책. 성능 전용이라 고정되지도 않고, 하나의 checkpoint
-    database를 공유하는 프로세스 간에 일치할 필요도 없다.
-
-    ``checkpoint_channel_mode``가 ``delta``일 때만 적용된다. ``max_entries``는 프로세스
-    로컬 memory backend의 상한이고 ``0``이면 cache를 완전히 끈다. redis backend는
-    ``ttl_seconds``와 서버 자체의 maxmemory 정책으로 제한된다.
-    """
-
-    type: Literal["memory", "redis"] = Field(
-        default="memory",
-        description=("Checkpoint history cache backend. 'memory' = process-local LRU; 'redis' = shared cache for multi-worker deployments (async/Gateway path only; the sync embedded path rejects it)."),
-    )
-    max_entries: int = Field(
-        default=128,
-        ge=0,
-        description="LRU capacity of the memory backend. 0 disables the cache.",
-    )
-    redis_url: str | None = Field(
-        default=None,
-        description=("Redis URL for type=redis. If omitted, DEER_FLOW_CHECKPOINT_CACHE_REDIS_URL, REDIS_URL, or redis://localhost:6379/0 is used."),
-    )
-    ttl_seconds: int = Field(
-        default=86400,
-        ge=0,
-        description=(
-            "Redis entry TTL; a leak safety net, not a correctness mechanism (entries are immutable). "
-            "Thread deletion purges that thread's entries immediately; if the purge fails (redis outage), "
-            "residual copies of the thread's history persist until this TTL expires. "
-            "0 explicitly disables expiry — orphaned keys then rely on the redis maxmemory policy alone."
-        ),
-    )
-    key_prefix: str = Field(
-        default="",
-        description="Optional override for the redis key prefix; defaults to a hash of the database identity.",
-    )
-
-
 class DatabaseConfig(BaseModel):
     backend: Literal["memory", "sqlite", "postgres"] = Field(
         default="memory",
         description=("Storage backend for both checkpointer and application data. 'memory' for development (no persistence across restarts), 'sqlite' for single-node deployment, 'postgres' for production multi-node deployment."),
     )
-    checkpoint_channel_mode: CheckpointChannelMode = Field(
-        default="full",
-        description=(
-            "Checkpoint representation for accumulating channels. "
-            "'full' preserves full-value message checkpoints; 'delta' uses "
-            "LangGraph DeltaChannel for messages. Restart is required, and all "
-            "processes sharing one checkpoint database must use the same value."
-        ),
-    )
-    checkpoint_delta: CheckpointDeltaConfig = Field(
-        default_factory=CheckpointDeltaConfig,
-        description="Delta-mode checkpoint tuning. Only applies when checkpoint_channel_mode is 'delta'.",
-    )
     checkpoint_graph_cache: CheckpointGraphCacheConfig = Field(
         default_factory=CheckpointGraphCacheConfig,
         description="Size caps for the compiled checkpoint graph caches. Hot-reloadable; not restart-required.",
-    )
-    checkpoint_cache: CheckpointCacheConfig = Field(
-        default_factory=CheckpointCacheConfig,
-        description="Delta-mode checkpoint history cache. Performance-only; safe to differ across workers.",
     )
     sqlite_dir: str = Field(
         default=".deer-flow/data",
@@ -205,45 +124,6 @@ class DatabaseConfig(BaseModel):
     @classmethod
     def _validate_postgres_schema(cls, value: str) -> str:
         return validate_postgres_schema(value)
-
-    # -- 레거시 키 마이그레이션 (사용자 설정 항목 아님) --
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_snapshot_frequency(cls, data: Any) -> Any:
-        """이름을 바꾸기 전의 최상위 ``checkpoint_delta_snapshot_frequency`` 키를
-        ``checkpoint_delta.snapshot_frequency``로 옮긴다.
-
-        ``DatabaseConfig``는 알 수 없는 키를 무시하므로(pydantic ``extra="ignore"``),
-        이 shim이 없으면 옛 flat 키로 작성된 config.yaml이 운영자가 고른 값 대신 새
-        기본 주기로 조용히 fallback한다. 명시적으로 설정된 중첩 키가 항상 이긴다.
-        """
-        if not isinstance(data, dict) or "checkpoint_delta_snapshot_frequency" not in data:
-            return data
-        data = dict(data)
-        legacy_value = data.pop("checkpoint_delta_snapshot_frequency")
-        nested = data.get("checkpoint_delta")
-        if isinstance(nested, dict):
-            if "snapshot_frequency" in nested:
-                logger.warning(
-                    "Both database.checkpoint_delta_snapshot_frequency (deprecated) and database.checkpoint_delta.snapshot_frequency are set; the nested key wins.",
-                )
-                return data
-            data["checkpoint_delta"] = {**nested, "snapshot_frequency": legacy_value}
-        elif nested is None:
-            data["checkpoint_delta"] = {"snapshot_frequency": legacy_value}
-        else:
-            # 코드로 만든 CheckpointDeltaConfig 인스턴스: 명시적 객체가 레거시 스칼라를
-            # 이긴다.
-            logger.warning(
-                "Ignoring deprecated database.checkpoint_delta_snapshot_frequency because database.checkpoint_delta is already set.",
-            )
-            return data
-        logger.warning(
-            "database.checkpoint_delta_snapshot_frequency is deprecated; use database.checkpoint_delta.snapshot_frequency instead. Carried the legacy value (%r) forward.",
-            legacy_value,
-        )
-        return data
 
     # -- 파생 헬퍼 (사용자 설정 항목 아님) --
 

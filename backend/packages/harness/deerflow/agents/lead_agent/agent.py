@@ -44,7 +44,7 @@ from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
 from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddleware
 from deerflow.agents.middlewares.tool_error_handling_middleware import build_lead_runtime_middlewares
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
-from deerflow.agents.thread_state import get_thread_state_schema, normalize_middleware_state_schemas
+from deerflow.agents.thread_state import ThreadState
 from deerflow.authz.principal import build_principal_from_context
 from deerflow.authz.provider import AuthzDecision, AuthzRequest
 from deerflow.authz.runtime import resolve_authorization_provider
@@ -54,13 +54,6 @@ from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.memory_config import should_use_memory_tools
 from deerflow.config.subagents_config import DEFAULT_MAX_TOTAL_SUBAGENTS_PER_RUN
 from deerflow.models import create_chat_model
-from deerflow.runtime.checkpoint_mode import (
-    INTERNAL_CHECKPOINT_MODE_KEY,
-    freeze_checkpoint_channel_mode,
-    freeze_checkpoint_snapshot_frequency,
-    frozen_checkpoint_channel_mode,
-    inject_checkpoint_mode,
-)
 from deerflow.skills.types import Skill
 from deerflow.tracing import build_tracing_callbacks
 
@@ -626,26 +619,6 @@ def make_lead_agent(config: RunnableConfig):
     runtime_app_config = runtime_config.get("app_config")
     if not isinstance(runtime_app_config, AppConfig):
         runtime_app_config = get_app_config()
-    # mode 선택 우선순위. test_checkpoint_mode.py가 이를 고정한다.
-    # - 첫 freeze: 프로세스 mode는 app config가 소유한다. client가 준 configurable key는
-    #   무시하므로, LangGraph에 직접 보낸 request가 갓 뜬 프로세스를 재설정하거나 죽일 수 없다.
-    # - freeze된 뒤: 내부에서 주입한 key(run worker/gateway)나 app config가 freeze된 mode와
-    #   일치해야 한다. ``freeze_checkpoint_channel_mode``는 불일치 시 fail-closed로 막으므로
-    #   위조된 key도 config.yaml 변경도 프로세스를 조용히 재설정할 수 없다.
-    frozen_mode = frozen_checkpoint_channel_mode()
-    if frozen_mode is None:
-        requested_mode = runtime_app_config.database.checkpoint_channel_mode
-    else:
-        requested_mode = (config.get("configurable", {}) or {}).get(
-            INTERNAL_CHECKPOINT_MODE_KEY,
-            runtime_app_config.database.checkpoint_channel_mode,
-        )
-    mode = freeze_checkpoint_channel_mode(requested_mode)
-    # snapshot 주기는 mode와 함께 움직인다. 재시작이 필요하고, app config에서 freeze되며,
-    # 의도적으로 client가 주입할 수 없다. 위조된 configurable key가 channel table을 다시
-    # 컴파일하게 두어서도 안 된다.
-    freeze_checkpoint_snapshot_frequency(runtime_app_config.database.checkpoint_delta.snapshot_frequency)
-    inject_checkpoint_mode(config, mode)
     return _make_lead_agent(config, app_config=runtime_app_config)
 
 
@@ -657,10 +630,6 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
 
     cfg = _get_runtime_config(config)
     resolved_app_config = app_config
-    mode = (config.get("configurable", {}) or {}).get(
-        INTERNAL_CHECKPOINT_MODE_KEY,
-        resolved_app_config.database.checkpoint_channel_mode,
-    )
 
     # 사용자 범위 factory 입력 전부에 대해 권위 있는 identity 하나를 결정한다.
     # Agent Server의 예약된 auth 필드가 client가 준 일반 context/configurable 값보다 우선한다.
@@ -797,18 +766,15 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         return create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
             tools=final_tools,
-            middleware=normalize_middleware_state_schemas(
-                build_middlewares(
-                    config,
-                    model_name=model_name,
-                    available_skills=set(_BOOTSTRAP_SKILL_NAMES),
-                    app_config=resolved_app_config,
-                    deferred_setup=setup,
-                    mcp_routing_middleware=mcp_routing_middleware,
-                    user_id=resolved_user_id,
-                    authorization_provider=_authz_provider,
-                ),
-                mode,
+            middleware=build_middlewares(
+                config,
+                model_name=model_name,
+                available_skills=set(_BOOTSTRAP_SKILL_NAMES),
+                app_config=resolved_app_config,
+                deferred_setup=setup,
+                mcp_routing_middleware=mcp_routing_middleware,
+                user_id=resolved_user_id,
+                authorization_provider=_authz_provider,
             ),
             system_prompt=apply_prompt_template(
                 subagent_enabled=subagent_enabled,
@@ -820,7 +786,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
                 user_id=resolved_user_id,
                 skill_names=skill_setup.skill_names or None,
             ),
-            state_schema=get_thread_state_schema(mode),
+            state_schema=ThreadState,
         )
 
     # custom agent는 update_agent로 자신의 SOUL.md/config를 갱신할 수 있다.
@@ -875,19 +841,16 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False, model_overrides=agent_model_overrides),
         tools=final_tools,
-        middleware=normalize_middleware_state_schemas(
-            build_middlewares(
-                config,
-                model_name=model_name,
-                agent_name=agent_name,
-                available_skills=available_skills,
-                app_config=resolved_app_config,
-                deferred_setup=setup,
-                mcp_routing_middleware=mcp_routing_middleware,
-                user_id=resolved_user_id,
-                authorization_provider=_authz_provider,
-            ),
-            mode,
+        middleware=build_middlewares(
+            config,
+            model_name=model_name,
+            agent_name=agent_name,
+            available_skills=available_skills,
+            app_config=resolved_app_config,
+            deferred_setup=setup,
+            mcp_routing_middleware=mcp_routing_middleware,
+            user_id=resolved_user_id,
+            authorization_provider=_authz_provider,
         ),
         system_prompt=apply_prompt_template(
             subagent_enabled=subagent_enabled,
@@ -901,5 +864,5 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             user_id=resolved_user_id,
             skill_names=skill_setup.skill_names or None,
         ),
-        state_schema=get_thread_state_schema(mode),
+        state_schema=ThreadState,
     )

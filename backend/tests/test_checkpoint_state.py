@@ -10,7 +10,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.message import add_messages
 
 from deerflow.runtime import CheckpointStateAccessor
-from deerflow.runtime.checkpoint_mode import CHECKPOINT_MODE_METADATA_KEY, INTERNAL_CHECKPOINT_MODE_KEY
 
 
 class FakeCheckpointer:
@@ -74,32 +73,28 @@ class FakeGraph:
         return {"updated": values, "as_node": as_node}
 
 
-def _assert_delta_config_is_copied(original: dict[str, Any], forwarded: dict[str, Any]) -> None:
+def _assert_config_is_copied(original: dict[str, Any], forwarded: dict[str, Any]) -> None:
     assert forwarded is not original
     assert forwarded["configurable"] is not original["configurable"]
     assert forwarded["metadata"] is not original["metadata"]
-    assert forwarded["configurable"][INTERNAL_CHECKPOINT_MODE_KEY] == "delta"
-    assert forwarded["metadata"][CHECKPOINT_MODE_METADATA_KEY] == "delta"
+    assert forwarded["configurable"] == original["configurable"]
+    assert forwarded["metadata"] == original["metadata"]
 
 
-def test_mutation_graph_bakes_snapshot_frequency_into_fallback_schema() -> None:
-    from langgraph.channels import DeltaChannel
+def test_mutation_graph_falls_back_to_the_thread_state_schema() -> None:
+    from deerflow.agents.thread_state import ThreadState
+    from deerflow.runtime.checkpoint_state import build_state_mutation_graph, graph_state_schema
 
-    from deerflow.runtime.checkpoint_state import build_state_mutation_graph
-
-    default_graph = build_state_mutation_graph("compact", "delta")
-    assert isinstance(default_graph.channels["messages"], DeltaChannel)
-    assert default_graph.channels["messages"].snapshot_frequency == 10
-
-    low_cadence = build_state_mutation_graph("compact", "delta", snapshot_frequency=250)
-    assert low_cadence.channels["messages"].snapshot_frequency == 250
+    graph = build_state_mutation_graph("compact")
+    assert graph_state_schema(graph) is ThreadState
+    assert "messages" in graph.channels
 
 
 def test_sync_accessor_binds_persistence_guards_operations_and_preserves_input() -> None:
     graph = FakeGraph()
     saver = FakeCheckpointer()
     store = object()
-    accessor = CheckpointStateAccessor.bind(graph, saver, store=store, mode="delta")
+    accessor = CheckpointStateAccessor.bind(graph, saver, store=store)
     config = {
         "configurable": {"thread_id": "thread-sync", "checkpoint_ns": ""},
         "metadata": {"caller": "test"},
@@ -119,7 +114,7 @@ def test_sync_accessor_binds_persistence_guards_operations_and_preserves_input()
     assert graph.store is store
     assert config == original
     for call in graph.calls:
-        _assert_delta_config_is_copied(config, call[1])
+        _assert_config_is_copied(config, call[1])
     assert graph.calls[-1][2:] == ({"messages": ["changed"]}, "tools")
 
 
@@ -128,7 +123,7 @@ async def test_async_accessor_binds_persistence_guards_operations_and_preserves_
     graph = FakeGraph()
     saver = FakeCheckpointer()
     store = object()
-    accessor = CheckpointStateAccessor.bind(graph, saver, store=store, mode="delta")
+    accessor = CheckpointStateAccessor.bind(graph, saver, store=store)
     config = {
         "configurable": {"thread_id": "thread-async", "checkpoint_ns": ""},
         "metadata": {"caller": "test"},
@@ -148,7 +143,7 @@ async def test_async_accessor_binds_persistence_guards_operations_and_preserves_
     assert graph.store is store
     assert config == original
     for call in graph.calls:
-        _assert_delta_config_is_copied(config, call[1])
+        _assert_config_is_copied(config, call[1])
     assert graph.calls[-1][2:] == ({"messages": ["changed"]}, "agent")
 
 
@@ -159,7 +154,6 @@ def test_sync_history_zero_limit_guards_without_consuming_a_snapshot() -> None:
     config = {"configurable": {"thread_id": "thread-sync-zero"}}
 
     assert accessor.history(config, limit=0) == []
-    # The read-side gate folds onto the returned snapshot: no standalone tuple fetch.
     assert len(saver.sync_configs) == 0
     assert graph.sync_history_yields == 0
 
@@ -174,78 +168,6 @@ async def test_async_history_zero_limit_guards_without_consuming_a_snapshot() ->
     assert await accessor.ahistory(config, limit=0) == []
     assert len(saver.async_configs) == 0
     assert graph.async_history_yields == 0
-
-
-@pytest.mark.anyio
-async def test_full_accessor_gates_writes_and_checks_reads_on_the_returned_snapshot() -> None:
-    """Full mode: only writes pay the pre-write tuple fetch; reads check the
-    marker on the materialized snapshot's metadata instead."""
-    graph = FakeGraph()
-    saver = FakeCheckpointer()
-    accessor = CheckpointStateAccessor.bind(graph, saver)
-    config = {"configurable": {"thread_id": "thread-full"}}
-
-    accessor.get(config)
-    accessor.history(config, limit=1)
-    accessor.update(config, {}, as_node=None)
-    await accessor.aget(config)
-    await accessor.ahistory(config, limit=1)
-    await accessor.aupdate(config, {}, as_node=None)
-
-    assert len(saver.sync_configs) == 1
-    assert len(saver.async_configs) == 1
-    for prepared in [*saver.sync_configs, *saver.async_configs]:
-        assert prepared["configurable"][INTERNAL_CHECKPOINT_MODE_KEY] == "full"
-        assert CHECKPOINT_MODE_METADATA_KEY not in prepared["metadata"]
-    assert config == {"configurable": {"thread_id": "thread-full"}}
-
-
-@pytest.mark.anyio
-async def test_full_accessor_raises_when_the_returned_snapshot_is_delta_marked() -> None:
-    """A full-mode accessor must fail closed on a delta checkpoint, detected
-    via the returned snapshot metadata (no pre-read tuple fetch)."""
-    from deerflow.runtime.checkpoint_mode import CheckpointModeMismatchError
-
-    graph = FakeGraph()
-    saver = FakeCheckpointer()
-    accessor = CheckpointStateAccessor.bind(graph, saver, mode="full")
-    config = {"configurable": {"thread_id": "thread-delta-marked"}}
-    graph.get_state = lambda _config: SimpleNamespace(values={}, metadata={CHECKPOINT_MODE_METADATA_KEY: "delta"})
-
-    with pytest.raises(CheckpointModeMismatchError, match="requires delta mode"):
-        accessor.get(config)
-    assert len(saver.sync_configs) == 0
-
-    async def _delta_history(_config, *, limit=None):
-        yield SimpleNamespace(values={"index": 0}, metadata={})
-        yield SimpleNamespace(values={"index": 1}, metadata={CHECKPOINT_MODE_METADATA_KEY: "delta"})
-
-    graph.aget_state_history = _delta_history
-    with pytest.raises(CheckpointModeMismatchError, match="requires delta mode"):
-        await accessor.ahistory(config)
-    assert len(saver.async_configs) == 0
-
-
-@pytest.mark.anyio
-async def test_full_accessor_writes_still_check_compatibility_before_writing() -> None:
-    """Writes cannot be un-applied, so the pre-write tuple fetch stays."""
-    from deerflow.runtime.checkpoint_mode import CheckpointModeMismatchError
-
-    graph = FakeGraph()
-
-    class DeltaMarkedSaver(FakeCheckpointer):
-        async def aget_tuple(self, config):
-            self.async_configs.append(config)
-            return SimpleNamespace(metadata={CHECKPOINT_MODE_METADATA_KEY: "delta"})
-
-    saver = DeltaMarkedSaver()
-    accessor = CheckpointStateAccessor.bind(graph, saver, mode="full")
-    config = {"configurable": {"thread_id": "thread-delta-write"}}
-
-    with pytest.raises(CheckpointModeMismatchError, match="requires delta mode"):
-        await accessor.aupdate(config, {"messages": []}, as_node=None)
-    assert len(saver.async_configs) == 1
-    assert graph.calls == []
 
 
 class _CountingSaver(InMemorySaver):
@@ -286,10 +208,10 @@ def _build_counting_graph(saver):
 @pytest.mark.anyio
 async def test_ahistory_pushes_limit_into_alist_and_reads_each_snapshot_once() -> None:
     """The history limit must reach ``checkpointer.alist`` (SQL LIMIT), and the
-    read-side compat gate must not add a standalone tuple fetch per call."""
+    read path must not add a standalone tuple fetch per call."""
     saver = _CountingSaver()
     graph = _build_counting_graph(saver)
-    accessor = CheckpointStateAccessor.bind(graph, saver, mode="full")
+    accessor = CheckpointStateAccessor.bind(graph, saver)
     config = {"configurable": {"thread_id": "thread-counted"}}
     for _ in range(4):
         await graph.ainvoke({}, config)
@@ -299,16 +221,15 @@ async def test_ahistory_pushes_limit_into_alist_and_reads_each_snapshot_once() -
 
     assert len(history) == 2
     assert saver.alist_limits[-1] == 2
-    # get_state_history walks via alist only; no aget_tuple in the read path.
     assert saver.aget_tuple_calls == 0
 
 
 @pytest.mark.anyio
-async def test_aget_fetches_the_checkpoint_exactly_once_in_full_mode() -> None:
-    """Full-mode reads: one fetch inside aget_state; the folded gate adds none."""
+async def test_aget_fetches_the_checkpoint_exactly_once() -> None:
+    """Reads perform exactly one fetch inside aget_state."""
     saver = _CountingSaver()
     graph = _build_counting_graph(saver)
-    accessor = CheckpointStateAccessor.bind(graph, saver, mode="full")
+    accessor = CheckpointStateAccessor.bind(graph, saver)
     config = {"configurable": {"thread_id": "thread-counted-get"}}
     await graph.ainvoke({}, config)
 

@@ -692,8 +692,6 @@ def _stub_client_assembly(monkeypatch) -> dict[str, str]:
     monkeypatch.setattr("deerflow.client.build_mcp_routing_middleware", lambda *args, **kwargs: None)  # noqa: ARG005
     monkeypatch.setattr("deerflow.client.get_mcp_routing_hints_prompt_section", lambda *args, **kwargs: "")  # noqa: ARG005
     monkeypatch.setattr("deerflow.client.apply_prompt_template", lambda **kwargs: "")  # noqa: ARG005
-    monkeypatch.setattr("deerflow.client.get_thread_state_schema", lambda *args, **kwargs: object())  # noqa: ARG005
-    monkeypatch.setattr("deerflow.client.normalize_middleware_state_schemas", lambda schemas, mode, freq: [])  # noqa: ARG005
     monkeypatch.setattr("deerflow.client.get_effective_user_id", lambda: "user-123")
     # ``apply_tool_authorization`` (called with the empty tool list above) still
     # resolves a provider via ``tool_filter.resolve_authorization_provider``; route
@@ -713,8 +711,6 @@ def _bare_client(app_config):
     client._app_config = app_config
     client._agent_name = "default"
     client._available_skills = None
-    client._checkpoint_channel_mode = "full"
-    client._checkpoint_snapshot_frequency = None
     client._middlewares = []
     client._agent = None
     client._agent_config_key = None

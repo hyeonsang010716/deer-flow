@@ -22,7 +22,7 @@ from deerflow.agents.middlewares import summarization_middleware as summarizatio
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
-from deerflow.agents.thread_state import DeltaThreadState, ThreadState
+from deerflow.agents.thread_state import ThreadState
 from deerflow.config.agents_config import AgentConfig
 from deerflow.config.app_config import AppConfig
 from deerflow.config.extensions_config import ExtensionsConfig
@@ -32,7 +32,6 @@ from deerflow.config.model_config import ModelConfig
 from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.config.subagents_config import SubagentsAppConfig
 from deerflow.config.summarization_config import SummarizationConfig
-from deerflow.runtime.checkpoint_mode import INTERNAL_CHECKPOINT_MODE_KEY
 from deerflow.runtime.secret_context import write_slash_skill_source_path
 from deerflow.skills.types import Skill, SkillCategory
 
@@ -261,8 +260,8 @@ def test_internal_make_lead_agent_uses_explicit_app_config(monkeypatch):
 
 
 @pytest.mark.parametrize("is_bootstrap", [False, True])
-def test_internal_make_lead_agent_selects_and_normalizes_delta_state(monkeypatch, is_bootstrap):
-    app_config = _make_app_config([_make_model("delta-model", supports_thinking=False)])
+def test_internal_make_lead_agent_uses_thread_state_and_passes_middleware_through(monkeypatch, is_bootstrap):
+    app_config = _make_app_config([_make_model("test-model", supports_thinking=False)])
     middleware = ViewImageMiddleware()
     original_schema = middleware.state_schema
 
@@ -281,70 +280,16 @@ def test_internal_make_lead_agent_selects_and_normalizes_delta_state(monkeypatch
     result = lead_agent_module._make_lead_agent(
         {
             "configurable": {
-                "model_name": "delta-model",
+                "model_name": "test-model",
                 "is_bootstrap": is_bootstrap,
-                INTERNAL_CHECKPOINT_MODE_KEY: "delta",
             }
         },
         app_config=app_config,
     )
 
-    assert result["state_schema"] is DeltaThreadState
-    assert result["middleware"][0] is not middleware
-    assert middleware.state_schema is original_schema
-
-
-def test_internal_make_lead_agent_does_not_take_mode_from_runtime_context(monkeypatch):
-    app_config = _make_app_config([_make_model("full-model", supports_thinking=False)])
-
-    import deerflow.tools as tools_module
-
-    monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [])
-    monkeypatch.setattr(lead_agent_module, "build_middlewares", lambda *args, **kwargs: [])
-    monkeypatch.setattr(lead_agent_module, "_load_enabled_available_skills", lambda *args, **kwargs: [])
-    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
-    monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
-
-    result = lead_agent_module._make_lead_agent(
-        {
-            "configurable": {
-                "model_name": "full-model",
-                INTERNAL_CHECKPOINT_MODE_KEY: "full",
-            },
-            "context": {INTERNAL_CHECKPOINT_MODE_KEY: "delta"},
-        },
-        app_config=app_config,
-    )
-
     assert result["state_schema"] is ThreadState
-
-
-def test_public_make_lead_agent_does_not_take_mode_from_runtime_context(monkeypatch):
-    from deerflow.runtime import checkpoint_mode
-
-    app_config = _make_app_config([_make_model("full-model", supports_thinking=False)])
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(checkpoint_mode, "_frozen_checkpoint_channel_mode", None)
-
-    def _capture(config, *, app_config):
-        captured["config"] = config
-        captured["app_config"] = app_config
-        return object()
-
-    monkeypatch.setattr(lead_agent_module, "_make_lead_agent", _capture)
-    config = {
-        "configurable": {"model_name": "full-model"},
-        "context": {
-            "app_config": app_config,
-            INTERNAL_CHECKPOINT_MODE_KEY: "delta",
-        },
-    }
-
-    lead_agent_module.make_lead_agent(config)
-
-    assert config["configurable"][INTERNAL_CHECKPOINT_MODE_KEY] == "full"
-    assert captured["app_config"] is app_config
+    assert result["middleware"][0] is middleware
+    assert middleware.state_schema is original_schema
 
 
 def test_make_lead_agent_uses_runtime_app_config_from_context_without_global_read(monkeypatch):

@@ -1930,7 +1930,6 @@ def test_branch_history_scans_budget_for_duration_only_checkpoints() -> None:
 
 def test_branch_thread_real_mutation_graph_finishes_without_scheduling(monkeypatch) -> None:
     app, _store, _checkpointer = _build_thread_app()
-    app.state.checkpoint_channel_mode = "delta"
     source_thread_id = "source-real-branch"
     messages = [
         HumanMessage(id="h1", content="First question"),
@@ -2017,12 +2016,12 @@ def test_branch_thread_real_mutation_graph_finishes_without_scheduling(monkeypat
     assert branch_snapshot.metadata["branch_parent_checkpoint_id"] == "ckpt-1"
 
 
-def _wire_extension_agent(monkeypatch, app, checkpointer, mode):
+def _wire_extension_agent(monkeypatch, app, checkpointer):
     """Stub only the infra context + assistant factory; keep builders real.
 
     The production resolution path stays live: thread record -> assistant_id
-    -> resolve_agent_factory -> effective graph (base schema for ``mode`` plus
-    a non-identity reducer channel contributed by AgentMiddleware.state_schema).
+    -> resolve_agent_factory -> effective graph (base schema plus a non-identity
+    reducer channel contributed by AgentMiddleware.state_schema).
     """
     import operator
     from typing import Annotated, NotRequired, TypedDict
@@ -2031,7 +2030,7 @@ def _wire_extension_agent(monkeypatch, app, checkpointer, mode):
     from langchain.agents.middleware import AgentMiddleware
     from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
-    from deerflow.agents.thread_state import get_thread_state_schema
+    from deerflow.agents.thread_state import ThreadState
 
     class ExtensionState(TypedDict):
         ext_list: NotRequired[Annotated[list[str], operator.add]]
@@ -2039,14 +2038,13 @@ def _wire_extension_agent(monkeypatch, app, checkpointer, mode):
     class ExtensionMiddleware(AgentMiddleware):
         state_schema = ExtensionState
 
-    app.state.checkpoint_channel_mode = mode
     model = FakeMessagesListChatModel(responses=[AIMessage(content="ok")])
 
     def custom_factory(*, config=None):
-        return create_agent(model, middleware=[ExtensionMiddleware()], state_schema=get_thread_state_schema(mode))
+        return create_agent(model, middleware=[ExtensionMiddleware()], state_schema=ThreadState)
 
     def default_factory(*, config=None):
-        return create_agent(model, state_schema=get_thread_state_schema(mode))
+        return create_agent(model, state_schema=ThreadState)
 
     def selective_factory(assistant_id):
         # Only the thread's recorded assistant yields the extension graph;
@@ -2054,7 +2052,7 @@ def _wire_extension_agent(monkeypatch, app, checkpointer, mode):
         # the tests actually guard the resolution boundary.
         return custom_factory if assistant_id == "extension-agent" else default_factory
 
-    ctx = SimpleNamespace(checkpointer=checkpointer, store=None, checkpoint_channel_mode=mode, app_config=None)
+    ctx = SimpleNamespace(checkpointer=checkpointer, store=None, app_config=None)
     monkeypatch.setattr(gateway_services, "get_run_context", lambda _request: ctx)
     monkeypatch.setattr(gateway_services, "resolve_agent_factory", selective_factory)
     monkeypatch.setattr(threads, "build_checkpoint_state_accessor", gateway_services.build_checkpoint_state_accessor)
@@ -2065,8 +2063,8 @@ def _wire_extension_agent(monkeypatch, app, checkpointer, mode):
     return custom_factory
 
 
-async def _seed_extension_source(checkpointer, custom_factory, mode, source_thread_id):
-    accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer, mode=mode)
+async def _seed_extension_source(checkpointer, custom_factory, source_thread_id):
+    accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer)
     await accessor.aupdate(
         {"configurable": {"thread_id": source_thread_id, "checkpoint_ns": ""}},
         {"messages": [HumanMessage(id="h1", content="question")], "ext_list": ["merged"]},
@@ -2097,8 +2095,7 @@ async def _seed_extension_source(checkpointer, custom_factory, mode, source_thre
     )
 
 
-@pytest.mark.parametrize("mode", ["full", "delta"])
-def test_state_endpoints_preserve_extension_reducer_channels(monkeypatch, mode) -> None:
+def test_state_endpoints_preserve_extension_reducer_channels(monkeypatch) -> None:
     """A non-identity middleware reducer channel survives state endpoints.
 
     GET /state must return the extension value (resolved via the thread's
@@ -2108,7 +2105,7 @@ def test_state_endpoints_preserve_extension_reducer_channels(monkeypatch, mode) 
     """
     app, _store, checkpointer = _build_thread_app()
     app.include_router(thread_runs.router)
-    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer, mode)
+    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer)
 
     async def list_messages(_thread_id: str, *, limit: int, **_kwargs) -> list[dict]:
         assert limit == thread_runs.REGENERATE_HISTORY_SCAN_LIMIT
@@ -2147,7 +2144,7 @@ def test_state_endpoints_preserve_extension_reducer_channels(monkeypatch, mode) 
         assert created.status_code == 200, created.text
 
         # Seed after creation: create_thread writes an empty head checkpoint.
-        asyncio.run(_seed_extension_source(checkpointer, custom_factory, mode, source_thread_id))
+        asyncio.run(_seed_extension_source(checkpointer, custom_factory, source_thread_id))
 
         read_response = client.get(f"/api/threads/{source_thread_id}/state")
         assert read_response.status_code == 200, read_response.text
@@ -2180,7 +2177,7 @@ def test_state_endpoints_preserve_extension_reducer_channels(monkeypatch, mode) 
     assert isinstance(branch_update["messages"], Overwrite)
 
     async def materialize(thread_id):
-        accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer, mode=mode)
+        accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer)
         snapshot = await accessor.aget({"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}})
         return snapshot.values
 
@@ -2191,7 +2188,7 @@ def test_state_endpoints_preserve_extension_reducer_channels(monkeypatch, mode) 
     prepared = prepare_response.json()
     assert prepared["target_run_id"] == "source-run"
     assert prepared["input"]["messages"][0]["id"] == "h2"
-    base_accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer, mode=mode)
+    base_accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer)
     base_values = asyncio.run(
         base_accessor.aget(
             {
@@ -2206,9 +2203,9 @@ def test_state_endpoints_preserve_extension_reducer_channels(monkeypatch, mode) 
     assert [message.id for message in base_values["messages"]] == ["h1", "a1"]
 
 
-async def _seed_branch_history_source(checkpointer, custom_factory, mode, source_thread_id):
+async def _seed_branch_history_source(checkpointer, custom_factory, source_thread_id):
     """Seed a completed turn whose history includes hidden and tool messages."""
-    accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer, mode=mode)
+    accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer)
     config = {"configurable": {"thread_id": source_thread_id, "checkpoint_ns": ""}}
     await accessor.aupdate(
         config,
@@ -2232,8 +2229,7 @@ async def _seed_branch_history_source(checkpointer, custom_factory, mode, source
     )
 
 
-@pytest.mark.parametrize("mode", ["full", "delta"])
-def test_branch_seeds_run_events_with_parent_history(monkeypatch, mode) -> None:
+def test_branch_seeds_run_events_with_parent_history(monkeypatch) -> None:
     """Branching must seed the branch's run-event feed with the parent history.
 
     The thread feed (``GET /messages`` / ``/messages/page``) reads the
@@ -2244,10 +2240,10 @@ def test_branch_seeds_run_events_with_parent_history(monkeypatch, mode) -> None:
     from deerflow.runtime.events.store.memory import MemoryRunEventStore
 
     app, _store, checkpointer = _build_thread_app()
-    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer, mode)
+    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer)
     event_store = MemoryRunEventStore()
     app.state.run_event_store = event_store
-    source_thread_id = f"branch-history-source-{mode}"
+    source_thread_id = "branch-history-source"
 
     with TestClient(app) as client:
         created = client.post(
@@ -2256,7 +2252,7 @@ def test_branch_seeds_run_events_with_parent_history(monkeypatch, mode) -> None:
         )
         assert created.status_code == 200, created.text
 
-        asyncio.run(_seed_branch_history_source(checkpointer, custom_factory, mode, source_thread_id))
+        asyncio.run(_seed_branch_history_source(checkpointer, custom_factory, source_thread_id))
 
         branch_response = client.post(
             f"/api/threads/{source_thread_id}/branches",
@@ -2290,7 +2286,7 @@ def test_branch_history_seed_failure_keeps_branch_usable(monkeypatch) -> None:
             raise RuntimeError("event store down")
 
     app, _store, checkpointer = _build_thread_app()
-    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer, "full")
+    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer)
     app.state.run_event_store = _ExplodingStore()
     source_thread_id = "branch-history-source-failure"
 
@@ -2301,7 +2297,7 @@ def test_branch_history_seed_failure_keeps_branch_usable(monkeypatch) -> None:
         )
         assert created.status_code == 200, created.text
 
-        asyncio.run(_seed_branch_history_source(checkpointer, custom_factory, "full", source_thread_id))
+        asyncio.run(_seed_branch_history_source(checkpointer, custom_factory, source_thread_id))
 
         branch_response = client.post(
             f"/api/threads/{source_thread_id}/branches",
@@ -2312,9 +2308,9 @@ def test_branch_history_seed_failure_keeps_branch_usable(monkeypatch) -> None:
     assert branch_response.json()["history_seed_mode"] == "failed"
 
 
-async def _seed_union_channel_source(checkpointer, custom_factory, mode, source_thread_id):
+async def _seed_union_channel_source(checkpointer, custom_factory, source_thread_id):
     """Seed a completed turn plus Union-typed reducer channels (sandbox/goal/todos)."""
-    accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer, mode=mode)
+    accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer)
     config = {"configurable": {"thread_id": source_thread_id, "checkpoint_ns": ""}}
     await accessor.aupdate(
         config,
@@ -2333,11 +2329,11 @@ async def _seed_union_channel_source(checkpointer, custom_factory, mode, source_
     )
 
 
-def _branch_union_channel_thread(monkeypatch, mode):
+def _branch_union_channel_thread(monkeypatch):
     """Drive POST /branches on a source seeded with Union-typed channels; return branch values."""
     app, _store, checkpointer = _build_thread_app()
-    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer, mode)
-    source_thread_id = f"union-branch-source-{mode}"
+    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer)
+    source_thread_id = "union-branch-source"
 
     with TestClient(app) as client:
         created = client.post(
@@ -2346,7 +2342,7 @@ def _branch_union_channel_thread(monkeypatch, mode):
         )
         assert created.status_code == 200, created.text
 
-        asyncio.run(_seed_union_channel_source(checkpointer, custom_factory, mode, source_thread_id))
+        asyncio.run(_seed_union_channel_source(checkpointer, custom_factory, source_thread_id))
 
         branch_response = client.post(
             f"/api/threads/{source_thread_id}/branches",
@@ -2356,15 +2352,14 @@ def _branch_union_channel_thread(monkeypatch, mode):
         branch_thread_id = branch_response.json()["thread_id"]
 
     async def materialize():
-        accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer, mode=mode)
+        accessor = CheckpointStateAccessor.bind(custom_factory(), checkpointer)
         snapshot = await accessor.aget({"configurable": {"thread_id": branch_thread_id, "checkpoint_ns": ""}})
         return snapshot.values
 
     return asyncio.run(materialize())
 
 
-@pytest.mark.parametrize("mode", ["full", "delta"])
-def test_branch_copies_union_typed_reducer_channels_as_plain_values(monkeypatch, mode) -> None:
+def test_branch_copies_union_typed_reducer_channels_as_plain_values(monkeypatch) -> None:
     """Branching must not persist Overwrite wrappers into the fresh thread (#4380).
 
     Union-typed reducer channels (``goal``, ``todos``, ``promoted``,
@@ -2373,7 +2368,7 @@ def test_branch_copies_union_typed_reducer_channels_as_plain_values(monkeypatch,
     literally and the next consumer crashes with ``TypeError: 'Overwrite'
     object is not subscriptable``.
     """
-    branch_values = _branch_union_channel_thread(monkeypatch, mode)
+    branch_values = _branch_union_channel_thread(monkeypatch)
 
     # The exact crash shape from #4380: subscripting the copied channel value.
     assert branch_values["goal"]["objective"] == "ship the fix"
@@ -2381,8 +2376,7 @@ def test_branch_copies_union_typed_reducer_channels_as_plain_values(monkeypatch,
     assert not any(isinstance(value, Overwrite) for value in branch_values.values())
 
 
-@pytest.mark.parametrize("mode", ["full", "delta"])
-def test_branch_does_not_inherit_thread_scoped_channels(monkeypatch, mode) -> None:
+def test_branch_does_not_inherit_thread_scoped_channels(monkeypatch) -> None:
     """The branch must acquire its own sandbox and thread paths, not the parent's.
 
     ``sandbox.sandbox_id`` binds path mappings and the release lifecycle to
@@ -2391,14 +2385,13 @@ def test_branch_does_not_inherit_thread_scoped_channels(monkeypatch, mode) -> No
     ``thread_data`` is recomputed from the branch's own thread_id by
     ThreadDataMiddleware on every run.
     """
-    branch_values = _branch_union_channel_thread(monkeypatch, mode)
+    branch_values = _branch_union_channel_thread(monkeypatch)
 
     assert branch_values.get("sandbox") is None
     assert branch_values.get("thread_data") is None
 
 
-@pytest.mark.parametrize("mode", ["full", "delta"])
-def test_update_thread_state_overwrite_into_never_written_channel(monkeypatch, mode) -> None:
+def test_update_thread_state_overwrite_into_never_written_channel(monkeypatch) -> None:
     """POST /state must store a plain value when the reducer channel was never written.
 
     Same mechanism as the branch case (#4380): ``goal`` starts MISSING on a
@@ -2406,8 +2399,8 @@ def test_update_thread_state_overwrite_into_never_written_channel(monkeypatch, m
     wrapping must not be persisted literally.
     """
     app, _store, checkpointer = _build_thread_app()
-    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer, mode)
-    source_thread_id = f"never-written-goal-{mode}"
+    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer)
+    source_thread_id = "never-written-goal"
 
     with TestClient(app) as client:
         created = client.post(
@@ -2416,7 +2409,7 @@ def test_update_thread_state_overwrite_into_never_written_channel(monkeypatch, m
         )
         assert created.status_code == 200, created.text
 
-        asyncio.run(_seed_extension_source(checkpointer, custom_factory, mode, source_thread_id))
+        asyncio.run(_seed_extension_source(checkpointer, custom_factory, source_thread_id))
 
         update_response = client.post(
             f"/api/threads/{source_thread_id}/state",
@@ -2433,7 +2426,7 @@ def test_update_thread_state_overwrite_into_never_written_channel(monkeypatch, m
 def test_update_thread_state_rejects_unknown_state_fields(monkeypatch) -> None:
     """Unknown fields fail 422 instead of a false-success 200."""
     app, _store, checkpointer = _build_thread_app()
-    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer, "full")
+    custom_factory = _wire_extension_agent(monkeypatch, app, checkpointer)
     source_thread_id = "extension-source-422"
 
     with TestClient(app) as client:
@@ -2443,7 +2436,7 @@ def test_update_thread_state_rejects_unknown_state_fields(monkeypatch) -> None:
         )
         assert created.status_code == 200, created.text
 
-        asyncio.run(_seed_extension_source(checkpointer, custom_factory, "full", source_thread_id))
+        asyncio.run(_seed_extension_source(checkpointer, custom_factory, source_thread_id))
 
         response = client.post(
             f"/api/threads/{source_thread_id}/state",
@@ -2755,7 +2748,6 @@ def test_update_thread_state_overwrites_reducer_fields_and_writes_last_values_di
 
 def test_update_thread_state_real_mutation_graph_finishes_without_scheduling(monkeypatch) -> None:
     app, _store, _checkpointer = _build_thread_app()
-    app.state.checkpoint_channel_mode = "delta"
     real_mutation_builder = gateway_services.build_checkpoint_state_mutation_accessor
 
     async def mutation_boundary(request, *, thread_id, as_node, checkpoint_id=None):

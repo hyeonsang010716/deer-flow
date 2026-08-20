@@ -185,7 +185,7 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
 
 @contextlib.asynccontextmanager
 async def _select_inner_checkpointer(app_config: AppConfig) -> AsyncIterator[Checkpointer]:
-    """*app_config*가 선택한 raw checkpointer를 yield한다(delta-cache로 감싸지 않는다).
+    """*app_config*가 선택한 raw checkpointer를 yield한다.
 
     우선순위:
     1. legacy ``checkpointer:`` 설정 섹션(하위 호환)
@@ -226,27 +226,9 @@ async def make_checkpointer(app_config: AppConfig | None = None) -> AsyncIterato
     1. legacy ``checkpointer:`` 설정 섹션(하위 호환)
     2. 통합 ``database:`` 설정 섹션
     3. 기본값 InMemorySaver
-
-    실효 checkpoint channel mode가 ``delta``이면(프로세스에 고정된 mode가 우선하고, 없으면
-    ``database.checkpoint_channel_mode``를 쓴다) raw saver를 :class:`CachedHistorySaver`로
-    감싼다. 그 history cache의 수명은 이 context manager와 같다.
     """
-    from deerflow.runtime.checkpoint_mode import frozen_checkpoint_channel_mode
-
     if app_config is None:
         app_config = get_app_config()
 
     async with _select_inner_checkpointer(app_config) as saver:
-        db_config = getattr(app_config, "database", None)
-        mode = frozen_checkpoint_channel_mode() or (db_config.checkpoint_channel_mode if db_config is not None else "full")
-        if mode == "delta":
-            from deerflow.runtime.checkpoint_cache.provider import (
-                checkpoint_cache_key_prefix,
-                make_checkpoint_cache,
-            )
-            from deerflow.runtime.checkpointer.cached_saver import CachedHistorySaver
-
-            async with make_checkpoint_cache(app_config, serde=saver.serde) as cache:
-                yield CachedHistorySaver(saver, cache, key_prefix=checkpoint_cache_key_prefix(app_config))
-        else:
-            yield saver
+        yield saver

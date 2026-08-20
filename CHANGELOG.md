@@ -12,6 +12,18 @@ This section accumulates work toward the **2.1.0** milestone
 
 ### ⚠ Breaking changes
 
+- **runtime:** Removed the opt-in `delta` checkpoint channel mode. Checkpoints
+  now always store full channel values. `database.checkpoint_channel_mode`,
+  `database.checkpoint_delta.snapshot_frequency`, and the delta-only
+  `database.checkpoint_cache` section are no longer recognized; remove them from
+  `config.yaml` (unknown keys are ignored, so a stale config still starts). The
+  mode freeze, the fail-closed compatibility gate (HTTP 409/503 on thread state
+  routes), the delta history cache, and the delta resume-linearization path are
+  gone with it. The mode was off by default and built on LangGraph's beta
+  `DeltaChannel`. **Threads written while `delta` was enabled are not readable
+  after this change** — materialize and convert them before upgrading, or the
+  affected threads will surface empty message history.
+
 - **skills:** Sandboxes now reserve `/mnt/skills` for managed enabled-only
   projections. `DEER_FLOW_HOST_SKILLS_PATH` and `SKILLS_HOST_PATH` are no longer
   used; Docker/AIO and hostPath deployments derive projection paths from

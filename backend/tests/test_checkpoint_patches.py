@@ -7,8 +7,8 @@ unwrapping ``Overwrite``. Reducer channels whose type is a Union
 default, so they start MISSING — a replace-style write into a fresh thread
 (thread branching) or a never-written channel (state update) persists the
 wrapper literally, and the next consumer crashes with ``TypeError:
-'Overwrite' object is not subscriptable``. ``DeltaChannel`` already unwraps in
-the same situation; the patch aligns ``BinaryOperatorAggregate`` with it.
+'Overwrite' object is not subscriptable``. The patch makes
+``BinaryOperatorAggregate`` unwrap that first write instead.
 """
 
 import pytest

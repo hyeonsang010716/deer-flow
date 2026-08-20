@@ -20,8 +20,7 @@ from app.gateway.routers.models import ModelResponse, ModelsListResponse
 from app.gateway.routers.skills import SkillInstallResponse, SkillResponse, SkillsListResponse
 from app.gateway.routers.threads import ThreadGoalResponse
 from app.gateway.routers.uploads import UploadResponse
-from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
-from deerflow.agents.thread_state import DeltaThreadState, ThreadState
+from deerflow.agents.thread_state import ThreadState
 from deerflow.client import DeerFlowClient
 from deerflow.config.authorization_config import AuthorizationConfig, AuthorizationProviderConfig
 from deerflow.config.extensions_config import ExtensionsConfig, McpServerConfig
@@ -51,8 +50,6 @@ def mock_app_config():
     config.skills.deferred_discovery = False
     config.skills.container_path = "/mnt/skills"
     config.tool_search.enabled = False
-    config.database.checkpoint_channel_mode = "full"
-    config.database.checkpoint_delta.snapshot_frequency = 10
     config.authorization = AuthorizationConfig(enabled=False)
     return config
 
@@ -127,41 +124,6 @@ class TestClientInit:
         with patch("deerflow.client.get_app_config", return_value=mock_app_config):
             c = DeerFlowClient(checkpointer=cp)
         assert c._checkpointer is cp
-
-    def test_process_mode_is_frozen_from_app_config(self, mock_app_config, monkeypatch: pytest.MonkeyPatch):
-        from deerflow.runtime import checkpoint_mode
-
-        monkeypatch.setattr(checkpoint_mode, "_frozen_checkpoint_channel_mode", None)
-        with patch("deerflow.client.get_app_config", return_value=mock_app_config):
-            client = DeerFlowClient()
-        assert client._checkpoint_channel_mode == "full"
-
-        mock_app_config.database.checkpoint_channel_mode = "delta"
-        with (
-            patch("deerflow.client.get_app_config", return_value=mock_app_config),
-            pytest.raises(
-                checkpoint_mode.CheckpointModeReconfigurationError,
-                match="restart",
-            ),
-        ):
-            DeerFlowClient()
-
-    def test_delta_snapshot_frequency_is_frozen_from_app_config(self, mock_app_config):
-        from typing import get_type_hints
-
-        from langgraph.channels import DeltaChannel
-
-        from deerflow.agents import thread_state
-
-        mock_app_config.database.checkpoint_channel_mode = "delta"
-        mock_app_config.database.checkpoint_delta.snapshot_frequency = 7
-        with patch("deerflow.client.get_app_config", return_value=mock_app_config):
-            DeerFlowClient()
-
-        schema = thread_state.get_thread_state_schema("delta")
-        hint = get_type_hints(schema, include_extras=True)["messages"]
-        channel = next(item for item in hint.__metadata__ if isinstance(item, DeltaChannel))
-        assert channel.snapshot_frequency == 7
 
 
 # ---------------------------------------------------------------------------
@@ -324,68 +286,6 @@ class TestStream:
         call_kwargs = agent.stream.call_args.kwargs
         assert call_kwargs["context"]["thread_id"] == "t1"
         assert call_kwargs["context"]["agent_name"] == "test-agent-1"
-
-    def test_full_mode_overwrites_internal_delta_before_agent_creation(self, client):
-        from deerflow.runtime.checkpoint_mode import (
-            CHECKPOINT_MODE_METADATA_KEY,
-            INTERNAL_CHECKPOINT_MODE_KEY,
-        )
-
-        config = {
-            "configurable": {
-                "thread_id": "t-mode",
-                INTERNAL_CHECKPOINT_MODE_KEY: "delta",
-            },
-            "metadata": {CHECKPOINT_MODE_METADATA_KEY: "delta"},
-        }
-        checkpointer = MagicMock()
-        checkpointer.get_tuple.return_value = None
-        client._checkpointer = checkpointer
-        agent = _make_agent_mock([])
-
-        with (
-            patch.object(client, "_get_runnable_config", return_value=config),
-            patch.object(client, "_ensure_agent"),
-            patch.object(client, "_agent", agent),
-        ):
-            list(client.stream("hi", thread_id="t-mode"))
-
-        assert config["configurable"][INTERNAL_CHECKPOINT_MODE_KEY] == "full"
-        assert CHECKPOINT_MODE_METADATA_KEY not in config["metadata"]
-        checkpointer.get_tuple.assert_called_once_with(
-            {
-                "configurable": {
-                    "thread_id": "t-mode",
-                    "checkpoint_ns": "",
-                }
-            }
-        )
-
-    def test_full_mode_rejects_delta_before_agent_creation(self, client):
-        from types import SimpleNamespace
-
-        from deerflow.runtime.checkpoint_mode import (
-            CHECKPOINT_MODE_METADATA_KEY,
-            CheckpointModeMismatchError,
-        )
-
-        checkpointer = MagicMock()
-        checkpointer.get_tuple.return_value = SimpleNamespace(
-            metadata={CHECKPOINT_MODE_METADATA_KEY: "delta"},
-            checkpoint={"channel_values": {}},
-        )
-        client._checkpointer = checkpointer
-        agent = _make_agent_mock([])
-
-        with (
-            patch.object(client, "_ensure_agent") as ensure_agent,
-            patch.object(client, "_agent", agent),
-            pytest.raises(CheckpointModeMismatchError, match="requires delta mode"),
-        ):
-            list(client.stream("hi", thread_id="t-delta"))
-
-        ensure_agent.assert_not_called()
-        agent.stream.assert_not_called()
 
     def test_stream_assigns_unique_run_id_per_call(self, client):
         """Each embedded client stream call has a run identity for per-run middleware."""
@@ -1249,29 +1149,6 @@ class TestEnsureAgent:
         assert mock_apply_prompt.call_args.kwargs.get("available_skills") == {"test_skill"}
         assert mock_create_agent.call_args.kwargs["state_schema"] is ThreadState
 
-    def test_delta_mode_selects_state_and_normalizes_middleware(self, client):
-        mock_agent = MagicMock()
-        middleware = ViewImageMiddleware()
-        original_schema = middleware.state_schema
-        client._checkpoint_channel_mode = "delta"
-        config = client._get_runnable_config("t-delta")
-
-        with (
-            patch("deerflow.client.create_chat_model"),
-            patch("deerflow.client.create_agent", return_value=mock_agent) as mock_create_agent,
-            patch("deerflow.client.build_middlewares", return_value=[middleware]),
-            patch("deerflow.client.apply_prompt_template", return_value="prompt"),
-            patch("deerflow.client.get_enabled_skills_for_config", return_value=[]),
-            patch.object(client, "_get_tools", return_value=[]),
-            patch("deerflow.runtime.checkpointer.get_checkpointer", return_value=None),
-        ):
-            client._ensure_agent(config)
-
-        call_kwargs = mock_create_agent.call_args.kwargs
-        assert call_kwargs["state_schema"] is DeltaThreadState
-        assert call_kwargs["middleware"][0] is not middleware
-        assert middleware.state_schema is original_schema
-
     def test_uses_default_checkpointer_when_available(self, client):
         mock_agent = MagicMock()
         mock_checkpointer = MagicMock()
@@ -1340,7 +1217,7 @@ class TestEnsureAgent:
         """_ensure_agent does not recreate if config key unchanged."""
         mock_agent = MagicMock()
         client._agent = mock_agent
-        client._agent_config_key = (None, True, False, False, None, None, None, None, "full", 10, None)
+        client._agent_config_key = (None, True, False, False, None, None, None, None, None)
 
         config = client._get_runnable_config("t1")
         client._ensure_agent(config)

@@ -134,7 +134,6 @@ async def test_compact_thread_context_real_mutation_graph_finishes_without_sched
         app=SimpleNamespace(
             state=SimpleNamespace(
                 checkpointer=InMemorySaver(),
-                checkpoint_channel_mode="delta",
                 store=None,
             )
         )
@@ -201,13 +200,12 @@ async def test_compact_thread_context_preserves_middleware_contributed_channels(
         app=SimpleNamespace(
             state=SimpleNamespace(
                 checkpointer=InMemorySaver(),
-                checkpoint_channel_mode="full",
                 store=None,
             )
         )
     )
-    seed_graph = build_state_mutation_graph("seed", "full", ExtensionState)
-    seed_accessor = CheckpointStateAccessor.bind(seed_graph, request.app.state.checkpointer, mode="full")
+    seed_graph = build_state_mutation_graph("seed", ExtensionState)
+    seed_accessor = CheckpointStateAccessor.bind(seed_graph, request.app.state.checkpointer)
     seed_config = {"configurable": {"thread_id": "thread-ext-compaction", "checkpoint_ns": ""}}
     await seed_accessor.aupdate(
         seed_config,

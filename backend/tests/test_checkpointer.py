@@ -1195,7 +1195,6 @@ class TestClientCheckpointerFallback:
         model_mock = MagicMock()
         config_mock = MagicMock()
         config_mock.models = [model_mock]
-        config_mock.database.checkpoint_delta.snapshot_frequency = 10
         config_mock.get_model_config.return_value = MagicMock(supports_vision=False)
         config_mock.checkpointer = None
 
@@ -1235,7 +1234,6 @@ class TestClientCheckpointerFallback:
         model_mock = MagicMock()
         config_mock = MagicMock()
         config_mock.models = [model_mock]
-        config_mock.database.checkpoint_delta.snapshot_frequency = 10
         config_mock.get_model_config.return_value = MagicMock(supports_vision=False)
         config_mock.checkpointer = None
 

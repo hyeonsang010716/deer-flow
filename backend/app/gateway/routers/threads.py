@@ -47,7 +47,6 @@ from deerflow.config.paths import Paths, get_paths
 from deerflow.config.summarization_config import ContextSize
 from deerflow.persistence.thread_meta import THREAD_PINNED_METADATA_KEY
 from deerflow.runtime import serialize_channel_values_for_api
-from deerflow.runtime.checkpoint_mode import CheckpointModeMismatchError, CheckpointModeReconfigurationError
 from deerflow.runtime.checkpoint_state import graph_reducer_channels, graph_state_schema, graph_writable_channels
 from deerflow.runtime.context_compaction import (
     ContextCompactionDisabled,
@@ -73,23 +72,6 @@ from deerflow.utils.time import coerce_iso, now_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["threads"])
-
-_CHECKPOINT_MODE_ERRORS = (CheckpointModeMismatchError, CheckpointModeReconfigurationError)
-
-
-def _checkpoint_mode_http_error(exc: Exception, thread_id: str) -> HTTPException:
-    """Map checkpoint-mode guard failures to precise HTTP statuses.
-
-    A mismatch means the thread's persisted checkpoints conflict with the
-    process's frozen mode (operator-actionable, 409); a reconfiguration means
-    the process itself is mid mode-flip (transient, 503). Both must surface
-    their message — a generic 500 would force operators to grep logs to
-    discover the root cause after a mode flip.
-    """
-    if isinstance(exc, CheckpointModeMismatchError):
-        return HTTPException(status_code=409, detail=f"Thread {thread_id}: {exc}")
-    return HTTPException(status_code=503, detail=str(exc))
-
 
 # Metadata keys that the server controls; clients are not allowed to set
 # them. Pydantic ``@field_validator("metadata")`` strips them on every
@@ -206,8 +188,6 @@ async def _find_branch_checkpoint(
                 continue
             if _matches_branch_target(_checkpoint_messages(snapshot), target_message_ids):
                 return snapshot
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, config.get("configurable", {}).get("thread_id", "")) from exc
     except Exception:
         thread_id = config.get("configurable", {}).get("thread_id", "")
         logger.exception("Failed to scan branch checkpoint history for thread %s", sanitize_log_param(thread_id))
@@ -272,9 +252,6 @@ async def _find_branch_replay_base(
 
     try:
         history = await accessor.ahistory(config, limit=_BRANCH_HISTORY_RAW_SCAN_LIMIT)
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        thread_id = config.get("configurable", {}).get("thread_id", "")
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
     except Exception as exc:
         thread_id = config.get("configurable", {}).get("thread_id", "")
         logger.exception("Failed to scan replay checkpoint history for thread %s", sanitize_log_param(thread_id))
@@ -894,8 +871,6 @@ async def branch_thread(thread_id: ThreadId, body: ThreadBranchRequest, request:
             branch_values(snapshot),
             as_node="branch",
         )
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, new_thread_id) from exc
     except Exception:
         logger.exception("Failed to write branch checkpoint for thread %s", sanitize_log_param(new_thread_id))
         raise HTTPException(status_code=500, detail="Failed to create branch") from None
@@ -1028,21 +1003,16 @@ async def get_thread(thread_id: ThreadId, request: Request) -> ThreadResponse:
     thread_store = get_thread_store(request)
     checkpointer = get_checkpointer(request)
     record: dict | None = await thread_store.get(thread_id)
-    try:
-        accessor, config = build_checkpoint_state_accessor(
-            request,
-            thread_id=thread_id,
-            assistant_id=record.get("assistant_id") if record is not None else None,
-        )
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
+    accessor, config = build_checkpoint_state_accessor(
+        request,
+        thread_id=thread_id,
+        assistant_id=record.get("assistant_id") if record is not None else None,
+    )
 
     try:
         snapshot = await accessor.aget(config)
         checkpoint_id = (snapshot.config or {}).get("configurable", {}).get("checkpoint_id")
         pending_writes = await _fetch_raw_pending_writes(checkpointer, snapshot.config) if checkpoint_id else []
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
     except Exception:
         logger.exception("Failed to get checkpoint for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to get thread")
@@ -1150,14 +1120,11 @@ async def compact_thread(thread_id: ThreadId, body: ThreadCompactRequest, reques
     # every other channel — including middleware-contributed ones — is carried
     # forward by checkpoint fork inheritance, so the base-schema mutation
     # graph is sufficient (and avoids building the full lead graph per call).
-    try:
-        accessor, _ = build_checkpoint_state_mutation_accessor(
-            request,
-            thread_id=thread_id,
-            as_node="manual_compaction",
-        )
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
+    accessor, _ = build_checkpoint_state_mutation_accessor(
+        request,
+        thread_id=thread_id,
+        as_node="manual_compaction",
+    )
     keep = body.keep.to_tuple() if body.keep is not None else None
     try:
         async with reserve_checkpoint_write(request, thread_id, user_id=get_effective_user_id()):
@@ -1172,8 +1139,6 @@ async def compact_thread(thread_id: ThreadId, body: ThreadCompactRequest, reques
             )
     except ConflictError:
         raise HTTPException(status_code=409, detail="Thread has a run in flight. Compact after the run finishes.") from None
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
     except ContextCompactionDisabled:
         raise HTTPException(status_code=409, detail="Context compaction is disabled.") from None
     except ContextCompactionFailed:
@@ -1195,14 +1160,9 @@ async def get_thread_state(thread_id: ThreadId, request: Request) -> ThreadState
     """Get the latest materialized graph state for a thread."""
     # Resolve through the thread's assistant so custom middleware channels
     # appear in the response instead of being dropped by the default schema.
-    try:
-        accessor, config = await build_thread_checkpoint_state_accessor(request, thread_id=thread_id)
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
+    accessor, config = await build_thread_checkpoint_state_accessor(request, thread_id=thread_id)
     try:
         snapshot = await accessor.aget(config)
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
     except Exception:
         logger.exception("Failed to get state for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to get thread state")
@@ -1288,8 +1248,6 @@ async def update_thread_state(thread_id: ThreadId, body: ThreadStateUpdateReques
             snapshot = await accessor.aget(updated_config)
     except ConflictError:
         raise HTTPException(status_code=409, detail="Thread has a run in flight. Update state after the run finishes.") from None
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
     except Exception:
         logger.exception("Failed to update state for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to update thread state")
@@ -1344,14 +1302,11 @@ async def get_thread_history(
     avoid duplicating the complete conversation across every entry.
     """
     checkpointer = get_checkpointer(request)
-    try:
-        accessor, config = await build_thread_checkpoint_state_accessor(
-            request,
-            thread_id=thread_id,
-            checkpoint_id=body.before,
-        )
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
+    accessor, config = await build_thread_checkpoint_state_accessor(
+        request,
+        thread_id=thread_id,
+        checkpoint_id=body.before,
+    )
 
     entries: list[HistoryEntry] = []
     is_latest_checkpoint = True
@@ -1486,8 +1441,6 @@ async def get_thread_history(
                     next=next_tasks,
                 )
             )
-    except _CHECKPOINT_MODE_ERRORS as exc:
-        raise _checkpoint_mode_http_error(exc, thread_id) from exc
     except Exception:
         logger.exception("Failed to get history for thread %s", sanitize_log_param(thread_id))
         raise HTTPException(status_code=500, detail="Failed to get thread history")

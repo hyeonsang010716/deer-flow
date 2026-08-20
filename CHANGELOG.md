@@ -12,6 +12,16 @@ This section accumulates work toward the **2.1.0** milestone
 
 ### ⚠ Breaking changes
 
+- **mcp:** Removed the unused long-running MCP task runtime. The `mcp_tasks`
+  config section, the `McpTaskDriver` contract, the durable repository, and the
+  background status poller are gone, and migration `0012_drop_mcp_tasks` drops
+  the `mcp_tasks` table. No concrete driver was ever registered and no
+  production path called `McpTaskService.submit`, so the subsystem could not
+  produce a row; ordinary MCP tool calls are unaffected. A leftover `mcp_tasks:`
+  block in `config.yaml` is ignored rather than rejected. Migration
+  `0011_mcp_tasks` stays in the chain so databases already stamped at it can
+  still resolve their revision.
+
 - **runtime:** Removed the opt-in `delta` checkpoint channel mode. Checkpoints
   now always store full channel values. `database.checkpoint_channel_mode`,
   `database.checkpoint_delta.snapshot_frequency`, and the delta-only

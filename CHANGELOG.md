@@ -971,7 +971,7 @@ This release closes that milestone with **765 merged pull requests**.
   `get_event_loop()` failing, but it also caught discovery errors and
   re-spawned every stdio server (and re-fetched OAuth tokens) before giving
   up; inside a running loop it also logged a misleading "asyncio.run() cannot
-  be called from a running event loop" traceback instead of the real cause.
+  be called from a running event loop" traceback instead of the real cause. ([#5836])
 - **uploads:** Deleting an uploaded document no longer deletes the converted
   Markdown beside it. Conversion names a companion after the document's stem
   and falls back to a `_N` suffix when that name is taken, so the `.md` next to
@@ -4412,4 +4412,5 @@ with **180 merged pull requests** since the first 2.0 milestone tag.
 [#5734]: https://github.com/bytedance/deer-flow/pull/5734
 [#5776]: https://github.com/bytedance/deer-flow/pull/5776
 [#5777]: https://github.com/bytedance/deer-flow/pull/5777
+[#5836]: https://github.com/bytedance/deer-flow/pull/5836
 

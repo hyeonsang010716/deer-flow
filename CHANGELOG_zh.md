@@ -737,7 +737,7 @@
   `asyncio.run` 兜底只为 `get_event_loop()` 失败而设，却同时捕获了发现阶段的错误，于是在
   放弃之前会重新拉起每一个 stdio 服务器（并重新获取 OAuth 令牌）；在运行中的事件循环里，
   它记录的还是误导性的 "asyncio.run() cannot be called from a running event loop"
-  堆栈，而不是真正的原因。
+  堆栈，而不是真正的原因。([#5836])
 - **上传：** 删除已上传的文档时，不再连带删除其旁边转换生成的 Markdown。转换以文档主干名
   命名配套文件，名称被占用时回退为 `_N` 后缀，因此文档旁的 `.md` 可能属于主干名相同的另一个
   文档，或属于用户自己：上传 `a.docx` 与 `a.pdf` 会生成 `a.md` 与 `a_1.md`，删除 `a.pdf`
@@ -3567,3 +3567,4 @@ DeerFlow 2.0 是围绕"超级智能体"框架的彻底重写，核心包含子�
 [#5734]: https://github.com/bytedance/deer-flow/pull/5734
 [#5776]: https://github.com/bytedance/deer-flow/pull/5776
 [#5777]: https://github.com/bytedance/deer-flow/pull/5777
+[#5836]: https://github.com/bytedance/deer-flow/pull/5836
